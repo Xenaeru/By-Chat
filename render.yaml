@@ -1,0 +1,83 @@
+# render.yaml — Blueprint Render untuk Secure Chat.
+#
+# Cara pakai: push repo ini ke GitHub, lalu di Render pilih
+#   New → Blueprint → pilih repo-nya.
+# Render membaca file ini, bikin service-nya, dan menanyakan nilai setiap
+# variabel yang ditandai `sync: false` (rahasia, jadi TIDAK disimpan di git).
+#
+# Referensi field: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: secure-chat
+    runtime: node
+    plan: free
+    # Singapura = titik terdekat dari Indonesia (~20 ms dari Jakarta).
+    # Region TIDAK bisa diubah setelah service dibuat.
+    region: singapore
+    branch: main
+    # Deploy otomatis tiap kali ada commit baru di branch main.
+    autoDeployTrigger: commit
+    # package-lock.json ada di repo, jadi npm ci (instalasi deterministik).
+    buildCommand: npm ci
+    startCommand: npm start
+    # Server punya endpoint /healthz — Render pakai ini buat tau deploy-nya hidup.
+    healthCheckPath: /healthz
+
+    envVars:
+      # ── Mode tegas ───────────────────────────────────────────────────────
+      # Ditulis eksplisit supaya kalau ada rahasia yang lupa diisi, aplikasi
+      # GAGAL JALAN dengan pesan jelas, bukan diam-diam pindah ke mode dev.
+      - key: NODE_ENV
+        value: production
+      - key: AUTH_MODE
+        value: firebase
+      - key: STORAGE_DRIVER
+        value: supabase
+
+      # ── Login: Firebase ─────────────────────────────────────────────────
+      # Firebase Console → Project settings → Your apps → Web app.
+      # Nilai-nilai ini memang boleh dilihat browser (dikirim ke client).
+      - key: FIREBASE_API_KEY
+        sync: false
+      - key: FIREBASE_AUTH_DOMAIN
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_APP_ID
+        sync: false
+      - key: FIREBASE_MESSAGING_SENDER_ID
+        sync: false
+      # RAHASIA. Isi dengan satu baris dari:
+      #   node scripts/set-service-account.mjs "C:/path/key.json"
+      # lalu tempel nilai FIREBASE_SERVICE_ACCOUNT dari .env-mu.
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+
+      # ── Kirim file: Supabase ────────────────────────────────────────────
+      - key: SUPABASE_URL
+        sync: false
+      # RAHASIA: Secret key (sb_secret_…), BUKAN Publishable key.
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: attachments
+      # 45 MiB: satu file = satu objek, dan free plan Supabase mentok 50 MB.
+      - key: MAX_UPLOAD_BYTES
+        value: "47185920"
+
+      # ── Telpon ──────────────────────────────────────────────────────────
+      # Kosong = cuma STUN, panggilan bisa gagal di CGNAT operator seluler.
+      # Isi TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL kalau sudah punya TURN
+      # (Twilio, Vonage, atau coturn sendiri).
+      # - key: TURN_URLS
+      #   sync: false
+      # - key: TURN_USERNAME
+      #   sync: false
+      # - key: TURN_CREDENTIAL
+      #   sync: false
+      - key: CALLS_ENABLED
+        value: "true"
+
+      # JANGAN set PORT di sini — Render yang menentukan port-nya dan
+      # menyuntikkannya lewat variabel PORT. config.js sudah membacanya.

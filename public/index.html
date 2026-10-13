@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#111b21" />
+<title>Secure Chat</title>
+<link rel="stylesheet" href="style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔒</text></svg>" />
+</head>
+<body>
+
+<div id="boot" class="boot"><div class="spinner"></div></div>
+
+<!-- ── Login ───────────────────────────────────────────────────────── -->
+<div id="login" class="login" hidden>
+  <div class="login-card">
+    <div class="login-logo">🔒</div>
+    <h1>Secure Chat</h1>
+    <p class="muted">Pesan, file, dan panggilan terenkripsi end-to-end. Server cuma perantara.</p>
+
+    <!-- Firebase: Google + nomor HP -->
+    <div id="login-firebase" hidden>
+      <button id="btn-google" class="oauth">
+        <span class="g-icon">G</span> Lanjut dengan Google
+      </button>
+
+      <div class="divider"><span>atau pakai nomor HP</span></div>
+
+      <div id="phone-step-1">
+        <input id="phone-number" type="tel" inputmode="tel" placeholder="+62 812 3456 7890" />
+        <button id="btn-send-code" class="primary">Kirim kode OTP</button>
+      </div>
+
+      <div id="phone-step-2" hidden>
+        <p class="muted small">Kode dikirim ke <strong id="phone-shown">—</strong></p>
+        <input id="otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" />
+        <button id="btn-verify-code" class="primary">Verifikasi</button>
+        <button id="btn-change-phone" class="link">Ganti nomor</button>
+      </div>
+
+      <div id="recaptcha-container"></div>
+    </div>
+
+    <!-- Dev: cuma nama -->
+    <form id="login-dev" autocomplete="off" hidden>
+      <label for="login-username">Nama kamu</label>
+      <input id="login-username" name="username" maxlength="32" placeholder="misal: budi" required />
+      <button id="login-submit" type="submit" class="primary">Masuk</button>
+    </form>
+
+    <p id="login-dev-note" class="hint" hidden>
+      Server ini jalan di <strong>mode dev</strong>: identitas nggak diverifikasi.
+      Nyaman buat nyoba di lokal, jangan dipakai di server publik.
+    </p>
+
+    <p id="login-error" class="error" hidden></p>
+  </div>
+</div>
+
+<!-- ── App ─────────────────────────────────────────────────────────── -->
+<div id="app" class="app" hidden>
+
+  <aside class="sidebar">
+    <header class="sidebar-header">
+      <div class="avatar" id="me-avatar">?</div>
+      <div class="sidebar-me">
+        <strong id="me-name">—</strong>
+        <span class="muted" id="me-status">menyambung…</span>
+      </div>
+      <button id="btn-settings" class="icon-btn" title="Pengaturan">⚙️</button>
+      <button id="btn-logout" class="icon-btn" title="Keluar">⎋</button>
+    </header>
+
+    <div class="sidebar-actions">
+      <input id="search" class="search" placeholder="Cari chat…" />
+      <button id="btn-new-chat" class="icon-btn big" title="Chat baru">💬</button>
+      <button id="btn-new-group" class="icon-btn big" title="Grup baru">👥</button>
+    </div>
+
+    <ul id="chat-list" class="chat-list"></ul>
+    <p id="chat-list-empty" class="empty-note">Belum ada chat. Tekan 💬 buat mulai.</p>
+  </aside>
+
+  <main class="chat" id="chat">
+    <section class="empty-state" id="empty-state">
+      <div class="empty-art">🔐</div>
+      <h2>Secure Chat</h2>
+      <p>Pilih chat di kiri, atau mulai yang baru.<br />Pesan, file, dan panggilan end-to-end encrypted.</p>
+    </section>
+
+    <section class="chat-view" id="chat-view" hidden>
+      <header class="chat-header">
+        <button id="btn-back" class="icon-btn back" title="Kembali">←</button>
+        <div class="avatar" id="peer-avatar">?</div>
+        <div class="chat-title">
+          <strong id="peer-name">—</strong>
+          <span class="muted" id="peer-sub">—</span>
+        </div>
+        <button id="btn-call-audio" class="icon-btn" title="Telpon suara">📞</button>
+        <button id="btn-call-video" class="icon-btn" title="Video call">🎥</button>
+        <button id="btn-verify" class="icon-btn" title="Safety number">🛡️</button>
+      </header>
+
+      <div id="messages" class="messages"></div>
+      <div id="typing" class="typing" hidden></div>
+
+      <div id="upload-bar" class="upload-bar" hidden>
+        <span id="upload-label">Menyiapkan…</span>
+        <div class="progress"><div id="upload-fill"></div></div>
+        <button id="upload-cancel" class="link">Batal</button>
+      </div>
+
+      <form id="composer" class="composer">
+        <button type="button" id="btn-attach" class="icon-btn big" title="Kirim file">📎</button>
+        <input type="file" id="file-input" hidden multiple />
+        <textarea id="composer-input" rows="1" placeholder="Tulis pesan terenkripsi…"></textarea>
+        <button type="submit" class="send" title="Kirim">➤</button>
+      </form>
+    </section>
+  </main>
+</div>
+
+<!-- ── Call overlay ────────────────────────────────────────────────── -->
+<div id="call-overlay" class="call-overlay" hidden>
+  <video id="remote-video" autoplay playsinline></video>
+  <div class="call-placeholder" id="call-placeholder">
+    <div class="avatar big" id="call-avatar">?</div>
+    <h3 id="call-name">—</h3>
+    <p id="call-status" class="muted">memanggil…</p>
+  </div>
+  <video id="local-video" class="local-video" autoplay playsinline muted></video>
+
+  <div class="call-controls">
+    <button id="ctl-mic" class="ctl" title="Mikrofon">🎙️</button>
+    <button id="ctl-camera" class="ctl" title="Kamera">📹</button>
+    <button id="ctl-screen" class="ctl" title="Bagikan layar">🖥️</button>
+    <button id="ctl-hangup" class="ctl danger" title="Akhiri">📵</button>
+  </div>
+</div>
+
+<!-- ── Incoming call ───────────────────────────────────────────────── -->
+<div id="incoming" class="incoming" hidden>
+  <div class="avatar big" id="incoming-avatar">?</div>
+  <div class="incoming-info">
+    <strong id="incoming-name">—</strong>
+    <span class="muted" id="incoming-kind">Panggilan masuk</span>
+  </div>
+  <div class="incoming-actions">
+    <button id="btn-decline" class="ctl danger" title="Tolak">📵</button>
+    <button id="btn-accept" class="ctl accept" title="Terima">📞</button>
+  </div>
+</div>
+
+<div id="modal" class="modal" hidden><div class="modal-card" id="modal-card"></div></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

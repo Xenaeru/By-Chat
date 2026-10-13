@@ -1,0 +1,14 @@
+node_modules/
+npm-debug.log*
+.DS_Store
+
+# Secrets — never commit these.
+.env
+.env.*
+!.env.example
+service-account*.json
+*firebase-adminsdk*.json
+google-application-credentials*.json
+
+# Local attachment blobs and anything else written at runtime.
+data/

@@ -1,0 +1,29 @@
+{
+  "name": "secure-chat",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WhatsApp-style chat with real end-to-end encryption. The server is a blind relay and never sees plaintext.",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22 <27"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test \"test/*.test.mjs\"",
+    "test:browser": "node scripts/browser-check.mjs",
+    "check-env": "node scripts/check-env.mjs",
+    "set-service-account": "node scripts/set-service-account.mjs",
+    "verify-token": "node scripts/verify-firebase-token.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
+    "express": "^4.19.2",
+    "firebase-admin": "^14.5.0",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.13.0",
+    "socket.io-client": "^4.7.5"
+  }
+}
