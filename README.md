@@ -251,15 +251,3 @@ Kriptonya beneran, tapi ini masih belum siap buat data yang beneran sensitif:
   voice note, hapus/edit pesan, atau pencarian dalam chat.
 - **Belum ada rate limiting** di relay dan endpoint lampiran.
 - **State server in-memory** (direktori kunci + antrian offline); restart = antrian hilang.
-
-## Yang belum bisa gw verifikasi
-
-Dua jalur ini butuh kredensial yang cuma bisa kamu bikin, jadi gw nggak bisa nge-tes ujungnya:
-
-- **Verifikasi ID token Firebase asli.** Kode path `firebase-admin` (termasuk dukungan
-  Auth Emulator) sudah ditulis, tapi yang terverifikasi jalan di sini baru driver `dev`.
-  Begitu `.env` kamu terisi, cek dengan login Google/nomor HP lalu pastikan server
-  menerima token tanpa error.
-- **Supabase Storage.** Endpoint signed-upload/signed-download sudah dites lewat driver
-  `local`, tapi panggilan sebenarnya ke Supabase butuh project kamu. Setelah `.env`
-  terisi, kirim satu file lalu pastikan bucket-nya berisi satu objek dengan nama acak.
