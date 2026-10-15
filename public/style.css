@@ -1336,3 +1336,315 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   .admin-top { padding: 14px; }
   .admin-toolbar .search { max-width: none; }
 }
+
+/* ==================================================================
+ * Pesan: balasan, reaksi, lampiran media, pilihan klik-kanan
+ *
+ * Semua di sini melayani satu hal: pesan harus bisa dibaca, dibalas,
+ * diteruskan, dan dihapus tanpa membuka layar lain. Beberapa tes browser
+ * memeriksa nama kelas di bawah, jadi ganti nama kelasnya berarti ganti
+ * tesnya juga.
+ * ================================================================== */
+
+.msg {
+  -webkit-touch-callout: none;
+  cursor: default;
+  transition: filter .18s ease, opacity .18s ease;
+}
+/* Di layar sentuh, tahan-untuk-pilih harus menang atas seleksi teks browser. */
+@media (pointer: coarse) {
+  .msg { user-select: none; -webkit-user-select: none; }
+}
+
+.msg-text { display: inline; }
+
+/* Pembatas hari, supaya percakapan panjang tetap punya patokan waktu. */
+.day-sep { align-self: center; margin: 14px 0 6px; transition: filter .18s ease, opacity .18s ease; }
+.day-sep span {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11.5px;
+  letter-spacing: .02em;
+}
+
+.msg.flash { box-shadow: 0 0 0 3px rgba(56, 198, 255, .45); }
+
+/* Kutipan balasan di dalam gelembung */
+.msg-quote {
+  display: block;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 6px 9px;
+  border: 0;
+  border-left: 3px solid var(--accent);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, .28);
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+}
+.msg-quote:hover { background: rgba(0, 0, 0, .42); }
+.msg-quote-name { display: block; font-weight: 700; font-size: 12px; color: var(--accent); }
+.msg-quote-text { display: block; color: rgba(238, 245, 255, .72); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg.out .msg-quote { border-left-color: rgba(255, 255, 255, .9); background: rgba(3, 12, 32, .26); }
+.msg.out .msg-quote:hover { background: rgba(3, 12, 32, .38); }
+.msg.out .msg-quote-name { color: #fff; }
+.msg.out .msg-quote-text { color: rgba(255, 255, 255, .85); }
+
+.msg-forwarded {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  font-style: italic;
+  color: rgba(238, 245, 255, .68);
+}
+.msg-forwarded .ico { width: 13px; height: 13px; }
+
+.msg.deleted { opacity: .75; }
+.msg-deleted {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-style: italic;
+  color: rgba(238, 245, 255, .72);
+}
+.msg-deleted .ico { width: 15px; height: 15px; }
+.msg.out .msg-deleted { color: rgba(255, 255, 255, .9); }
+
+/* Reaksi cepat yang menempel di bawah gelembung */
+.msg-reactions { display: flex; flex-wrap: wrap; gap: 3px; margin: 6px 0 -3px; }
+.msg-reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(4, 8, 15, .5);
+  border: 1px solid rgba(255, 255, 255, .1);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.msg-reaction b { font-weight: 600; font-size: 11px; color: rgba(238, 245, 255, .78); }
+.msg-reaction.mine { border-color: rgba(56, 198, 255, .55); background: rgba(56, 198, 255, .18); }
+
+/* Jejak kirim: jam, satu centang, dua centang */
+.msg-meta { display: inline-flex; align-items: center; justify-content: flex-end; gap: 3px; }
+.msg-meta .ico { width: 14px; height: 14px; stroke-width: 2.2; }
+.msg-meta .ico.read { color: #7ddcff; }
+.msg-meta .ico.warn { color: #ffe08a; }
+.msg-meta .star { width: 13px; height: 13px; color: #ffd479; }
+
+/* Lampiran: foto langsung jadi gambar, video/audio/file jadi kartu */
+.attach-media {
+  padding: 0;
+  border: 0;
+  background: none;
+  max-width: min(340px, 64vw);
+  overflow: hidden;
+}
+.attach-media:hover { background: none; }
+.attach-media img {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: rgba(0, 0, 0, .3);
+}
+.attach-icon { position: relative; }
+.attach-icon .ico { width: 19px; height: 19px; }
+.attach-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #041018;
+}
+.attach-badge .ico { width: 11px; height: 11px; }
+
+/* ── Pilihan pesan (klik kanan / tahan) ──────────────────────────────
+   `body.menu-open` yang membuat sisanya blur; yang dipilih tetap tajam. */
+.msg-menu { position: fixed; inset: 0; z-index: 60; }
+.msg-menu-catcher { position: absolute; inset: 0; }
+.msg-menu-quick,
+.msg-menu-list { position: absolute; animation: rise .16s cubic-bezier(.2, .9, .3, 1.1); }
+
+.msg-menu-quick {
+  display: flex;
+  gap: 2px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background: rgba(16, 26, 47, .96);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow);
+}
+.msg-menu-quick button {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  font-size: 21px;
+  line-height: 1;
+  transition: transform .12s, background .16s;
+}
+.msg-menu-quick button:hover { background: rgba(255, 255, 255, .1); transform: translateY(-2px) scale(1.06); }
+
+.msg-menu-list {
+  min-width: 216px;
+  max-width: min(300px, calc(100vw - 20px));
+  max-height: 62vh;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 16px;
+  background: rgba(14, 22, 40, .985);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow);
+}
+.msg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+}
+.msg-menu-item:hover { background: rgba(255, 255, 255, .075); }
+.msg-menu-item .ico { width: 18px; height: 18px; color: var(--muted); flex: none; }
+.msg-menu-item span { flex: 1; }
+.msg-menu-item small { font-size: 11.5px; color: var(--muted); }
+.msg-menu-item.danger,
+.msg-menu-item.danger .ico { color: var(--danger); }
+.msg-menu-sep { height: 1px; margin: 5px 8px; background: var(--line); }
+
+.msg.menu-target { box-shadow: 0 0 0 2px rgba(56, 198, 255, .5), 0 18px 40px -24px rgba(0, 0, 0, .95); }
+
+body.menu-open .sidebar,
+body.menu-open .chat-header,
+body.menu-open .composer,
+body.menu-open .reply-strip,
+body.menu-open .status-panel,
+body.menu-open .upload-bar { filter: blur(3px); opacity: .45; }
+body.menu-open .sidebar { pointer-events: none; }
+.messages.menu-open .msg:not(.menu-target),
+.messages.menu-open .system-note,
+.messages.menu-open .day-sep { filter: blur(2.4px); opacity: .34; }
+.chat-header, .composer, .sidebar, .reply-strip, .upload-bar { transition: filter .18s ease, opacity .18s ease; }
+
+/* ── Balas: strip di atas kolom ketik ─────────────────────────────── */
+.reply-strip {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 14px;
+  background: rgba(12, 21, 29, .9);
+  border-top: 1px solid var(--line);
+}
+.reply-strip-bar { width: 3px; align-self: stretch; border-radius: 3px; background: var(--accent); }
+.reply-strip-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.reply-strip-body strong { font-size: 12.5px; color: var(--accent); }
+.reply-strip-body .muted { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-strip .icon-btn { width: 30px; height: 30px; }
+
+/* ── Daftar tujuan "Teruskan" ─────────────────────────────────────── */
+.forward-list { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; }
+.forward-target {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.forward-target:hover { background: rgba(255, 255, 255, .07); }
+.forward-target .avatar { width: 38px; height: 38px; font-size: 15px; }
+.forward-target-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.forward-target-main strong { font-size: 14px; }
+.forward-target-main .muted { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Lihat media selayar penuh ─────────────────────────────────────
+   Foto/video dibuka di sini. Sengaja tidak pernah membuka tab baru: blob
+   URL cuma hidup selama dokumen ini ada, jadi tab baru akan jadi halaman
+   kosong — dan "unduh" bukan yang orang harapkan saat mengetuk foto. */
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: rgba(2, 5, 11, .97);
+  backdrop-filter: blur(8px);
+  animation: fade .16s ease;
+}
+.viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(7, 13, 26, .72);
+  border-bottom: 1px solid var(--line);
+}
+.viewer-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.viewer-title strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-title .muted { font-size: 11.5px; }
+.viewer-stage { display: grid; place-items: center; overflow: auto; padding: 16px; }
+.viewer-stage img,
+.viewer-stage video {
+  max-width: 100%;
+  max-height: calc(100vh - 130px);
+  border-radius: 12px;
+  background: #000;
+  box-shadow: 0 30px 70px -34px rgba(0, 0, 0, .95);
+}
+.viewer-stage audio { width: min(460px, 88vw); }
+.viewer-stage .viewer-note { color: var(--muted); font-size: 13.5px; }
+.viewer-loading {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px;
+  background: rgba(7, 13, 26, .94);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+.viewer-loading .spinner { width: 18px; height: 18px; border-width: 2px; }
+
+@media (max-width: 760px) {
+  .msg-menu-quick { padding: 4px 5px; }
+  .msg-menu-quick button { width: 34px; height: 34px; font-size: 19px; }
+  .msg-menu-list { min-width: 200px; }
+  .viewer-stage { padding: 10px; }
+  .viewer-stage img, .viewer-stage video { max-height: calc(100vh - 118px); }
+  .attach-media { max-width: 74vw; }
+}
+

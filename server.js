@@ -68,8 +68,17 @@ const calls = new Map();
 const avatars = new Map();
 /** statusId -> { id, from, at, members, payload } */
 const statuses = new Map();
+/**
+ * messageId -> { from, members, roomId }.
+ *
+ * Isi pesannya tetap tidak ada di sini — yang disimpan cuma siapa yang
+ * mengirim sebuah id. Itu yang membuat "hapus untuk semua orang" bisa
+ * dipercaya: pengirimnya sendiri tidak bisa diaku-aku oleh orang lain.
+ */
+const sentMessages = new Map();
 
 const MAX_INBOX = 500;
+const MAX_SENT_MESSAGES = 4000;
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 /** A status is gone after a day, like the one everybody is used to. */
 const STATUS_TTL = 24 * 60 * 60 * 1000;
@@ -123,6 +132,7 @@ app.get('/healthz', (_req, res) => {
     usernames: usernames.size(),
     accounts: accounts.size(),
     avatars: avatars.size,
+    trackedMessages: sentMessages.size,
     statuses: statuses.size(),
     calls: calls.size,
     moderation: { bans: moderation.bannedCount(), openReports: moderation.openReportCount() },
@@ -208,6 +218,12 @@ function adminUsers() {
 
 function broadcastDirectory() {
   io.emit('directory', publicDirectory());
+}
+
+/** Ingat pemilik sebuah id pesan, dengan batas jumlah supaya tidak tumbuh terus. */
+function rememberSentMessage(id, info) {
+  sentMessages.set(id, info);
+  while (sentMessages.size > MAX_SENT_MESSAGES) sentMessages.delete(sentMessages.keys().next().value);
 }
 
 function queueOrDeliver(uid, envelope) {
@@ -688,6 +704,8 @@ io.on('connection', (socket) => {
       at: Date.now(),
     };
 
+    rememberSentMessage(record.id, { from: uid, members, roomId: record.roomId });
+
     const delivered = [];
     const queued = [];
     for (const member of members) {
@@ -695,6 +713,32 @@ io.on('connection', (socket) => {
       (queueOrDeliver(member, record) === 'delivered' ? delivered : queued).push(member);
     }
     ack?.({ ok: true, id: record.id, at: record.at, delivered, queued });
+  });
+
+  /* ---- Hapus untuk semua orang ----------------------------------- *
+   * Siapa pemilik sebuah id ditentukan server, bukan klien: permintaan hapus
+   * diperiksa terhadap catatan pengiriman di atas. Yang diteruskan ke anggota
+   * ruangan cuma id-nya ("pesan ini sudah dihapus"), tanpa isi apa pun — server
+   * memang tidak pernah menyimpan isinya.
+   */
+  socket.on('message:delete', (data, ack) => {
+    if (!usernames.get(uid)) return ack?.({ ok: false, error: 'Pilih username dulu.' });
+
+    const id = String(data?.id || '');
+    const sent = sentMessages.get(id);
+    if (!sent) return ack?.({ ok: false, error: 'Pesan itu nggak dikenal server ini.' });
+    if (sent.from !== uid) {
+      return ack?.({ ok: false, error: 'Cuma pengirim aslinya yang bisa menghapus untuk semua orang.' });
+    }
+
+    const gone = { deleted: true, id, roomId: sent.roomId, from: uid, at: Date.now() };
+    const delivered = [];
+    const queued = [];
+    for (const member of sent.members) {
+      if (member === uid) continue;
+      (queueOrDeliver(member, gone) === 'delivered' ? delivered : queued).push(member);
+    }
+    ack?.({ ok: true, delivered, queued });
   });
 
   /* ---- Statuses -------------------------------------------------- *

@@ -170,6 +170,46 @@ try {
   await sleep(900);
   await shot(budi.page, '09-balasan.png');
 
+  /* 6b. Foto terenkripsi + penampil selayar penuh -------------------
+     Budi mengirim foto, Andi membukanya: hasilnya dibuka di atas chat, bukan
+     diunduh dan bukan di tab baru berisi blob:. */
+  const samplePath = path.join(TMP, 'contoh-foto.svg');
+  fs.writeFileSync(
+    samplePath,
+    '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320">' +
+      '<rect width="480" height="320" fill="#0b2144"/>' +
+      '<circle cx="150" cy="150" r="90" fill="#38c6ff"/>' +
+      '<rect x="240" y="70" width="180" height="180" rx="28" fill="#1f4bff"/>' +
+      '</svg>'
+  );
+
+  const photoInput = await budi.page.$('#file-input');
+  await photoInput.uploadFile(samplePath);
+  await budi.page.waitForFunction(() => document.querySelector('.msg.out .attach-media img'), { timeout: 20000 });
+  await andi.page.waitForFunction(() => document.querySelector('.msg .attach'), { timeout: 20000 });
+  await sleep(400);
+  await shot(budi.page, '12-foto-di-chat.png');
+
+  await andi.page.click('.msg .attach');
+  await andi.page.waitForSelector('#viewer:not([hidden]) .viewer-stage img', { timeout: 30000 });
+  await sleep(600);
+  await shot(andi.page, '13-foto-selayar-penuh.png');
+  await andi.page.click('#viewer-close');
+  await andi.page.waitForSelector('#viewer[hidden]');
+
+  /* 6c. Pilihan pesan: klik kanan → sisanya diblur, yang dipilih tajam */
+  const targetBubble = await andi.page.$('.msg.out');
+  const targetPoint = await targetBubble.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await andi.page.mouse.click(targetPoint.x, targetPoint.y, { button: 'right' });
+  await andi.page.waitForSelector('#msg-menu:not([hidden])');
+  await sleep(500);
+  await shot(andi.page, '14-pilihan-pesan.png');
+  await andi.page.keyboard.press('Escape');
+  await andi.page.waitForSelector('#msg-menu[hidden]');
+
   /* 7. Laporan dari header chat */
   await andi.page.click('#btn-report');
   await andi.page.waitForSelector('#report-reason');

@@ -32,8 +32,9 @@ disk lokal, dan panggilan pakai STUN publik. Cukup buat nyoba semuanya di lokal.
 
 | | |
 |---|---|
-| **Chat** | 1:1 dan grup, semua terenkripsi. Status online, indikator menulis, badge belum dibaca, ✓/✓✓, antrian pesan offline. |
-| **File** | Enkripsi di browser sebelum dikirim, chunked AES-GCM, progress bar, gambar tampil inline. Nama file dan kuncinya cuma ada di dalam pesan terenkripsi. |
+| **Chat** | 1:1 dan grup, semua terenkripsi. Status online, indikator menulis, badge belum dibaca, ✓/✓✓, antrian pesan offline, pembatas hari. |
+| **Pilihan pesan** | Klik kanan (mouse) atau tahan pesan (hp): yang lain diblur, yang dipilih tetap tajam, lalu muncul reaksi cepat + **Balas, Teruskan, Salin, Beri bintang, Laporkan, Hapus untuk saya, Hapus untuk semua orang**. |
+| **File** | Enkripsi di browser sebelum dikirim, chunked AES-GCM, progress bar. Foto/video dibuka **selayar penuh** di dalam aplikasi (bukan diunduh, bukan tab blob: baru); dokumen lain baru diunduh. Nama file dan kuncinya cuma ada di dalam pesan terenkripsi. |
 | **Panggilan** | Suara, video, dan bagikan layar 1:1 lewat WebRTC. Nyalakan kamera di tengah panggilan suara tanpa renegosiasi. |
 | **Status** | Teks atau foto, hilang sendiri setelah 24 jam. Isinya tetap terenkripsi end-to-end, dan yang sudah dilihat ditandai cincin ala WhatsApp. |
 | **Profil** | Username unik + foto profil yang bisa diganti dari Pengaturan. Foto profil **nggak** dienkripsi (memang buat dilihat orang) — lihat catatan di bawah. |
@@ -241,6 +242,7 @@ meneruskan paket yang sudah terenkripsi — TURN lihat ciphertext, sama kayak se
 | Siapa menelepon siapa dan kapan | audio/video panggilan |
 | Siapa memasang status dan kapan | isi status (teks maupun fotonya) |
 | Laporan yang **diketik pelapornya** + siapa diblokir dan alasannya | isi percakapan yang dilaporkan |
+| Siapa yang mengirim sebuah id pesan (buat "hapus untuk semua orang") | isi pesan itu sendiri |
 | **Foto profil** apa adanya | — |
 
 Email dan nomor HP tetap ada di server (dari penyedia login yang sudah memverifikasinya), tapi
@@ -276,8 +278,8 @@ public/admin.js    Ambil data admin lewat REST dan render; nggak buka socket.
 ## Testing
 
 ```
-npm test              # 92 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling, tooling
-npm run test:browser  # 108 cek: UI asli di Chrome, termasuk panggilan WebRTC beneran
+npm test              # 94 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling, tooling
+npm run test:browser  # 174 cek: UI asli di Chrome, termasuk panggilan WebRTC beneran
 CALL_DEBUG=1 npm run test:browser   # nyalain jejak negosiasi WebRTC di console
 ```
 
@@ -306,6 +308,24 @@ Di jalur yang sama juga diuji: melaporkan orang dari header chat, halaman admin 
 laporannya, memblokir akun itu (sesi yang sedang jalan di sisi korban langsung berhenti dan
 menampilkan alasannya), lalu membuka blokirnya lagi dan akunnya jalan seperti semula.
 
+Yang juga diuji di browser: klik kanan **dan** tahan di hp membuka menu yang sama, pesan lain
+benar-benar diblur (filter CSS-nya diperiksa, bukan cuma class-nya), balasan membawa kutipan
+beserta nama pengirim yang benar di tiap sisi, teruskan mengirim ulang ke chat tujuan, salin
+menaruh teksnya di clipboard (termasuk saat Clipboard API ditolak), bintang, reaksi sampai ke
+sisi lain, **hapus untuk saya** cuma menghilangkan di perangkat itu, **hapus untuk semua orang**
+mengubah gelembung di kedua sisi jadi "Pesan ini sudah dihapus", dan foto dibuka selayar penuh
+tanpa pindah tab (dimensi + byte hasil dekripsi dicek di dalam penampilnya).
+
+Video ikut diuji dengan file asli: browser di jalur tes ini merekam sendiri video WebM dari
+canvas, lalu memastikan penerimanya bisa membukanya di pemutar selayar penuh — dengan kontrol,
+ter-dekode (`videoWidth > 0`), dan tanpa berpindah halaman atau membuka tab baru.
+
+Soal panggilan, yang diperiksa bukan cuma "track-nya ada": energinya diukur pakai `AnalyserNode`
+— mikrofon sendiri dan suara lawan bicara — plus elemen pemutarnya harus benar-benar berjalan
+(bukan `paused`) dan tidak dalam keadaan mute. Keberadaan track saja pernah menyembunyikan bug
+"panggilan tersambung tapi senyap": elemen audionya berhenti di keadaan paused, jadi tidak ada
+suara yang keluar walau semua track hidup.
+
 ## Batasan — baca ini
 
 Kriptonya beneran, tapi ini masih belum siap buat data yang beneran sensitif:
@@ -321,10 +341,26 @@ Kriptonya beneran, tapi ini masih belum siap buat data yang beneran sensitif:
   dan siapa menelepon siapa.
 - **Grup tanpa kontrol akses.** Daftar anggota dikirim dari client dan dipercaya; nggak ada
   admin, nggak bisa nambah/hapus anggota setelah grup dibikin.
-- **Panggilan cuma 1:1.** Panggilan grup butuh SFU, itu pekerjaan terpisah.
+- **Panggilan cuma 1:1.** Panggilan grup butuh SFU, itu pekerjaan terpisah. Pemutaran suara
+  panggilan dimulai eksplisit (`play()`), dan kalau browser menolaknya karena kebijakan autoplay,
+  pengguna diminta mengetuk layar panggilan sekali — ketukan itu memicu percobaan ulang. Diverifikasi
+  di Chrome; Safari/iOS belum.
+- **TURN belum dikonfigurasi secara default.** Tanpa TURN, sebagian panggilan di jaringan
+  ketat/CGNAT bisa gagal tersambung (bukan senyap — memang tidak tersambung).
 - **Nggak ada multi-device.** Satu akun aktif di satu jendela; login di tempat lain bikin
-  sesi lama berhenti. Belum ada lampiran gambar berukuran besar buat panggilan; belum ada
-  voice note, hapus/edit pesan, atau pencarian dalam chat.
+  sesi lama berhenti. Belum ada panggilan dengan lampiran gambar besar; belum ada voice
+  note, edit pesan, atau pencarian dalam chat.
+- **"Hapus untuk semua orang" diperiksa server, tapi cuma sampai restart.** Server menyimpan
+  siapa pengirim sebuah id pesan (bukan isinya), jadi orang lain memang nggak bisa menghapus
+  pesanmu. Catatan itu hidup di memori, jadi setelah server restart penghapusan untuk semua
+  orang ditolak dan yang tersisa cuma "hapus untuk saya". Penerima yang **sedang offline** tetap
+  dapat kabarnya, karena kabar itu ikut mengantre seperti pesan biasa.
+- **Reaksi, bintang, dan "hapus untuk saya" disimpan di perangkat masing-masing.** Reaksi
+  dikirim sebagai pesan terenkripsi (jadi server tetap nggak tahu emoji-nya) dan berlaku untuk
+  satu akun satu pesan; bintang cuma ada di hp/PC kamu sendiri.
+- **Balasan mengutip potongan teks, bukan menyalin riwayat.** Kutipannya ikut di dalam pesan
+  terenkripsi (nama pengirimnya dihitung ulang di tiap perangkat), jadi wajar saja kalau
+  kutipan bilang "Pesan ini sudah dihapus" ketika aslinya sudah dihapus.
 - **Status cuma hidup di memori server.** Dia hilang kalau server restart (jatah 24 jamnya juga
   ikut hilang). Username dan foto profil tidak, karena keduanya disimpan permanen.
 - **Status dibagikan ke semua kontak.** Audience-nya seluruh isi direktori, sama seperti

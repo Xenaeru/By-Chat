@@ -70,6 +70,61 @@ function check(label, condition, detail = '') {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const display = (page, sel) => page.$eval(sel, (e) => getComputedStyle(e).display);
 
+/* ---- Alat bantu interaksi ------------------------------------------ *
+ * Klik dan sentuhan cuma diproses untuk halaman yang sedang tampil, dan dua
+ * halaman di sini bergantian jadi yang tampil. Jadi setiap kali mau
+ * berinteraksi, halamannya dibawa ke depan dulu. Titik kliknya juga dihitung
+ * dari elemennya sendiri setelah dibawa ke tengah area gulir: `page.click`
+ * bawaan kadang memakai titik yang ketutup kolom ketik, jadi kliknya tidak
+ * sampai ke tujuannya. */
+const front = (page) => page.bringToFront();
+
+const menuActions = (page) =>
+  page.$$eval('#msg-menu-list .msg-menu-item', (nodes) => nodes.map((node) => node.dataset.action));
+
+const bubbleWith = async (page, text) => {
+  const handles = await page.$$('.msg');
+  for (const handle of handles) {
+    const content = await handle.evaluate((node) => node.textContent);
+    if (content.includes(text)) return handle;
+  }
+  throw new Error(`pesan "${text}" nggak ada di layar`);
+};
+
+const clickAt = async (page, target) => {
+  await front(page);
+  const handle = typeof target === 'string' ? await page.$(target) : target;
+  const point = await handle.evaluate((node) => {
+    node.scrollIntoView({ block: 'center' });
+    const rect = node.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.click(point.x, point.y);
+};
+
+const openMenu = async (page, target, { longPress = false } = {}) => {
+  await front(page);
+  const handle = typeof target === 'string' ? await page.$(target) : target;
+  const point = await handle.evaluate((node) => {
+    node.scrollIntoView({ block: 'center' });
+    const rect = node.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  if (longPress) {
+    // Tahan: mousedown ditahan lebih lama dari ambang 420 ms di app.js.
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    await sleep(700);
+    await page.mouse.up();
+  } else {
+    await page.mouse.click(point.x, point.y, { button: 'right' });
+  }
+  await page.waitForSelector('#msg-menu:not([hidden])', { timeout: 5000 });
+};
+
+const pickMenuAction = (page, action) =>
+  clickAt(page, `#msg-menu-list .msg-menu-item[data-action="${action}"]`);
+
 /** The dev driver derives the uid from the name, so we can predict it here. */
 const devUid = (name) => 'dev-' + crypto.createHash('sha256').update(name).digest('hex').slice(0, 20);
 
@@ -631,12 +686,25 @@ try {
   const fileInput = await andi.page.$('#file-input');
   await fileInput.uploadFile(sample.file);
 
-  await andi.page.waitForFunction(
-    (name) => [...document.querySelectorAll('.msg.out .attach-name')].some((n) => n.textContent.includes(name)),
-    { timeout: 20000 },
-    sample.name
-  );
+  await andi.page.waitForFunction(() => document.querySelector('.msg.out .attach-media img')?.naturalWidth > 0, {
+    timeout: 20000,
+  });
   check('Andi mengirim lampiran terenkripsi', true);
+  const ownPreview = await andi.page.$eval('.msg.out .attach-media img', (img) => ({
+    src: img.src,
+    width: img.naturalWidth,
+  }));
+  check(
+    'Pengirimnya langsung melihat fotonya sendiri sebagai gambar di chat',
+    ownPreview.src.startsWith('blob:') && ownPreview.width === 200,
+    JSON.stringify(ownPreview)
+  );
+
+  await andi.page.click('.msg.out .attach-media');
+  await andi.page.waitForSelector('#viewer:not([hidden]) .viewer-stage img', { timeout: 10000 });
+  check('Mengklik foto sendiri membuka penampil selayar penuh', true);
+  await andi.page.click('#viewer-close');
+  await andi.page.waitForSelector('#viewer[hidden]', { timeout: 5000 });
 
   // Whatever landed on disk must be ciphertext under a meaningless name.
   const storedFiles = listFiles(process.env.LOCAL_STORAGE_DIR).filter((file) => !blobsBefore.has(file));
@@ -660,11 +728,42 @@ try {
   );
   check('Lampiran sampai ke Budi', true);
 
-  await budi.page.click('.msg .attach');
-  await budi.page.waitForSelector('.msg .attach img', { timeout: 20000 });
+  /* Klik pada lampiran = buka selayar penuh. Bukan unduh, dan bukan tab baru
+     berisi blob: yang cuma jadi halaman kosong. */
+  await clickAt(budi.page, '.msg .attach');
+  await budi.page.waitForSelector('#viewer:not([hidden]) .viewer-stage img', { timeout: 30000 });
+  check('Klik foto membuka penampil selayar penuh, bukan mengunduh', true);
+
+  const viewerShot = await budi.page.evaluate(() => {
+    const viewer = document.querySelector('#viewer');
+    const img = document.querySelector('#viewer-stage img');
+    const rect = viewer.getBoundingClientRect();
+    return {
+      fullscreen: rect.width >= window.innerWidth - 1 && rect.height >= window.innerHeight - 1,
+      blob: img.src.startsWith('blob:'),
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+    };
+  });
+  check('Penampilnya benar-benar menutupi seluruh layar', viewerShot.fullscreen, JSON.stringify(viewerShot));
+  check('Fotonya ditampilkan sebagai blob lokal, bukan tautan server', viewerShot.blob === true);
+  check(
+    'Dimensi fotonya utuh setelah didekripsi',
+    viewerShot.width === 200 && viewerShot.height === 200,
+    JSON.stringify(viewerShot)
+  );
+
+  // Ketukan di fotonya sendiri tidak boleh melempar ke halaman blob:.
+  const urlBefore = budi.page.url();
+  await budi.page.click('#viewer-stage img');
+  await sleep(200);
+  check('Ketuk foto di dalam penampil tidak membuka halaman blob', budi.page.url() === urlBefore, budi.page.url());
+  check('Penampilnya tetap terbuka setelah fotonya diketuk', (await display(budi.page, '#viewer')) !== 'none');
+  const pages = await budi.context.pages();
+  check('Tidak ada tab baru yang terbuka karenanya', pages.length === 1, `${pages.length} halaman`);
 
   const decrypted = await budi.page.evaluate(async () => {
-    const img = document.querySelector('.msg .attach img');
+    const img = document.querySelector('#viewer-stage img');
     const bytes = await fetch(img.src).then((r) => r.arrayBuffer());
     const digest = await crypto.subtle.digest('SHA-256', bytes);
     return {
@@ -678,6 +777,375 @@ try {
     decrypted.sha === sample.sha256,
     `${decrypted.sha} != ${sample.sha256}`
   );
+
+  await budi.page.click('#viewer-close');
+  await budi.page.waitForSelector('#viewer[hidden]', { timeout: 5000 });
+  await budi.page.waitForSelector('.msg .attach-media img', { timeout: 10000 });
+  check('Setelah dibuka sekali, fotonya tampil sebagai thumbnail di chat', true);
+
+  await clickAt(budi.page, '.msg .attach-media');
+  await budi.page.waitForSelector('#viewer:not([hidden]) .viewer-stage img', { timeout: 10000 });
+  check('Klik thumbnail yang sudah terbuka juga membuka penampil lagi', true);
+  await budi.page.click('#viewer-close');
+  await budi.page.waitForSelector('#viewer[hidden]', { timeout: 5000 });
+
+  /* ---- 3b. Video: diputar di penampil, bukan diunduh ---------------
+     Videonya dibuat di browser ini juga (canvas + MediaRecorder), jadi yang
+     diuji benar-benar file video, bukan byte acak berlabel video. */
+  // Halaman yang tidak sedang tampil tidak menghasilkan frame canvas, jadi Andi
+  // harus jadi tab aktif dulu sebelum merekam.
+  await andi.page.bringToFront();
+  const videoBase64 = await andi.page.evaluate(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 160;
+    canvas.height = 120;
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+    // VP8 eksplisit + requestData(): tanpa keduanya, encoder di Chrome headless
+    // kadang cuma menghasilkan header kosong.
+    const recorder = new MediaRecorder(canvas.captureStream(25), { mimeType: 'video/webm;codecs=vp8' });
+    const chunks = [];
+    recorder.ondataavailable = (event) => chunks.push(event.data);
+    const stopped = new Promise((resolve) => (recorder.onstop = resolve));
+    recorder.start(1000);
+    for (let i = 0; i < 40; i++) {
+      ctx.fillStyle = i % 2 ? '#38c6ff' : '#1f4bff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 50)));
+    }
+    recorder.requestData();
+    recorder.stop();
+    await stopped;
+    canvas.remove();
+    const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  });
+  check('Video contoh benar-benar terbentuk', videoBase64.length > 2000, `${videoBase64.length} byte base64`);
+
+  await andi.page.evaluate((base64) => {
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const file = new File([bytes], 'contoh-video.webm', { type: 'video/webm' });
+    const input = document.querySelector('#file-input');
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, videoBase64);
+
+  await andi.page.waitForFunction(
+    () => [...document.querySelectorAll('.msg.out .attach-video')].some((node) => node.querySelector('.attach-badge')),
+    { timeout: 30000 }
+  );
+  check('Video terkirim sebagai kartu dengan tanda putar', true);
+
+  await budi.page.waitForFunction(
+    () => [...document.querySelectorAll('.msg .attach-video')].some((node) => node.querySelector('.attach-name')?.textContent.includes('contoh-video.webm')),
+    { timeout: 30000 }
+  );
+  const videoUrlBefore = budi.page.url();
+  await clickAt(budi.page, '.msg .attach-video');
+  await budi.page.waitForSelector('#viewer:not([hidden]) .viewer-stage video', { timeout: 30000 });
+  await budi.page.waitForFunction(() => document.querySelector('#viewer-stage video')?.readyState >= 1, {
+    timeout: 15000,
+  });
+
+  const videoState = await budi.page.evaluate(() => {
+    const video = document.querySelector('#viewer-stage video');
+    const viewer = document.querySelector('#viewer').getBoundingClientRect();
+    return {
+      blob: video.src.startsWith('blob:'),
+      controls: video.controls,
+      width: video.videoWidth,
+      fullscreen: viewer.width >= window.innerWidth - 1 && viewer.height >= window.innerHeight - 1,
+      saveVisible: !document.querySelector('#viewer-save').hidden,
+    };
+  });
+  check('Klik video membuka pemutarnya, bukan mengunduh file', true);
+  check('Videonya benar-benar ter-dekode dan siap diputar', videoState.width > 0, JSON.stringify(videoState));
+  check('Pemutarnya punya kontrol', videoState.controls === true, JSON.stringify(videoState));
+  check('Sumbernya blob lokal (server tetap nggak lihat isinya)', videoState.blob === true);
+  check('Pemutar video menutupi seluruh layar', videoState.fullscreen, JSON.stringify(videoState));
+  check('Tombol simpan ke perangkat tetap tersedia di penampil', videoState.saveVisible === true);
+  check('Membuka video tidak memindahkan halaman', budi.page.url() === videoUrlBefore, budi.page.url());
+  check('Membuka video tidak membuka tab baru', (await budi.context.pages()).length === 1);
+
+  await budi.page.click('#viewer-close');
+  await budi.page.waitForSelector('#viewer[hidden]', { timeout: 5000 });
+
+  /* ---- 3c. Pilihan pesan: klik kanan, tahan, balas, teruskan, hapus ---- */
+  // Tahan di pesan (jalur layar sentuh) membuka baris reaksi + daftar pilihan.
+  await openMenu(budi.page, '.msg:not(.out)', { longPress: true });
+  const quickReactions = await budi.page.$$eval('#msg-menu-quick button', (nodes) =>
+    nodes.map((node) => node.textContent)
+  );
+  check('Tahan di pesan membuka baris reaksi cepat', quickReactions.length >= 6, quickReactions.join(' '));
+
+  const blurState = await budi.page.evaluate(() => {
+    const messages = [...document.querySelectorAll('.msg')];
+    const others = messages.filter((node) => !node.classList.contains('menu-target'));
+    const target = document.querySelector('.msg.menu-target');
+    return {
+      others: others.length,
+      othersBlurred: others.every((node) => getComputedStyle(node).filter !== 'none'),
+      targetSharp: target ? getComputedStyle(target).filter === 'none' : false,
+      sidebarBlurred: getComputedStyle(document.querySelector('.sidebar')).filter !== 'none',
+    };
+  });
+  check('Ada pesan lain yang ikut diblur', blurState.others > 0, JSON.stringify(blurState));
+  check('Pesan lain diblur saat pilihan terbuka', blurState.othersBlurred, JSON.stringify(blurState));
+  check('Pesan yang dipilih tetap tajam', blurState.targetSharp, JSON.stringify(blurState));
+  check('Sidebar dan kolom chat ikut diblur', blurState.sidebarBlurred, JSON.stringify(blurState));
+
+  const othersActions = await menuActions(budi.page);
+  check(
+    'Pesan orang lain menawarkan Balas, Teruskan, Salin, Bintang, Laporkan, Hapus untuk saya',
+    ['reply', 'forward', 'copy', 'star', 'report', 'delete-me'].every((id) => othersActions.includes(id)),
+    othersActions.join(' ')
+  );
+  check(
+    'Pesan orang lain tidak menawarkan Hapus untuk semua orang',
+    !othersActions.includes('delete-all'),
+    othersActions.join(' ')
+  );
+
+  await budi.page.keyboard.press('Escape');
+  await budi.page.waitForSelector('#msg-menu[hidden]', { timeout: 5000 });
+  check(
+    'Escape menutup pilihan dan tampilan kembali normal',
+    await budi.page.$eval('body', (node) => !node.classList.contains('menu-open'))
+  );
+
+  // Setiap tombol di daftar harus benar-benar mengerjakan sesuatu. Laporkan
+  // membuka form laporan untuk orang yang mengirim pesan itu.
+  await openMenu(budi.page, await bubbleWith(budi.page, 'rahasia dari andi'));
+  await pickMenuAction(budi.page, 'report');
+  await budi.page.waitForSelector('#modal:not([hidden]) #report-reason', { timeout: 5000 });
+  const reportTitle = await budi.page.$eval('.modal-card h3', (node) => node.textContent);
+  check('Laporkan dari menu membuka form laporan untuk pengirimnya', /andi/i.test(reportTitle), reportTitle);
+  await budi.page.click('.modal-card [data-close]');
+  await budi.page.waitForSelector('#modal[hidden]', { timeout: 5000 });
+
+  await openMenu(andi.page, '.msg.out');
+  const ownActions = await menuActions(andi.page);
+  check('Pesan sendiri menawarkan Hapus untuk semua orang', ownActions.includes('delete-all'), ownActions.join(' '));
+  check('Pesan sendiri tidak menawarkan Laporkan', !ownActions.includes('report'), ownActions.join(' '));
+
+  /* ---- Balas ---- */
+  await pickMenuAction(andi.page, 'reply');
+  await andi.page.waitForSelector('#reply-strip:not([hidden])', { timeout: 5000 });
+  const strip = await andi.page.evaluate(() => ({
+    name: document.querySelector('#reply-strip-name').textContent,
+    preview: document.querySelector('#reply-strip-preview').textContent,
+  }));
+  check('Balas menampilkan kutipan pesan yang dibalas', strip.preview.includes('rahasia dari andi'), JSON.stringify(strip));
+  check('Kutipan menyebut pengirimnya', strip.name === 'Kamu', strip.name);
+
+  const replyText = 'balasan andi yang terenkripsi';
+  await andi.page.type('#composer-input', replyText);
+  await andi.page.click('.send');
+  await andi.page.waitForFunction(
+    (text) => [...document.querySelectorAll('.msg.out')].some((node) => node.textContent.includes(text)),
+    { timeout: 10000 },
+    replyText
+  );
+  check('Strip balasan hilang lagi setelah pesannya terkirim', await andi.page.$eval('#reply-strip', (node) => node.hidden));
+
+  await budi.page.waitForFunction(
+    (text) =>
+      [...document.querySelectorAll('.msg')].some(
+        (node) => node.querySelector('.msg-quote-text') && node.textContent.includes(text)
+      ),
+    { timeout: 15000 },
+    replyText
+  );
+  const quoted = await budi.page.evaluate(() => {
+    const node = [...document.querySelectorAll('.msg')].find((entry) => entry.querySelector('.msg-quote'));
+    return {
+      name: node.querySelector('.msg-quote-name').textContent,
+      text: node.querySelector('.msg-quote-text').textContent,
+    };
+  });
+  check('Budi melihat balasannya lengkap dengan kutipan', quoted.text.includes('rahasia dari andi'), JSON.stringify(quoted));
+  check('Kutipannya menyebut nama pengirim aslinya', quoted.name === 'andi', quoted.name);
+
+  // Kutipannya harus benar-benar bisa diketuk: tidak tertutup kolom ketik atau
+  // elemen lain yang menempel di atasnya.
+  const quoteHit = await budi.page.evaluate(() => {
+    const quote = document.querySelector('.msg-quote');
+    if (!quote) return { count: 0 };
+    const rect = quote.getBoundingClientRect();
+    const point = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+    const top = document.elementFromPoint(point.x, point.y);
+    return { count: document.querySelectorAll('.msg-quote').length, inQuote: Boolean(top && quote.contains(top)), top: top?.className || top?.tagName };
+  });
+  check('Kutipan balasan bisa diketuk (nggak ketutup apa pun)', quoteHit.inQuote === true, JSON.stringify(quoteHit));
+
+  // Ketukan asli di titik tengah kutipan sudah dipastikan mengenai kutipannya
+  // oleh pemeriksaan geometri di atas. Yang diuji di sini perilakunya: mengetuk
+  // kutipan membawa pesan aslinya ke tengah dan menyorotnya.
+  const jumped = await budi.page.evaluate(async () => {
+    const quote = document.querySelector('.msg-quote');
+    quote.click();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const flashed = document.querySelector('.msg.flash');
+    return {
+      flashed: flashed ? flashed.textContent : null,
+      flashedIsTheReplyBubble: flashed ? Boolean(flashed.querySelector('.msg-quote')) : null,
+    };
+  });
+  check(
+    'Ketuk kutipan menyorot pesan aslinya',
+    Boolean(jumped.flashed) && jumped.flashed.includes('rahasia dari andi'),
+    JSON.stringify(jumped)
+  );
+  check('Yang disorot bukan gelembung balasannya sendiri', jumped.flashedIsTheReplyBubble === false, JSON.stringify(jumped));
+
+  /* ---- Salin ----
+     Clipboard OS tidak bisa dibaca dari Chrome headless di sini (izinnya
+     ditolak), jadi yang diperiksa adalah teks yang benar-benar diserahkan ke
+     clipboard API — dan bahwa jalan terakhirnya tetap dipakai kalau API itu
+     menolak. */
+  await andi.page.bringToFront();
+  await andi.page.evaluate(() => {
+    window.__copied = null;
+    Clipboard.prototype.writeText = function (text) {
+      window.__copied = text;
+      return Promise.resolve();
+    };
+  });
+
+  await openMenu(andi.page, await bubbleWith(andi.page, 'rahasia dari andi'));
+  await pickMenuAction(andi.page, 'copy');
+  const copyState = await andi.page.evaluate(() => ({
+    copied: window.__copied,
+    toast: document.querySelector('#toast').hidden ? '' : document.querySelector('#toast').textContent,
+  }));
+  check('Salin menyerahkan teks pesannya ke clipboard', copyState.copied === andiMessage, JSON.stringify(copyState));
+  check('Salin memberi kabar ke pengguna', /disalin/i.test(copyState.toast), copyState.toast);
+
+  // Clipboard API ditolak (misalnya di server tanpa HTTPS): harus tetap jalan.
+  await andi.page.evaluate(() => {
+    Clipboard.prototype.writeText = () => Promise.reject(new Error('write permission denied'));
+    window.__execCopy = 0;
+    const original = document.execCommand.bind(document);
+    document.execCommand = (command) => {
+      window.__execCopy += 1;
+      return original(command);
+    };
+  });
+  await openMenu(andi.page, await bubbleWith(andi.page, 'rahasia dari andi'));
+  await pickMenuAction(andi.page, 'copy');
+  await sleep(150);
+  const fallback = await andi.page.evaluate(() => ({
+    calls: window.__execCopy,
+    toast: document.querySelector('#toast').hidden ? '' : document.querySelector('#toast').textContent,
+  }));
+  check('Kalau Clipboard API ditolak, salinan tetap jalan', fallback.calls === 1, JSON.stringify(fallback));
+  check('Pengguna tetap dikabari pesannya disalin', /disalin/i.test(fallback.toast), fallback.toast);
+
+  /* ---- Beri bintang ---- */
+  await openMenu(andi.page, await bubbleWith(andi.page, 'rahasia dari andi'));
+  await pickMenuAction(andi.page, 'star');
+  await andi.page.waitForFunction(
+    (text) =>
+      [...document.querySelectorAll('.msg.out')].some(
+        (node) => node.textContent.includes(text) && node.querySelector('.msg-meta .star')
+      ),
+    { timeout: 5000 },
+    'rahasia dari andi'
+  );
+  check('Beri bintang menandai pesannya', true);
+
+  await openMenu(andi.page, await bubbleWith(andi.page, 'rahasia dari andi'));
+  const starredActions = await andi.page.evaluate(
+    () => document.querySelector('#msg-menu-list .msg-menu-item[data-action="star"] span').textContent
+  );
+  check('Pilihannya berubah jadi Lepas bintang', /lepas bintang/i.test(starredActions), starredActions);
+  await andi.page.keyboard.press('Escape');
+  await andi.page.waitForSelector('#msg-menu[hidden]', { timeout: 5000 });
+
+  /* ---- Teruskan ---- */
+  await openMenu(andi.page, await bubbleWith(andi.page, 'rahasia dari andi'));
+  await pickMenuAction(andi.page, 'forward');
+  await andi.page.waitForSelector('#modal:not([hidden]) .forward-target', { timeout: 5000 });
+  await clickAt(andi.page, '.forward-target');
+  await andi.page.waitForSelector('#modal[hidden]', { timeout: 5000 });
+  await andi.page.waitForFunction(
+    () => [...document.querySelectorAll('.msg.forwarded, .msg')].some((node) => node.querySelector('.msg-forwarded')),
+    { timeout: 10000 }
+  );
+  check('Teruskan mengirim ulang pesannya ke chat tujuan', true);
+  await budi.page.waitForFunction(
+    () => [...document.querySelectorAll('.msg')].some((node) => node.querySelector('.msg-forwarded')),
+    { timeout: 15000 }
+  );
+  const forwarded = await budi.page.evaluate(() => {
+    const node = [...document.querySelectorAll('.msg')].find((entry) => entry.querySelector('.msg-forwarded'));
+    return node.textContent;
+  });
+  check('Budi menerima pesan yang diteruskan beserta isinya', forwarded.includes('rahasia dari andi'), forwarded);
+
+  /* ---- Reaksi cepat ---- */
+  await openMenu(budi.page, await bubbleWith(budi.page, 'rahasia dari andi'));
+  await clickAt(budi.page, '#msg-menu-quick button[data-reaction="👍"]');
+  await budi.page.waitForSelector('.msg .msg-reaction', { timeout: 5000 });
+  const reaction = await budi.page.$eval('.msg .msg-reaction', (node) => ({
+    emoji: node.dataset.emoji,
+    mine: node.classList.contains('mine'),
+  }));
+  check('Reaksi cepat menempel di pesannya', reaction.emoji === '👍', JSON.stringify(reaction));
+  check('Reaksi sendiri ditandai', reaction.mine === true, JSON.stringify(reaction));
+  await andi.page.waitForFunction(
+    () => [...document.querySelectorAll('.msg .msg-reaction')].some((node) => node.dataset.emoji === '👍'),
+    { timeout: 15000 }
+  );
+  check('Reaksinya sampai ke perangkat Andi juga', true);
+
+  /* ---- Hapus untuk saya ---- */
+  const doomedForMe = 'pesan yang cuma aku hapus';
+  await andi.page.bringToFront();
+  await andi.page.type('#composer-input', doomedForMe);
+  await andi.page.click('.send');
+  await budi.page.waitForFunction(
+    (text) => [...document.querySelectorAll('.msg')].some((node) => node.textContent.includes(text)),
+    { timeout: 15000 },
+    doomedForMe
+  );
+  await openMenu(andi.page, await bubbleWith(andi.page, doomedForMe));
+  await pickMenuAction(andi.page, 'delete-me');
+  await andi.page.waitForFunction(
+    (text) => ![...document.querySelectorAll('.msg')].some((node) => node.textContent.includes(text)),
+    { timeout: 5000 },
+    doomedForMe
+  );
+  check('Hapus untuk saya menghilangkan pesannya di perangkat itu saja', true);
+  const stillOnBudi = await budi.page.$$eval('.msg', (nodes) =>
+    nodes.some((node) => node.textContent.includes('cuma aku hapus'))
+  );
+  check('Hapus untuk saya tidak menyentuh perangkat orang lain', stillOnBudi === true);
+
+  /* ---- Hapus untuk semua orang ---- */
+  const doomedForAll = 'pesan yang dihapus buat semua orang';
+  await andi.page.type('#composer-input', doomedForAll);
+  await andi.page.click('.send');
+  await budi.page.waitForFunction(
+    (text) => [...document.querySelectorAll('.msg')].some((node) => node.textContent.includes(text)),
+    { timeout: 15000 },
+    doomedForAll
+  );
+  await openMenu(andi.page, await bubbleWith(andi.page, doomedForAll));
+  await pickMenuAction(andi.page, 'delete-all');
+  await budi.page.waitForFunction(() => [...document.querySelectorAll('.msg.deleted')].length > 0, { timeout: 15000 });
+  const tombstone = await budi.page.evaluate(() => {
+    const node = [...document.querySelectorAll('.msg.deleted')].at(-1);
+    return node.textContent;
+  });
+  check('Budi melihat pesannya berubah jadi "sudah dihapus"', /sudah dihapus/i.test(tombstone), tombstone);
+  check('Isi pesan yang dihapus benar-benar hilang dari layar Budi', !tombstone.includes('buat semua orang'), tombstone);
+  await andi.page.waitForFunction(() => [...document.querySelectorAll('.msg.deleted')].length > 0, { timeout: 5000 });
+  check('Di layar Andi pesan itu juga berubah jadi "sudah dihapus"', true);
 
   /* ---- 4. Real WebRTC call -------------------------------------- */
   await andi.page.click('#btn-call-audio');
@@ -725,6 +1193,63 @@ try {
     JSON.stringify({ andi: andiCall.remoteTracks, budi: budiCall.remoteTracks })
   );
   check('Track yang diterima masih hidup', andiCall.remoteLive && budiCall.remoteLive);
+
+  /* Keberadaan track belum berarti ada suara. Energi audionya diukur: mikrofon
+     sendiri (yang dikirim) dan suara lawan bicara (yang keluar dari elemen
+     pemutarnya). Kalau elemennya paused, orangnya memang tidak mendengar apa-apa. */
+  const listen = (page) =>
+    page.evaluate(async () => {
+      const measure = async (stream) => {
+        if (!stream?.getAudioTracks?.().length) return null;
+        const context = new AudioContext();
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 2048;
+        context.createMediaStreamSource(stream).connect(analyser);
+        const samples = new Float32Array(analyser.fftSize);
+        let peak = 0;
+        const deadline = performance.now() + 1500;
+        while (performance.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          analyser.getFloatTimeDomainData(samples);
+          for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
+        }
+        await context.close();
+        return Math.round(peak * 10000) / 10000;
+      };
+
+      const remote = document.querySelector('#remote-video');
+      const local = document.querySelector('#local-video');
+      return {
+        paused: remote.paused,
+        muted: remote.muted,
+        volume: remote.volume,
+        remoteLevel: await measure(remote.srcObject),
+        localLevel: await measure(local.srcObject),
+      };
+    });
+
+  const andiListen = await listen(andi.page);
+  const budiListen = await listen(budi.page);
+  check(
+    'Elemen suara lawan bicara benar-benar jalan, bukan paused',
+    andiListen.paused === false && budiListen.paused === false,
+    JSON.stringify({ andi: andiListen.paused, budi: budiListen.paused })
+  );
+  check(
+    'Elemen suaranya tidak di-mute dan volumenya penuh',
+    andiListen.muted === false && budiListen.muted === false && andiListen.volume === 1 && budiListen.volume === 1,
+    JSON.stringify({ andi: andiListen, budi: budiListen })
+  );
+  check(
+    'Suara lawan bicara beneran terdengar (ada energi audio)',
+    andiListen.remoteLevel > 0.001 && budiListen.remoteLevel > 0.001,
+    JSON.stringify({ andi: andiListen.remoteLevel, budi: budiListen.remoteLevel })
+  );
+  check(
+    'Mikrofon sendiri beneran nangkep suara (yang dikirim ke lawan)',
+    andiListen.localLevel > 0.001 && budiListen.localLevel > 0.001,
+    JSON.stringify({ andi: andiListen.localLevel, budi: budiListen.localLevel })
+  );
 
   // Panggilan suara tadi belum mengirim gambar. Nyalakan kamera Andi di tengah
   // panggilan: ini latihan langsung dari jalur 'ganti track tanpa renegosiasi'.
@@ -797,6 +1322,71 @@ try {
     check(`${name} menyimpan private key cuma di browsernya`, Boolean(identity?.privateKey?.d));
     check(`${name} nggak mengirim private key ke server`, !JSON.stringify(entry?.publicKey || {}).includes('"d"'));
   }
+
+  /* ---- 6. Layar hp: tahan pesan untuk membuka pilihan -------------
+     Ini jalur sentuh yang sebenarnya (bukan klik kanan yang dipalsukan):
+     touchend cepat = ketuk biasa, sentuhan yang ditahan = menu pilihan. */
+  await budi.page.setViewport({ width: 390, height: 844, hasTouch: true, isMobile: true });
+  await sleep(400);
+  if (await budi.page.$eval('#chat-view', (node) => node.hidden)) {
+    await budi.page.click('.chat-item');
+    await budi.page.waitForSelector('#chat-view:not([hidden])', { timeout: 10000 });
+  }
+
+  // Pesan terakhir yang masih punya isi, dibawa ke tengah layar dulu: titik
+  // sentuh harus benar-benar mengenai gelembungnya, bukan area kosong.
+  const mobilePoint = await budi.page.$$eval('.msg', (nodes) => {
+    const node = [...nodes].reverse().find((entry) => !entry.classList.contains('deleted'));
+    if (!node) return null;
+    node.scrollIntoView({ block: 'center' });
+    const rect = node.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  // `scrollIntoView` di atas sinkron, tapi pastikan dulu posisinya benar-benar
+  // di dalam layar sebelum titik sentuhnya dipakai.
+  check('Ada gelembung pesan yang bisa ditahan di layar hp', mobilePoint !== null, JSON.stringify(mobilePoint));
+
+  const touch = await budi.page.createCDPSession();
+  await touch.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const touchAt = (type) =>
+    touch.send('Input.dispatchTouchEvent', {
+      type,
+      touchPoints: type === 'touchEnd' ? [] : [{ x: mobilePoint.x, y: mobilePoint.y }],
+    });
+
+  // Sentuhan yang ditahan: jari masih menempel ketika ambang 420 ms terlewat,
+  // jadi menunya harus sudah terbuka sebelum jari diangkat.
+  await touchAt('touchStart');
+  await sleep(700);
+  await budi.page.waitForSelector('#msg-menu:not([hidden])', { timeout: 4000 });
+  check('Di layar hp, tahan di pesan membuka pilihan yang sama', true);
+  await touchAt('touchEnd');
+  await sleep(250);
+  check(
+    'Menu tetap terbuka setelah jari diangkat',
+    (await display(budi.page, '#msg-menu')) !== 'none'
+  );
+  const mobileActions = await menuActions(budi.page);
+  check(
+    'Pilihannya lengkap di layar kecil',
+    mobileActions.includes('reply') && mobileActions.includes('delete-me'),
+    mobileActions.join(' ')
+  );
+  const menuFits = await budi.page.evaluate(() => {
+    const list = document.querySelector('#msg-menu-list').getBoundingClientRect();
+    return {
+      insideX: list.left >= 0 && list.right <= window.innerWidth + 1,
+      insideY: list.top >= -1 && list.bottom <= window.innerHeight + 1,
+    };
+  });
+  check('Menunya nggak keluar dari layar hp', menuFits.insideX && menuFits.insideY, JSON.stringify(menuFits));
+  await budi.page.keyboard.press('Escape');
+  await budi.page.waitForSelector('#msg-menu[hidden]', { timeout: 5000 });
+
+  // Ketukan pendek di lampiran tetap membuka penampil, bukan memicu pilihan.
+  await budi.page.touchscreen.tap(mobilePoint.x, mobilePoint.y);
+  await sleep(300);
+  check('Ketuk pendek di hp tidak membuka pilihan pesan', (await display(budi.page, '#msg-menu')) === 'none');
 
   console.log('');
   for (const r of results) console.log(`  ✔ ${r.label}`);

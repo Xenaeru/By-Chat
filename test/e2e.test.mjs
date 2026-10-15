@@ -126,6 +126,11 @@ class Client {
     return new Promise((resolve) => this.socket.emit('report:submit', data, resolve));
   }
 
+  /** Minta server menghapus sebuah pesan untuk semua orang. */
+  remove(id) {
+    return new Promise((resolve) => this.socket.emit('message:delete', { id }, resolve));
+  }
+
   keyWith(uid, publicKey) {
     if (!this.shared.has(uid)) {
       this.shared.set(uid, deriveSharedKey(this.privateKey, publicKey, this.uid, uid));
@@ -199,6 +204,48 @@ test('1:1 message is encrypted in transit and readable by both parties', async (
   const decoded = JSON.parse(await decryptMessage(bob.inbox[0].payload, bob.uid, bobKey));
   assert.equal(decoded.text, text);
   assert.equal(decoded.attachment, null);
+
+  alice.close();
+  bob.close();
+});
+
+test('hapus untuk semua orang: cuma pengirim aslinya, dan penerimanya dikabari', async () => {
+  const alice = await new Client('alice-del').init();
+  const bob = await new Client('bob-del').init();
+  await sleep(50);
+
+  const roomId = `dm:${alice.uid}:${bob.uid}`;
+  const key = await alice.keyWith(bob.uid, bob.identity.publicKey);
+  const keys = new Map([
+    [alice.uid, key],
+    [bob.uid, key],
+  ]);
+  const text = 'pesan yang nanti dihapus untuk semua orang';
+
+  const { ack } = await alice.send({ roomId, members: [alice.uid, bob.uid], text, keys });
+  assert.equal(ack.ok, true);
+
+  // Penerimanya tidak boleh bisa menghapus pesan orang lain.
+  const stolen = await bob.remove(ack.id);
+  assert.equal(stolen.ok, false);
+  assert.match(stolen.error, /pengirim aslinya/i);
+
+  // Id yang tidak pernah dikirim lewat server ini juga ditolak, bukan diiyakan.
+  const unknown = await alice.remove('id-yang-nggak-ada');
+  assert.equal(unknown.ok, false);
+
+  // Pengirim aslinya boleh, dan penerimanya dapat kabar.
+  const removed = await alice.remove(ack.id);
+  assert.equal(removed.ok, true);
+  assert.deepEqual(removed.delivered, [bob.uid]);
+
+  await sleep(80);
+  const tombstone = bob.inbox.find((envelope) => envelope.deleted);
+  assert.ok(tombstone, 'penerima tidak dikabari soal penghapusan');
+  assert.equal(tombstone.id, ack.id);
+  assert.equal(tombstone.roomId, roomId);
+  // Yang diteruskan cuma id: tidak ada isi pesan yang ikut berpindah tempat.
+  assert.ok(!JSON.stringify(tombstone).includes('nanti dihapus'), 'isi pesan ikut terkirim lagi');
 
   alice.close();
   bob.close();

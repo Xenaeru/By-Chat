@@ -109,7 +109,9 @@ export async function fetchAttachment({ attachment, getIdToken, onStage }) {
     totalChunks: attachment.totalChunks,
     key: attachment.key,
   });
-  return URL.createObjectURL(plain);
+  // Hasil dekripsi tidak membawa tipe mime, dan tanpa itu <video>/<audio> di
+  // penampil ragu-ragu memutar isinya. Tipe aslinya sudah ikut di attachment.
+  return URL.createObjectURL(new Blob([plain], { type: attachment.mime || 'application/octet-stream' }));
 }
 
 export function formatBytes(bytes) {

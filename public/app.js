@@ -18,6 +18,7 @@ const identityKey = (uid) => `securechat.identity.v3.${uid}`;
 const roomsKey = (uid) => `securechat.rooms.v3.${uid}`;
 const verifiedKey = (uid) => `securechat.verified.v3.${uid}`;
 const statusSeenKey = (uid) => `securechat.status.v1.${uid}`;
+const starredKey = (uid) => `securechat.starred.v1.${uid}`;
 
 const store = {
   get(key, fallback = null) {
@@ -65,6 +66,14 @@ const state = {
   incoming: null,
   blobUrls: new Map(),
   uploadToken: 0,
+  replyTo: null,
+  starred: new Set(),
+  /** Id pesan yang sudah dihapus untuk semua orang: jangan dimunculkan lagi. */
+  deletedIds: new Set(),
+  menuOpen: false,
+  menuOpenedAt: 0,
+  viewer: null,
+  viewerToken: 0,
   statuses: [],
   statusSeen: new Set(),
   statusDecoded: new Map(),
@@ -132,6 +141,24 @@ const el = {
   uploadLabel: $('#upload-label'),
   uploadFill: $('#upload-fill'),
   uploadCancel: $('#upload-cancel'),
+  replyStrip: $('#reply-strip'),
+  replyName: $('#reply-strip-name'),
+  replyPreview: $('#reply-strip-preview'),
+  replyCancel: $('#reply-strip-cancel'),
+
+  msgMenu: $('#msg-menu'),
+  msgMenuCatcher: $('#msg-menu-catcher'),
+  msgMenuQuick: $('#msg-menu-quick'),
+  msgMenuList: $('#msg-menu-list'),
+
+  viewer: $('#viewer'),
+  viewerName: $('#viewer-name'),
+  viewerSub: $('#viewer-sub'),
+  viewerSave: $('#viewer-save'),
+  viewerClose: $('#viewer-close'),
+  viewerStage: $('#viewer-stage'),
+  viewerLoading: $('#viewer-loading'),
+  viewerLoadingLabel: $('#viewer-loading-label'),
 
   callOverlay: $('#call-overlay'),
   remoteVideo: $('#remote-video'),
@@ -248,16 +275,55 @@ function paintAvatars(root = document) {
   }
 }
 
-const packMessage = (text, attachment) => JSON.stringify({ text: text || '', attachment: attachment || null });
+const packMessage = (text, attachment, extra = {}) =>
+  JSON.stringify({
+    text: text || '',
+    attachment: attachment || null,
+    replyTo: extra.replyTo || null,
+    forwarded: Boolean(extra.forwarded),
+  });
 
 function unpackMessage(raw) {
   try {
     const parsed = JSON.parse(raw);
-    if (typeof parsed?.text === 'string') return parsed;
+    // Reaksi bukan pesan tersendiri: dia menempel ke pesan yang sudah ada.
+    if (parsed?.reaction) return parsed;
+    if (typeof parsed?.text === 'string') {
+      return { attachment: null, replyTo: null, forwarded: false, ...parsed };
+    }
   } catch {
     /* older or plain-text payload */
   }
-  return { text: raw, attachment: null };
+  return { text: raw, attachment: null, replyTo: null, forwarded: false };
+}
+
+/**
+ * Id yang dikenal server untuk sebuah pesan. Pesan yang kita kirim punya id
+ * lokal sampai server menjawab, dan "hapus untuk semua orang" butuh id server
+ * itu — bukan id lokal yang cuma ada di perangkat ini.
+ */
+const serverIdOf = (message) =>
+  message.serverId || (String(message.id || '').startsWith('local:') ? null : message.id);
+
+function fileKind(mime = '') {
+  const type = String(mime || '');
+  if (type.startsWith('image/')) return 'image';
+  if (type.startsWith('video/')) return 'video';
+  if (type.startsWith('audio/')) return 'audio';
+  return 'file';
+}
+
+const KIND_LABEL = { image: 'Foto', video: 'Video', audio: 'Audio', file: 'Lampiran' };
+
+/** Satu baris ringkas: dipakai di daftar chat dan di kutipan balasan. */
+function messagePreview(message) {
+  if (message.deleted) return 'Pesan ini sudah dihapus';
+  if (message.error) return 'Pesan nggak bisa dibuka';
+  const attachment = message.attachment;
+  if (!attachment) return message.text || '';
+  const label = KIND_LABEL[fileKind(attachment.mime)];
+  const name = attachment.name ? ` · ${attachment.name}` : '';
+  return `${label}${name}${message.text ? ` — ${message.text}` : ''}`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -321,7 +387,13 @@ function saveRooms() {
     name: r.name,
     type: r.type,
     members: r.members,
-    messages: r.messages.map((m) => ({ ...m, pending: false })),
+    messages: r.messages.map((m) => ({
+      ...m,
+      pending: false,
+      // Pratinjau lokal cuma hidup selama sesi ini: blob URL di perangkat lain
+      // tidak menunjuk apa pun, jadi jangan ikut disimpan.
+      attachment: m.attachment ? { ...m.attachment, localUrl: undefined } : m.attachment,
+    })),
   }));
   if (!store.set(roomsKey(state.me.uid), data)) {
     showToast('⚠️ Penyimpanan browser penuh — riwayat baru nggak kesimpan.');
@@ -330,7 +402,11 @@ function saveRooms() {
 
 function loadRooms(uid) {
   for (const room of store.get(roomsKey(uid), [])) {
-    state.rooms.set(room.id, { ...room, messages: room.messages || [] });
+    const messages = (room.messages || []).map((message) => ({
+      ...message,
+      starred: state.starred.has(`${room.id}:${message.serverId || message.id}`),
+    }));
+    state.rooms.set(room.id, { ...room, messages });
   }
 }
 
@@ -377,6 +453,9 @@ function showLogin() {
   state.rooms.clear();
   closeOnboarding();
   closeContactPage();
+  closeMessageMenu();
+  closeViewer();
+  cancelReply();
   el.btnAdmin.hidden = true;
   el.banned.hidden = true;
   el.app.hidden = true;
@@ -398,6 +477,11 @@ async function enterApp(profile) {
 
   state.sharedKeys.clear();
   state.verified = new Set(store.get(verifiedKey(profile.uid), []));
+  state.starred = new Set(store.get(starredKey(profile.uid), []));
+  state.deletedIds.clear();
+  cancelReply();
+  closeMessageMenu();
+  closeViewer();
   state.statuses = [];
   state.statusSeen = new Set(store.get(statusSeenKey(profile.uid), []));
   state.statusDecoded.clear();
@@ -656,41 +740,90 @@ function setupCalls() {
 /* ------------------------------------------------------------------ *
  * Messages
  * ------------------------------------------------------------------ */
-async function sendMessage(text, attachment) {
-  const room = state.rooms.get(state.activeRoomId);
-  if (!room) return;
-  if (!text.trim() && !attachment) return;
+/** Satu permintaan-tunggu-jawaban lewat socket, dengan batas waktu. */
+function emitAck(event, payload, timeout = 8000) {
+  return new Promise((resolve) => {
+    if (!socket?.connected) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
+    const timer = setTimeout(() => resolve({ ok: false, error: 'Server nggak menjawab.' }), timeout);
+    socket.emit(event, payload, (answer) => {
+      clearTimeout(timer);
+      resolve(answer || { ok: false, error: 'Jawaban server tidak terbaca.' });
+    });
+  });
+}
 
+async function keysForRoom(room) {
   const sharedKeys = new Map();
+  for (const member of room.members) sharedKeys.set(member, await sharedKeyWith(member));
+  return sharedKeys;
+}
+
+/**
+ * Kirim ke ruangan tertentu — bukan selalu ruangan yang sedang terbuka, karena
+ * "Teruskan" mengirim ke chat lain sambil layarnya tetap di sini.
+ */
+async function sendToRoom(room, text, attachment, { replyTo = null, forwarded = false } = {}) {
+  if (!room) return;
+  if (!String(text || '').trim() && !attachment) return;
+
+  let sharedKeys;
   try {
-    for (const member of room.members) sharedKeys.set(member, await sharedKeyWith(member));
+    sharedKeys = await keysForRoom(room);
   } catch (err) {
     pushSystemNote(room, `⚠️ ${err.message}. Minta dia buka aplikasinya dulu.`);
-    renderMessages();
+    if (state.activeRoomId === room.id) renderMessages();
+    saveRooms();
     return;
   }
 
-  const payload = await encryptMessage(packMessage(text, attachment), sharedKeys);
+  // Pratinjau lokal (blob di perangkat ini) tidak ikut dikirim: di perangkat
+  // lain alamat itu tidak menunjuk apa pun.
+  const outgoing = attachment ? { ...attachment } : null;
+  if (outgoing) delete outgoing.localUrl;
+
+  const payload = await encryptMessage(packMessage(text, outgoing, { replyTo, forwarded }), sharedKeys);
   const local = {
     id: `local:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
     from: state.me.uid,
-    text,
+    text: text || '',
     attachment: attachment || null,
+    replyTo: replyTo || null,
+    forwarded: Boolean(forwarded),
     at: Date.now(),
     status: 'sending',
   };
   room.messages.push(local);
-  renderMessages();
+  if (state.activeRoomId === room.id) renderMessages();
+  renderChatList();
   saveRooms();
 
-  socket.emit('send', { roomId: room.id, roomName: room.name, type: room.type, members: room.members, payload }, (ack) => {
-    local.status = ack?.ok ? (ack.queued?.length ? 'sent' : 'delivered') : 'failed';
-    renderMessages();
-    saveRooms();
-  });
+  socket.emit(
+    'send',
+    { roomId: room.id, roomName: room.name, type: room.type, members: room.members, payload },
+    (ack) => {
+      if (ack?.ok) {
+        local.serverId = ack.id;
+        if (ack.at) local.at = ack.at;
+        local.status = ack.queued?.length ? 'sent' : 'delivered';
+      } else {
+        local.status = 'failed';
+      }
+      if (state.activeRoomId === room.id) renderMessages();
+      renderChatList();
+      saveRooms();
+    }
+  );
 }
 
+const sendMessage = (text, attachment, options) =>
+  sendToRoom(state.rooms.get(state.activeRoomId), text, attachment, options);
+
 async function receiveMessage(envelope) {
+  // Kabar "sudah dihapus" datang tanpa payload: yang diurus cuma id-nya.
+  if (envelope.deleted) return applyRemoteDelete(envelope);
+  // Bisa saja kabar hapusnya duluan sampai (misalnya dari inbox offline).
+  if (state.deletedIds.has(envelope.id)) return;
+
   const room = ensureRoom({
     id: envelope.roomId,
     name: envelope.roomName,
@@ -708,12 +841,16 @@ async function receiveMessage(envelope) {
     error = err.message;
   }
 
+  if (parsed.reaction) return applyRemoteReaction(envelope, parsed.reaction);
+
   room.messages.push({
     id: envelope.id,
     from: envelope.from,
     at: envelope.at,
     text: parsed.text,
     attachment: parsed.attachment,
+    replyTo: parsed.replyTo || null,
+    forwarded: Boolean(parsed.forwarded),
     error,
   });
 
@@ -727,6 +864,575 @@ async function receiveMessage(envelope) {
 function pushSystemNote(room, text) {
   room.messages.push({ id: `sys:${Date.now()}:${Math.random()}`, system: true, at: Date.now(), text });
 }
+
+/* ------------------------------------------------------------------ *
+ * Aksi atas satu pesan: reaksi, balas, teruskan, salin, bintang, hapus
+ * ------------------------------------------------------------------ */
+
+/** Satu orang cuma punya satu reaksi per pesan: yang baru menggantikan yang lama. */
+function setReaction(message, from, emoji, on) {
+  const map = message.reactions || (message.reactions = {});
+  for (const [key, uids] of Object.entries(map)) {
+    const at = uids.indexOf(from);
+    if (at === -1) continue;
+    uids.splice(at, 1);
+    if (!uids.length) delete map[key];
+  }
+  if (on) (map[emoji] || (map[emoji] = [])).push(from);
+  if (!Object.keys(map).length) delete message.reactions;
+}
+
+function applyRemoteReaction(envelope, reaction) {
+  const room = state.rooms.get(envelope.roomId);
+  if (!room) return;
+  const target = room.messages.find((message) => serverIdOf(message) === reaction.targetId);
+  if (!target || target.deleted) return;
+  setReaction(target, envelope.from, reaction.emoji, Boolean(reaction.on));
+  saveRooms();
+  if (state.activeRoomId === room.id) renderMessages();
+}
+
+async function reactToMessage(message, emoji) {
+  const room = state.rooms.get(state.activeRoomId);
+  const targetId = serverIdOf(message);
+  if (!room || !targetId || message.deleted || message.error) return;
+
+  const on = !(message.reactions?.[emoji] || []).includes(state.me.uid);
+  setReaction(message, state.me.uid, emoji, on);
+  renderMessages();
+  saveRooms();
+
+  try {
+    const sharedKeys = await keysForRoom(room);
+    const payload = await encryptMessage(JSON.stringify({ reaction: { targetId, emoji, on } }), sharedKeys);
+    socket?.emit('send', {
+      roomId: room.id,
+      roomName: room.name,
+      type: room.type,
+      members: room.members,
+      payload,
+    });
+  } catch (err) {
+    showToast(`Reaksi nggak terkirim: ${err.message}`);
+  }
+}
+
+function markDeleted(room, id, from = state.me.uid) {
+  const message = room.messages.find((m) => serverIdOf(m) === id);
+  if (!message) return false;
+  message.deleted = true;
+  message.deletedBy = from;
+  message.text = '';
+  message.attachment = null;
+  message.error = undefined;
+  delete message.reactions;
+  return true;
+}
+
+/** Kabar dari server: pengirimnya menghapus pesannya untuk semua orang. */
+function applyRemoteDelete(envelope) {
+  state.deletedIds.add(envelope.id);
+  const room = state.rooms.get(envelope.roomId);
+  if (!room) return;
+  if (!markDeleted(room, envelope.id, envelope.from)) return;
+  saveRooms();
+  if (state.activeRoomId === room.id) renderMessages();
+  renderChatList();
+}
+
+/**
+ * Hapus untuk semua orang. Server yang menentukan siapa pengirim sebuah id, jadi
+ * jawabannya bisa ditolak — dan kalau ditolak, layarnya tidak berpura-pura
+ * sudah terhapus.
+ */
+async function deleteForEveryone(message) {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room || message.deleted) return;
+  const targetId = serverIdOf(message);
+
+  if (!targetId) {
+    // Belum pernah sampai ke server (atau gagal kirim): cukup hilang di sini.
+    markDeleted(room, message.id);
+    saveRooms();
+    renderMessages();
+    renderChatList();
+    return showToast('Pesan yang belum terkirim cuma bisa dihapus dari perangkat ini.');
+  }
+
+  const ack = await emitAck('message:delete', { id: targetId, roomId: room.id });
+  if (!ack?.ok) return showToast(`Gagal menghapus: ${ack?.error || 'tidak diketahui'}`);
+
+  markDeleted(room, targetId);
+  state.blobUrls.delete(message.id);
+  saveRooms();
+  renderMessages();
+  renderChatList();
+  showToast('Pesan dihapus untuk semua orang.');
+}
+
+function deleteForMe(message) {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room) return;
+  const at = room.messages.indexOf(message);
+  if (at === -1) return;
+  room.messages.splice(at, 1);
+  state.blobUrls.delete(message.id);
+  saveRooms();
+  renderMessages();
+  renderChatList();
+  showToast('Pesan dihapus dari perangkat ini saja.');
+}
+
+function toggleStar(message) {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room) return;
+  const key = `${room.id}:${serverIdOf(message) || message.id}`;
+  const on = !state.starred.has(key);
+  if (on) state.starred.add(key);
+  else state.starred.delete(key);
+  message.starred = on;
+  store.set(starredKey(state.me.uid), [...state.starred]);
+  renderMessages();
+  showToast(on ? 'Pesan diberi bintang.' : 'Bintangnya dilepas.');
+}
+
+function copyMessage(message) {
+  const text = String(message.text || '').trim();
+  if (!text) return showToast('Pesan ini nggak punya teks buat disalin.');
+
+  return navigator.clipboard
+    .writeText(text)
+    .then(() => showToast('Pesan disalin.'))
+    .catch(() => {
+      // Clipboard API butuh HTTPS dan izin; ini jalan terakhirnya.
+      const scratch = document.createElement('textarea');
+      scratch.value = text;
+      scratch.style.position = 'fixed';
+      scratch.style.opacity = '0';
+      document.body.appendChild(scratch);
+      scratch.select();
+      document.execCommand('copy');
+      scratch.remove();
+      showToast('Pesan disalin.');
+    });
+}
+
+/* ---- Balas ---------------------------------------------------------
+ * Yang ikut terkirim adalah uid pengirim aslinya, bukan namanya: "Kamu" bagi
+ * pengirim balasan adalah "andi" bagi penerimanya, jadi namanya harus dihitung
+ * ulang di tiap perangkat.
+ */
+function replyNameFor(uid, room, fallback = 'Pesan') {
+  if (uid === state.me?.uid) return 'Kamu';
+  return peerByUid(uid)?.displayName || (room ? displayName(room) : fallback);
+}
+
+function startReply(message) {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room) return;
+  state.replyTo = {
+    id: serverIdOf(message) || message.id,
+    uid: message.from,
+    name: replyNameFor(message.from, room),
+    preview: messagePreview(message).slice(0, 160),
+  };
+  el.replyName.textContent = state.replyTo.name;
+  el.replyPreview.textContent = state.replyTo.preview;
+  el.replyStrip.hidden = false;
+  el.input.focus();
+}
+
+function cancelReply() {
+  state.replyTo = null;
+  el.replyStrip.hidden = true;
+}
+
+function scrollToMessage(id) {
+  const node = el.messages.querySelector(`.msg[data-id="${CSS.escape(String(id))}"]`);
+  if (!node) return showToast('Pesan aslinya nggak ada lagi di perangkat ini.');
+  node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  node.classList.add('flash');
+  setTimeout(() => node.classList.remove('flash'), 1100);
+}
+
+/* ---- Teruskan ------------------------------------------------------ */
+function openForwardPicker(message) {
+  const rooms = [...state.rooms.values()].sort((a, b) => displayName(a).localeCompare(displayName(b)));
+  if (!rooms.length) return showToast('Belum ada chat lain buat tujuan teruskan.');
+  const current = state.activeRoomId;
+
+  openModal(`
+    <h3>Teruskan pesan</h3>
+    <p class="sub">
+      Pilih chat tujuan. Isinya dienkripsi ulang untuk chat itu, jadi server tetap
+      nggak bisa membacanya.
+    </p>
+    <ul class="forward-list">
+      ${rooms
+        .map((room) => {
+          const name = room.type === 'group' ? room.name : displayName(room);
+          return `<li><button type="button" class="forward-target" data-room="${esc(room.id)}">
+            <span class="avatar" data-hue-for="${esc(name)}">${esc(initials(name))}</span>
+            <span class="forward-target-main">
+              <strong>${esc(name)}</strong>
+              <span class="muted">${esc(preview(room.messages[room.messages.length - 1]))}${room.id === current ? ' · chat ini' : ''}</span>
+            </span>
+          </button></li>`;
+        })
+        .join('')}
+    </ul>
+    <div class="modal-actions"><button data-close>Tutup</button></div>
+  `);
+
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  for (const button of el.modalCard.querySelectorAll('.forward-target')) {
+    button.addEventListener('click', async () => {
+      const target = state.rooms.get(button.dataset.room);
+      closeModal();
+      if (!target) return;
+      await sendToRoom(target, message.text, message.attachment, { forwarded: true });
+      selectRoom(target.id);
+      showToast(`Pesan diteruskan ke ${target.type === 'group' ? target.name : displayName(target)}.`);
+    });
+  }
+}
+
+/* ---- Lihat lampiran selayar penuh ---------------------------------
+ * Foto dan video dibuka di sini — bukan diunduh, dan bukan di tab baru. Tab
+ * baru akan menampilkan halaman blob: kosong, dan blob URL-nya hidup di
+ * dokumen ini saja. Yang disimpan di server tetap ciphertext.
+ */
+function showViewerMedia(url, attachment) {
+  const kind = fileKind(attachment.mime);
+  el.viewerStage.innerHTML = '';
+
+  let node;
+  if (kind === 'image') {
+    node = document.createElement('img');
+    node.src = url;
+    node.alt = attachment.name || 'Foto';
+  } else if (kind === 'video') {
+    node = document.createElement('video');
+    node.src = url;
+    node.controls = true;
+    node.autoplay = true;
+    node.playsInline = true;
+  } else {
+    node = document.createElement('audio');
+    node.src = url;
+    node.controls = true;
+    node.autoplay = true;
+  }
+
+  node.className = 'viewer-media';
+  node.dataset.kind = kind;
+  el.viewerStage.appendChild(node);
+  el.viewerSave.hidden = false;
+  el.viewerLoading.hidden = true;
+}
+
+async function openViewer(message) {
+  const attachment = message?.attachment;
+  if (!attachment) return;
+
+  const token = ++state.viewerToken;
+  state.viewer = message;
+  el.viewer.hidden = false;
+  el.viewerName.textContent = attachment.name || 'Lampiran';
+  el.viewerSub.textContent = `${formatBytes(attachment.size)} · ${KIND_LABEL[fileKind(attachment.mime)]} terenkripsi`;
+  el.viewerStage.innerHTML = '';
+  el.viewerSave.hidden = true;
+
+  const ready = attachment.localUrl || state.blobUrls.get(message.id);
+  if (ready) return showViewerMedia(ready, attachment);
+
+  el.viewerLoading.hidden = false;
+  el.viewerLoadingLabel.textContent = `Mengunduh ${attachment.name || ''}…`;
+  try {
+    const url = await fetchAttachment({
+      attachment,
+      getIdToken: () => state.auth.getIdToken(),
+      onStage: (stage, fraction) => {
+        if (token !== state.viewerToken) return;
+        el.viewerLoadingLabel.textContent = `${stage === 'decrypt' ? 'Mendekripsi' : 'Mengunduh'} ${
+          attachment.name || ''
+        } — ${Math.round(fraction * 100)}%`;
+      },
+    });
+    if (token !== state.viewerToken) return URL.revokeObjectURL(url);
+    state.blobUrls.set(message.id, url);
+    showViewerMedia(url, attachment);
+    // Foto yang barusan dibuka sekarang bisa tampil sebagai gambar di chat.
+    if (message.attachment && fileKind(message.attachment.mime) === 'image') renderMessages();
+  } catch (err) {
+    if (token !== state.viewerToken) return;
+    el.viewerLoading.hidden = true;
+    el.viewerStage.innerHTML = `<p class="viewer-note">Gagal membuka ${esc(attachment.name || 'lampiran')}: ${esc(
+      err.message
+    )}</p>`;
+  }
+}
+
+function closeViewer() {
+  state.viewerToken++;
+  state.viewer = null;
+  el.viewer.hidden = true;
+  el.viewerStage.innerHTML = '';
+  el.viewerLoading.hidden = true;
+}
+
+/** Simpan ke perangkat: satu-satunya tempat tombol unduh muncul. */
+function saveViewerMedia() {
+  const message = state.viewer;
+  if (!message?.attachment) return;
+  const url = message.attachment.localUrl || state.blobUrls.get(message.id);
+  if (!url) return showToast('Filenya belum selesai dibuka.');
+  saveBlobUrl(url, message.attachment.name);
+  showToast(`Menyimpan ${message.attachment.name || 'lampiran'}…`);
+}
+
+function saveBlobUrl(url, name) {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name || 'lampiran';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+/* ------------------------------------------------------------------ *
+ * Pilihan pesan — klik kanan (mouse) atau tahan (layar sentuh)
+ *
+ * Yang lain diblur, yang dipilih tetap tajam, lalu pilihannya muncul di
+ * sebelah gelembung itu. Semua tombol di sini benar-benar mengerjakan
+ * sesuatu; tidak ada yang cuma pajangan.
+ * ------------------------------------------------------------------ */
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+const LONG_PRESS_MS = 420;
+
+function isStarred(message, roomId) {
+  return Boolean(message.starred) || state.starred.has(`${roomId}:${serverIdOf(message) || message.id}`);
+}
+
+/** Daftar pilihan untuk satu pesan, tergantung siapa yang mengirimnya. */
+function messageActions(message, room) {
+  const mine = message.from === state.me.uid;
+  // Pesan yang sudah dihapus atau gagal didekripsi tidak punya isi untuk
+  // dibalas/diteruskan; yang tersisa cuma menghapusnya dari sini.
+  const readable = !message.deleted && !message.error;
+  const actions = [];
+
+  if (readable) {
+    actions.push({ id: 'reply', label: 'Balas', icon: '#i-reply' });
+    actions.push({ id: 'forward', label: 'Teruskan', icon: '#i-forward' });
+    if (message.text) actions.push({ id: 'copy', label: 'Salin', icon: '#i-copy' });
+    actions.push({
+      id: 'star',
+      label: isStarred(message, room.id) ? 'Lepas bintang' : 'Beri bintang',
+      icon: '#i-star',
+    });
+    if (!mine && room.type === 'dm') actions.push({ id: 'report', label: 'Laporkan', icon: '#i-flag' });
+  }
+
+  actions.push({ id: 'delete-me', label: 'Hapus untuk saya', icon: '#i-trash', danger: true });
+  // Hanya pengirimnya yang boleh menghapus untuk semua orang — server yang
+  // memutuskannya, tapi menawarkannya ke orang lain cuma bikin bingung.
+  if (mine && !message.deleted) {
+    actions.push({ id: 'delete-all', label: 'Hapus untuk semua orang', icon: '#i-trash', danger: true });
+  }
+
+  return actions;
+}
+
+function runMessageAction(action, message) {
+  if (action === 'reply') return startReply(message);
+  if (action === 'forward') return openForwardPicker(message);
+  if (action === 'copy') return copyMessage(message);
+  if (action === 'star') return toggleStar(message);
+  if (action === 'report') return openReportModal();
+  if (action === 'delete-me') return deleteForMe(message);
+  if (action === 'delete-all') return deleteForEveryone(message);
+}
+
+/** Taruh baris reaksi di atas gelembung dan daftar pilihan di bawahnya. */
+function placeMessageMenu(bubble) {
+  const rect = bubble.getBoundingClientRect();
+  const pad = 10;
+  const quick = el.msgMenuQuick;
+  const list = el.msgMenuList;
+  const quickBox = quick.hidden ? { width: 0, height: 0 } : quick.getBoundingClientRect();
+  const listBox = list.getBoundingClientRect();
+  const width = Math.max(quickBox.width, listBox.width);
+  const left = Math.min(Math.max(pad, rect.left), Math.max(pad, innerWidth - width - pad));
+
+  // Coba: reaksi di atas, daftar di bawah. Kalau daftarnya tidak muat, keduanya
+  // pindah ke atas gelembung — jangan pernah keluar layar.
+  let quickTop = rect.top - quickBox.height - 8;
+  let listTop = rect.bottom + 8;
+  if (listTop + listBox.height > innerHeight - pad) {
+    listTop = quickTop - listBox.height - 6;
+    quickTop = listTop - quickBox.height - 8;
+    if (listTop < pad) {
+      listTop = Math.max(pad, innerHeight - listBox.height - pad);
+      quickTop = listTop - quickBox.height - 8;
+    }
+  }
+
+  quick.style.left = `${left}px`;
+  quick.style.top = `${Math.max(pad, quickTop)}px`;
+  list.style.left = `${left}px`;
+  list.style.top = `${Math.min(Math.max(pad, listTop), Math.max(pad, innerHeight - listBox.height - pad))}px`;
+}
+
+function openMessageMenu(bubble) {
+  const room = state.rooms.get(state.activeRoomId);
+  const message = room?.messages.find((m) => (serverIdOf(m) || m.id) === bubble.dataset.id);
+  if (!room || !message) return;
+
+  closeMessageMenu();
+  state.menuOpen = true;
+  state.menuOpenedAt = Date.now();
+  el.msgMenu.hidden = false;
+  el.msgMenuQuick.innerHTML = '';
+  el.msgMenuList.innerHTML = '';
+
+  if (!message.deleted && !message.error) {
+    for (const emoji of QUICK_REACTIONS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.reaction = emoji;
+      button.textContent = emoji;
+      button.title = `Beri reaksi ${emoji}`;
+      button.setAttribute('aria-label', `Beri reaksi ${emoji}`);
+      button.addEventListener('click', () => {
+        closeMessageMenu();
+        reactToMessage(message, emoji);
+      });
+      el.msgMenuQuick.appendChild(button);
+    }
+  }
+  el.msgMenuQuick.hidden = el.msgMenuQuick.childElementCount === 0;
+
+  for (const action of messageActions(message, room)) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'msg-menu-item' + (action.danger ? ' danger' : '');
+    button.dataset.action = action.id;
+    button.setAttribute('role', 'menuitem');
+    button.innerHTML = `<svg class="ico"><use href="${action.icon}" /></svg><span>${esc(action.label)}</span>`;
+    button.addEventListener('click', () => {
+      closeMessageMenu();
+      runMessageAction(action.id, message);
+    });
+    el.msgMenuList.appendChild(button);
+  }
+
+  document.body.classList.add('menu-open');
+  el.messages.classList.add('menu-open');
+  bubble.classList.add('menu-target');
+  el.msgMenu.dataset.target = bubble.dataset.id;
+  placeMessageMenu(bubble);
+}
+
+function closeMessageMenu() {
+  if (el.msgMenu.hidden) return;
+  state.menuOpen = false;
+  el.msgMenu.hidden = true;
+  el.msgMenuQuick.innerHTML = '';
+  el.msgMenuList.innerHTML = '';
+  delete el.msgMenu.dataset.target;
+  document.body.classList.remove('menu-open');
+  el.messages.classList.remove('menu-open');
+  for (const node of el.messages.querySelectorAll('.msg.menu-target')) node.classList.remove('menu-target');
+}
+
+let pressTimer = null;
+let pressOrigin = { x: 0, y: 0 };
+let suppressClickUntil = 0;
+let suppressedBubble = null;
+
+function cancelPress() {
+  clearTimeout(pressTimer);
+  pressTimer = null;
+}
+
+function beginPress(bubble, point) {
+  if (!bubble || !el.msgMenu.hidden) return;
+  cancelPress();
+  pressOrigin = point;
+  pressTimer = setTimeout(() => {
+    pressTimer = null;
+    // Ketukan yang sudah jadi "tahan" tidak boleh ikut membuka lampiran.
+    // Penandanya cuma berlaku untuk gelembung yang tadi ditahan itu — kalau
+    // tidak, ketukan berikutnya di pesan lain ikut tertelan.
+    suppressedBubble = bubble;
+    suppressClickUntil = Date.now() + 800;
+    openMessageMenu(bubble);
+  }, LONG_PRESS_MS);
+}
+
+// Mouse: pointerdown (klik kiri). Tombol kanan punya jalurnya sendiri di bawah.
+el.messages.addEventListener('pointerdown', (event) => {
+  if (event.pointerType !== 'mouse' || event.button !== 0) return;
+  beginPress(event.target.closest('.msg'), { x: event.clientX, y: event.clientY });
+});
+// Pelepasan jari/mouse bisa mendarat di luar area pesan (misalnya karena
+// tampilannya bergeser), jadi pembatalannya dipasang di dokumen, bukan cuma di
+// kontainernya. Tanpa ini, timer tahan bisa jalan terus dan menelan klik orang.
+document.addEventListener('pointerup', cancelPress);
+document.addEventListener('pointercancel', cancelPress);
+
+// Layar sentuh: pakai event sentuh langsung. Ini yang paling bisa diandalkan
+// di hp, dan di sinilah "tahan sebentar" harus mengalahkan ketukan biasa.
+el.messages.addEventListener(
+  'touchstart',
+  (event) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    beginPress(event.target.closest('.msg'), { x: touch.clientX, y: touch.clientY });
+  },
+  { passive: true }
+);
+el.messages.addEventListener(
+  'touchmove',
+  (event) => {
+    if (!pressTimer) return;
+    const touch = event.touches[0];
+    if (!touch) return cancelPress();
+    if (Math.hypot(touch.clientX - pressOrigin.x, touch.clientY - pressOrigin.y) > 10) cancelPress();
+  },
+  { passive: true }
+);
+for (const type of ['touchend', 'touchcancel']) el.messages.addEventListener(type, cancelPress, { passive: true });
+
+el.messages.addEventListener(
+  'click',
+  (event) => {
+    const bubble = event.target?.closest?.('.msg') || null;
+    if (Date.now() > suppressClickUntil || bubble !== suppressedBubble) return;
+    suppressClickUntil = 0;
+    suppressedBubble = null;
+    event.preventDefault();
+    event.stopPropagation();
+  },
+  true
+);
+
+el.messages.addEventListener('contextmenu', (event) => {
+  const bubble = event.target.closest('.msg');
+  if (!bubble) return;
+  event.preventDefault();
+  cancelPress();
+  openMessageMenu(bubble);
+});
+
+el.msgMenuCatcher.addEventListener('click', () => {
+  // Sentuhan yang memunculkan menu diakhiri satu klik sintetis, dan klik itu
+  // mendarat di tirai ini. Tanpa tenggang waktu, menu langsung tertutup lagi
+  // sebelum sempat dilihat.
+  if (Date.now() - state.menuOpenedAt < 600) return;
+  closeMessageMenu();
+});
 
 /* ------------------------------------------------------------------ *
  * Attachments
@@ -754,7 +1460,11 @@ async function sendFiles(files) {
       });
       if (token !== state.uploadToken) break;
       el.uploadFill.style.width = '0%';
-      await sendMessage(file.name ? '' : '', attachment);
+      // Pratinjau langsung dari file yang barusan dipilih: pengirimnya tidak
+      // perlu mengunduh ulang fotonya sendiri cuma buat melihatnya. Alamat ini
+      // cuma hidup di sesi ini dan tidak ikut dikirim ke siapa pun.
+      attachment.localUrl = URL.createObjectURL(file);
+      await sendMessage('', attachment);
     } catch (err) {
       showToast(`Gagal kirim ${file.name}: ${err.message}`, 6000);
     }
@@ -763,37 +1473,42 @@ async function sendFiles(files) {
   if (token === state.uploadToken) el.uploadBar.hidden = true;
 }
 
-async function downloadAttachment(message, container) {
-  if (message.attachment?.localUrl) {
-    window.open(message.attachment.localUrl, '_blank');
+/**
+ * Lampiran biasa (dokumen, arsip, apa pun yang bukan media): satu-satunya jenis
+ * yang memang diunduh, karena memang itu yang orang mau.
+ */
+async function downloadAttachment(message) {
+  const attachment = message.attachment;
+  if (!attachment) return;
+
+  if (attachment.localUrl) {
+    saveBlobUrl(attachment.localUrl, attachment.name);
     return;
+  }
+  const cached = state.blobUrls.get(message.id);
+  if (cached) {
+    saveBlobUrl(cached, attachment.name);
+    return showToast(`Menyimpan ${attachment.name || 'lampiran'}…`);
   }
 
   const token = ++state.uploadToken;
   el.uploadBar.hidden = false;
-  el.uploadLabel.textContent = `Mengunduh ${message.attachment.name}`;
+  el.uploadLabel.textContent = `Mengunduh ${attachment.name}`;
 
   try {
     const url = await fetchAttachment({
-      attachment: message.attachment,
+      attachment,
       getIdToken: () => state.auth.getIdToken(),
       onStage: (stage, fraction) => {
         if (token !== state.uploadToken) return;
-        el.uploadLabel.textContent = `${stage === 'decrypt' ? 'Mendekripsi' : 'Mengunduh'} ${message.attachment.name}`;
+        el.uploadLabel.textContent = `${stage === 'decrypt' ? 'Mendekripsi' : 'Mengunduh'} ${attachment.name}`;
         el.uploadFill.style.width = `${Math.round(fraction * 100)}%`;
       },
     });
-    if (token !== state.uploadToken) return;
+    if (token !== state.uploadToken) return URL.revokeObjectURL(url);
     state.blobUrls.set(message.id, url);
-
-    if (message.attachment.mime?.startsWith('image/')) {
-      renderMessages();
-    } else {
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = message.attachment.name || 'file';
-      link.click();
-    }
+    saveBlobUrl(url, attachment.name);
+    showToast(`Menyimpan ${attachment.name || 'lampiran'}…`);
   } catch (err) {
     showToast(`Gagal ambil file: ${err.message}`, 6000);
   } finally {
@@ -810,6 +1525,7 @@ function renderEmptyState() {
 }
 
 function selectRoom(roomId) {
+  closeMessageMenu();
   state.activeRoomId = roomId;
   state.unread.set(roomId, 0);
   const room = state.rooms.get(roomId);
@@ -911,34 +1627,126 @@ function renderChatList() {
 }
 
 function preview(message) {
-  if (!message) return '🔒 Belum ada pesan';
+  if (!message) return 'Belum ada pesan';
   if (message.system) return message.text;
-  const body = message.attachment ? `📎 ${message.attachment.name}` : message.text ?? '⚠️ nggak bisa didekripsi';
+  const body = messagePreview(message);
   return message.from === state.me?.uid ? `Kamu: ${body}` : body;
 }
 
-function attachmentNode(message) {
-  const wrap = document.createElement('div');
-  wrap.className = 'attach';
-  const cached = state.blobUrls.get(message.id);
-  const a = message.attachment;
+const KIND_ICON = { image: '#i-image', video: '#i-video', audio: '#i-audio', file: '#i-doc' };
 
-  if (cached && a.mime?.startsWith('image/')) {
+/**
+ * Satu lampiran di dalam gelembung. Foto yang sudah siap langsung jadi gambar;
+ * sisanya jadi kartu yang kalau diketuk membuka penampil selayar penuh (media)
+ * atau menyimpan filenya (dokumen).
+ */
+function attachmentNode(message) {
+  const attachment = message.attachment;
+  const kind = fileKind(attachment.mime);
+  const url = attachment.localUrl || state.blobUrls.get(message.id) || null;
+  const wrap = document.createElement('div');
+  wrap.className = `attach attach-${kind}`;
+
+  if (kind === 'image' && url) {
+    wrap.classList.add('attach-media');
     const img = document.createElement('img');
-    img.src = cached;
+    img.src = url;
+    img.alt = attachment.name || 'Foto';
+    img.loading = 'lazy';
     wrap.appendChild(img);
-    wrap.addEventListener('click', () => window.open(cached, '_blank'));
+    wrap.addEventListener('click', () => openViewer(message));
     return wrap;
   }
 
+  const hint = kind === 'file' ? 'ketuk buat simpan' : 'ketuk buat buka';
+  const badge = kind === 'video' || kind === 'audio' ? '<span class="attach-badge"><svg class="ico"><use href="#i-play" /></svg></span>' : '';
   wrap.innerHTML = `
-    <span class="attach-icon">${a.mime?.startsWith('image/') ? '🖼️' : a.mime?.startsWith('video/') ? '🎬' : a.mime?.startsWith('audio/') ? '🎵' : '📄'}</span>
+    <span class="attach-icon"><svg class="ico"><use href="${KIND_ICON[kind]}" /></svg>${badge}</span>
     <span class="attach-info">
-      <span class="attach-name">${esc(a.name)}</span>
-      <span class="attach-size">${esc(formatBytes(a.size))} · terenkripsi</span>
+      <span class="attach-name">${esc(attachment.name)}</span>
+      <span class="attach-size">${esc(formatBytes(attachment.size))} · ${hint}</span>
     </span>
   `;
-  wrap.addEventListener('click', () => downloadAttachment(message, wrap));
+  wrap.addEventListener('click', () => (kind === 'file' ? downloadAttachment(message) : openViewer(message)));
+  return wrap;
+}
+
+function dayLabel(ts) {
+  const date = new Date(ts);
+  const today = new Date();
+  const sameDay = (a, b) => a.toDateString() === b.toDateString();
+  if (sameDay(date, today)) return 'Hari ini';
+  if (sameDay(date, new Date(Date.now() - 86400000))) return 'Kemarin';
+  return date.toLocaleDateString('id-ID', {
+    day: 'numeric',
+    month: 'long',
+    ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' }),
+  });
+}
+
+function daySeparator(label) {
+  const wrap = document.createElement('div');
+  wrap.className = 'day-sep';
+  const pill = document.createElement('span');
+  pill.textContent = label;
+  wrap.appendChild(pill);
+  return wrap;
+}
+
+function quoteNode(message) {
+  const quote = document.createElement('button');
+  quote.type = 'button';
+  quote.className = 'msg-quote';
+  quote.title = 'Buka pesan yang dibalas';
+
+  const name = document.createElement('span');
+  name.className = 'msg-quote-name';
+  name.textContent = replyNameFor(message.replyTo.uid, null, message.replyTo.name || 'Pesan');
+  const text = document.createElement('span');
+  text.className = 'msg-quote-text';
+  text.textContent = message.replyTo.preview || '';
+  quote.append(name, text);
+
+  quote.addEventListener('click', (event) => {
+    event.stopPropagation();
+    scrollToMessage(message.replyTo.id);
+  });
+  return quote;
+}
+
+function forwardedNode() {
+  const node = document.createElement('span');
+  node.className = 'msg-forwarded';
+  node.innerHTML = '<svg class="ico"><use href="#i-forwarded" /></svg><span>Diteruskan</span>';
+  return node;
+}
+
+function deletedNode() {
+  const node = document.createElement('span');
+  node.className = 'msg-deleted';
+  node.innerHTML = '<svg class="ico"><use href="#i-ban" /></svg><span>Pesan ini sudah dihapus</span>';
+  return node;
+}
+
+function reactionsNode(message) {
+  const entries = Object.entries(message.reactions || {}).filter(([, uids]) => uids.length);
+  if (!entries.length) return null;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-reactions';
+  for (const [emoji, uids] of entries) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'msg-reaction' + (uids.includes(state.me.uid) ? ' mine' : '');
+    chip.dataset.emoji = emoji;
+    chip.title = uids.includes(state.me.uid) ? 'Hapus reaksi ini' : 'Ikut beri reaksi ini';
+    chip.innerHTML = `${esc(emoji)}${uids.length > 1 ? `<b>${uids.length}</b>` : ''}`;
+    chip.addEventListener('click', (event) => {
+      event.stopPropagation();
+      reactToMessage(message, emoji);
+    });
+    wrap.appendChild(chip);
+  }
   return wrap;
 }
 
@@ -947,6 +1755,7 @@ function renderMessages() {
   el.messages.innerHTML = '';
   if (!room) return;
 
+  let lastDay = null;
   for (const message of room.messages) {
     if (message.system) {
       const note = document.createElement('div');
@@ -956,28 +1765,52 @@ function renderMessages() {
       continue;
     }
 
+    const label = dayLabel(message.at);
+    if (label !== lastDay) {
+      el.messages.appendChild(daySeparator(label));
+      lastDay = label;
+    }
+
     const mine = message.from === state.me.uid;
     const div = document.createElement('div');
-    div.className = 'msg' + (mine ? ' out' : '') + (message.error ? ' undecryptable' : '');
+    div.className =
+      'msg' + (mine ? ' out' : '') + (message.error ? ' undecryptable' : '') + (message.deleted ? ' deleted' : '');
+    div.dataset.id = serverIdOf(message) || message.id;
+    div.dataset.mine = mine ? '1' : '0';
 
-    if (room.type === 'group' && !mine) {
+    if (room.type === 'group' && !mine && !message.deleted) {
       const sender = document.createElement('span');
       sender.className = 'msg-sender';
       sender.textContent = peerByUid(message.from)?.displayName || 'Tidak dikenal';
       div.appendChild(sender);
     }
 
-    if (message.error) {
-      div.appendChild(document.createTextNode(`⚠️ pesan ini nggak bisa dibuka (${message.error})`));
+    if (message.deleted) {
+      div.appendChild(deletedNode());
+    } else if (message.error) {
+      div.appendChild(document.createTextNode(`Pesan ini nggak bisa dibuka (${message.error})`));
     } else {
+      if (message.forwarded) div.appendChild(forwardedNode());
+      if (message.replyTo?.id) div.appendChild(quoteNode(message));
       if (message.attachment) div.appendChild(attachmentNode(message));
-      if (message.text) div.appendChild(document.createTextNode(message.text));
+      if (message.text) {
+        const body = document.createElement('span');
+        body.className = 'msg-text';
+        body.textContent = message.text;
+        div.appendChild(body);
+      }
     }
 
+    const star = isStarred(message, room.id) ? '<svg class="ico star"><use href="#i-star-filled" /></svg>' : '';
     const meta = document.createElement('span');
     meta.className = 'msg-meta';
-    meta.innerHTML = `${formatTime(message.at)} ${mine ? statusIcon(message.status) : ''}`;
+    meta.innerHTML = `${star}<span>${formatTime(message.at)}</span>${
+      mine && !message.deleted ? statusIcon(message.status) : ''
+    }`;
     div.appendChild(meta);
+
+    const reactions = reactionsNode(message);
+    if (reactions) div.appendChild(reactions);
 
     el.messages.appendChild(div);
   }
@@ -987,10 +1820,10 @@ function renderMessages() {
 }
 
 function statusIcon(status) {
-  if (status === 'sending') return '🕓';
-  if (status === 'failed') return '⚠️';
-  if (status === 'delivered') return '<span style="color:#53bdeb">✓✓</span>';
-  return '✓';
+  if (status === 'sending') return '<svg class="ico"><use href="#i-clock" /></svg>';
+  if (status === 'failed') return '<svg class="ico warn"><use href="#i-alert" /></svg>';
+  if (status === 'delivered') return '<svg class="ico read"><use href="#i-checks" /></svg>';
+  return '<svg class="ico"><use href="#i-check" /></svg>';
 }
 
 function renderTyping() {
@@ -1006,6 +1839,26 @@ function renderTyping() {
 /* ------------------------------------------------------------------ *
  * Call UI
  * ------------------------------------------------------------------ */
+/**
+ * Pasang satu stream ke elemen media dan pastikan dia benar-benar diputar.
+ *
+ * Atribut `autoplay` saja tidak cukup: dengan `srcObject` yang dipasang dari
+ * skrip, elemennya bisa berhenti di keadaan paused — track audio tetap hidup,
+ * tapi tidak ada suara yang keluar, dan panggilannya jadi senyap tanpa pesan
+ * error apa pun. Jadi `play()` dipanggil eksplisit, dan penolakannya dilaporkan
+ * (bukan ditelan), karena itu satu-satunya petunjuk yang tersisa buat pengguna.
+ */
+function attachCallMedia(node, stream) {
+  if (node.srcObject !== stream) node.srcObject = stream;
+  if (!stream || !node.paused) return;
+
+  const played = node.play();
+  played?.catch((err) => {
+    console.warn('Pemutaran media panggilan ditolak:', err.message, '- ketuk layar sekali untuk mencoba lagi.');
+    showToast('Suaranya belum keluar. Ketuk layar panggilan sekali lagi.', 6000);
+  });
+}
+
 function renderCall(call = {}) {
   const active = state.calls?.active;
   el.callOverlay.hidden = !active;
@@ -1025,10 +1878,10 @@ function renderCall(call = {}) {
     return;
   }
 
-  if (call.localStream) el.localVideo.srcObject = call.localStream;
+  if (call.localStream) attachCallMedia(el.localVideo, call.localStream);
 
   if (call.remoteStream && call.remoteStream.getTracks().length) {
-    el.remoteVideo.srcObject = call.remoteStream;
+    attachCallMedia(el.remoteVideo, call.remoteStream);
     el.callPlaceholder.hidden = true;
   } else {
     el.callPlaceholder.hidden = false;
@@ -2006,8 +2859,30 @@ el.statusViewerMenu.addEventListener('click', async () => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (!el.msgMenu.hidden) return closeMessageMenu();
+  if (!el.viewer.hidden) return closeViewer();
   if (!el.statusViewer.hidden) return closeStatusViewer();
   if (!el.contactPage.hidden) closeContactPage();
+});
+
+// Kebijakan autoplay bisa menahan suara panggilan sampai ada ketukan; satu
+// ketukan di mana pun membuka kuncinya, jadi kesempatannya dipakai.
+document.addEventListener(
+  'click',
+  () => {
+    for (const node of [el.remoteVideo, el.localVideo]) {
+      if (node.srcObject && node.paused) attachCallMedia(node, node.srcObject);
+    }
+  },
+  true
+);
+
+el.replyCancel.addEventListener('click', cancelReply);
+el.viewerClose.addEventListener('click', closeViewer);
+el.viewerSave.addEventListener('click', () => saveViewerMedia());
+el.viewerStage.addEventListener('click', (event) => {
+  // Ketukan di latar menutup penampil; ketukan di fotonya tidak.
+  if (event.target === el.viewerStage) closeViewer();
 });
 el.btnNewGroup.addEventListener('click', openNewGroup);
 el.btnVerify.addEventListener('click', openSafetyNumber);
@@ -2048,10 +2923,12 @@ el.uploadCancel.addEventListener('click', () => {
 el.composer.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = el.input.value;
+  const replyTo = state.replyTo;
   el.input.value = '';
   el.input.style.height = 'auto';
+  cancelReply();
   stopTyping();
-  sendMessage(text, null);
+  sendMessage(text, null, { replyTo });
 });
 
 // Dropping files straight onto the conversation.
