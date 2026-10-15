@@ -64,8 +64,6 @@ const directory = new Map();
 const inbox = new Map();
 /** callId -> { from, to, startedAt } */
 const calls = new Map();
-/** messageId -> minimal authorization/routing metadata for delete-for-everyone */
-const messageIndex = new Map();
 /** uid -> { version, contentType, size } for the profile photo */
 const avatars = new Map();
 /** statusId -> { id, from, at, members, payload } */
@@ -690,8 +688,6 @@ io.on('connection', (socket) => {
       at: Date.now(),
     };
 
-    messageIndex.set(record.id, { from: uid, roomId: record.roomId, members: [...members], at: record.at });
-    if (messageIndex.size > 5000) { const oldest = messageIndex.keys().next().value; messageIndex.delete(oldest); }
     const delivered = [];
     const queued = [];
     for (const member of members) {
@@ -699,19 +695,6 @@ io.on('connection', (socket) => {
       (queueOrDeliver(member, record) === 'delivered' ? delivered : queued).push(member);
     }
     ack?.({ ok: true, id: record.id, at: record.at, delivered, queued });
-  });
-
-  socket.on('message:delete-everyone', ({ id, roomId } = {}, ack) => {
-    const message = messageIndex.get(String(id || ''));
-    if (!message || message.from !== uid || message.roomId !== String(roomId || '')) return ack?.({ ok: false, error: 'Pesan tidak ditemukan atau bukan milik kamu.' });
-    messageIndex.delete(String(id));
-    // Remove queued copies for recipients that were offline.
-    for (const member of message.members) {
-      const queued = inbox.get(member);
-      if (queued) inbox.set(member, queued.filter((item) => item.id !== String(id)));
-      if (member !== uid) reachMember(member, 'message:deleted', { id: String(id), roomId: message.roomId });
-    }
-    ack?.({ ok: true });
   });
 
   /* ---- Statuses -------------------------------------------------- *

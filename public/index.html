@@ -216,10 +216,7 @@
         <button id="upload-cancel" class="link">Batal</button>
       </div>
 
-      <div id="reply-bar" class="reply-bar" hidden><span>Balas: <strong id="reply-text"></strong></span><button type="button" id="reply-cancel" aria-label="Batal membalas">×</button></div>
       <form id="composer" class="composer">
-        <button type="button" id="btn-emoji" class="icon-btn big round" title="Emoji" aria-label="Emoji">😊</button>
-        <button type="button" id="btn-sticker" class="icon-btn big round" title="Stiker" aria-label="Stiker">🧸</button>
         <button type="button" id="btn-attach" class="icon-btn big round" title="Kirim file" aria-label="Kirim file">
           <svg class="ico"><use href="#i-clip" /></svg>
         </button>
@@ -282,8 +279,7 @@
 
 <!-- ── Call overlay ────────────────────────────────────────────────── -->
 <div id="call-overlay" class="call-overlay" hidden>
-  <video id="remote-video" autoplay playsinline muted></video>
-  <audio id="remote-audio" autoplay></audio>
+  <video id="remote-video" autoplay playsinline></video>
   <div class="call-placeholder" id="call-placeholder">
     <div class="avatar big" id="call-avatar">?</div>
     <h3 id="call-name">—</h3>

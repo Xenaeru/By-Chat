@@ -70,7 +70,6 @@ const state = {
   statusDecoded: new Map(),
   statusView: null,
   isAdmin: false,
-  replyTo: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -127,8 +126,6 @@ const el = {
   typing: $('#typing'),
   composer: $('#composer'),
   input: $('#composer-input'),
-  replyBar: $('#reply-bar'),
-  replyText: $('#reply-text'),
   btnAttach: $('#btn-attach'),
   fileInput: $('#file-input'),
   uploadBar: $('#upload-bar'),
@@ -138,7 +135,6 @@ const el = {
 
   callOverlay: $('#call-overlay'),
   remoteVideo: $('#remote-video'),
-  remoteAudio: $('#remote-audio'),
   localVideo: $('#local-video'),
   callPlaceholder: $('#call-placeholder'),
   callAvatar: $('#call-avatar'),
@@ -252,7 +248,7 @@ function paintAvatars(root = document) {
   }
 }
 
-const packMessage = (text, attachment, extra = {}) => JSON.stringify({ text: text || '', attachment: attachment || null, ...extra });
+const packMessage = (text, attachment) => JSON.stringify({ text: text || '', attachment: attachment || null });
 
 function unpackMessage(raw) {
   try {
@@ -609,7 +605,6 @@ function connect(token) {
   });
 
   socket.on('message', (envelope) => receiveMessage(envelope));
-  socket.on('message:deleted', ({ id, roomId }) => { const room = state.rooms.get(roomId); if (room) { room.messages = room.messages.filter((m) => m.id !== id); saveRooms(); if (state.activeRoomId === roomId) renderMessages(); } });
 
   socket.on('status:new', (status) => {
     state.statuses.push(status);
@@ -661,13 +656,10 @@ function setupCalls() {
 /* ------------------------------------------------------------------ *
  * Messages
  * ------------------------------------------------------------------ */
-async function sendMessage(text, attachment, extra = {}) {
+async function sendMessage(text, attachment) {
   const room = state.rooms.get(state.activeRoomId);
   if (!room) return;
-  if (!text.trim() && !attachment && !extra.sticker) return;
-  const replyTo = extra.replyTo || state.replyTo;
-  const meta = { ...extra, replyTo: replyTo ? { id: replyTo.id, from: replyTo.from, text: String(replyTo.text || '').slice(0, 240) } : null };
-  delete meta.clearReply;
+  if (!text.trim() && !attachment) return;
 
   const sharedKeys = new Map();
   try {
@@ -678,7 +670,7 @@ async function sendMessage(text, attachment, extra = {}) {
     return;
   }
 
-  const payload = await encryptMessage(packMessage(text, attachment, meta), sharedKeys);
+  const payload = await encryptMessage(packMessage(text, attachment), sharedKeys);
   const local = {
     id: `local:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
     from: state.me.uid,
@@ -686,19 +678,16 @@ async function sendMessage(text, attachment, extra = {}) {
     attachment: attachment || null,
     at: Date.now(),
     status: 'sending',
-    ...meta,
   };
   room.messages.push(local);
   renderMessages();
   saveRooms();
 
   socket.emit('send', { roomId: room.id, roomName: room.name, type: room.type, members: room.members, payload }, (ack) => {
-    if (ack?.id) local.id = ack.id;
     local.status = ack?.ok ? (ack.queued?.length ? 'sent' : 'delivered') : 'failed';
     renderMessages();
     saveRooms();
   });
-  if (state.replyTo) { state.replyTo = null; if (el.replyBar) el.replyBar.hidden = true; }
 }
 
 async function receiveMessage(envelope) {
@@ -725,9 +714,6 @@ async function receiveMessage(envelope) {
     at: envelope.at,
     text: parsed.text,
     attachment: parsed.attachment,
-    replyTo: parsed.replyTo || null,
-    forwardedFrom: parsed.forwardedFrom || null,
-    sticker: parsed.sticker || null,
     error,
   });
 
@@ -800,7 +786,7 @@ async function downloadAttachment(message, container) {
     if (token !== state.uploadToken) return;
     state.blobUrls.set(message.id, url);
 
-    if (message.attachment.mime?.startsWith('image/') || message.attachment.mime?.startsWith('video/')) {
+    if (message.attachment.mime?.startsWith('image/')) {
       renderMessages();
     } else {
       const link = document.createElement('a');
@@ -936,86 +922,24 @@ function attachmentNode(message) {
   wrap.className = 'attach';
   const cached = state.blobUrls.get(message.id);
   const a = message.attachment;
+
   if (cached && a.mime?.startsWith('image/')) {
     const img = document.createElement('img');
     img.src = cached;
-    img.alt = a.name || 'Foto';
-    img.addEventListener('click', (event) => { event.stopPropagation(); openMediaViewer(cached, 'image', a.name); });
     wrap.appendChild(img);
+    wrap.addEventListener('click', () => window.open(cached, '_blank'));
     return wrap;
   }
-  if (cached && a.mime?.startsWith('video/')) {
-    const video = document.createElement('video');
-    video.className = 'chat-video'; video.src = cached; video.controls = true; video.playsInline = true; video.preload = 'metadata';
-    video.addEventListener('click', (event) => event.stopPropagation());
-    wrap.appendChild(video);
-    const name = document.createElement('div'); name.className = 'attach-size'; name.textContent = `${a.name || 'Video'} · ${formatBytes(a.size)}`; wrap.appendChild(name);
-    return wrap;
-  }
+
   wrap.innerHTML = `
     <span class="attach-icon">${a.mime?.startsWith('image/') ? '🖼️' : a.mime?.startsWith('video/') ? '🎬' : a.mime?.startsWith('audio/') ? '🎵' : '📄'}</span>
-    <span class="attach-info"><span class="attach-name">${esc(a.name)}</span><span class="attach-size">${esc(formatBytes(a.size))} · terenkripsi</span></span>
+    <span class="attach-info">
+      <span class="attach-name">${esc(a.name)}</span>
+      <span class="attach-size">${esc(formatBytes(a.size))} · terenkripsi</span>
+    </span>
   `;
   wrap.addEventListener('click', () => downloadAttachment(message, wrap));
   return wrap;
-}
-
-function openMediaViewer(url, type, name = '') {
-  let viewer = document.getElementById('media-viewer');
-  if (!viewer) {
-    viewer = document.createElement('div'); viewer.id = 'media-viewer'; viewer.className = 'media-viewer';
-    viewer.innerHTML = '<button type="button" class="media-viewer-close" aria-label="Tutup">×</button><div class="media-viewer-content"></div>';
-    viewer.addEventListener('click', (event) => { if (event.target === viewer || event.target.closest('.media-viewer-close')) { viewer.hidden = true; viewer.querySelector('.media-viewer-content').innerHTML = ''; } });
-    document.body.appendChild(viewer);
-    document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { viewer.hidden = true; viewer.querySelector('.media-viewer-content').innerHTML = ''; } });
-  }
-  const content = viewer.querySelector('.media-viewer-content'); content.innerHTML = '';
-  const media = document.createElement(type === 'video' ? 'video' : 'img'); media.src = url; media.alt = name || 'Media';
-  if (type === 'video') { media.controls = true; media.autoplay = true; media.playsInline = true; }
-  content.appendChild(media); viewer.hidden = false;
-}
-
-function messageActions(message, room) {
-  const actions = document.createElement('div'); actions.className = 'msg-actions';
-  const add = (label, title, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = title; b.addEventListener('click', (e) => { e.stopPropagation(); fn(); }); actions.appendChild(b); };
-  add('↩', 'Balas', () => { state.replyTo = message; if (el.replyBar) { el.replyBar.hidden = false; el.replyText.textContent = (message.text || message.attachment?.name || message.sticker || 'Pesan').slice(0, 120); } el.input.focus(); });
-  add('↗', 'Teruskan', async () => {
-    const targets = [...state.rooms.values()].filter((r) => r.id !== room.id && r.type === 'dm');
-    if (!targets.length) return showToast('Belum ada chat lain untuk tujuan penerusan.');
-    const labels = targets.map((r, i) => `${i + 1}. ${r.name || r.members.filter((u) => u !== state.me.uid).map((u) => peerByUid(u)?.displayName || u.slice(0, 8)).join(', ')}`).join('\n');
-    const choice = Number(prompt(`Teruskan ke chat mana?\n${labels}\nMasukkan nomor:`));
-    const target = targets[choice - 1]; if (!target) return;
-    const previous = state.activeRoomId; selectRoom(target.id);
-    await sendMessage(message.text || '', message.attachment || null, { forwardedFrom: { from: message.from, text: (message.text || message.attachment?.name || message.sticker || '').slice(0, 240) }, sticker: message.sticker || null });
-    if (previous && previous !== target.id) selectRoom(previous);
-  });
-  add('🗑', 'Hapus', () => {
-    const isOwnMessage = message.from === state.me.uid;
-    if (isOwnMessage) {
-      const deleteForEveryone = confirm('Hapus pesan ini untuk semua orang?\n\nOK = Hapus untuk semua orang\nBatal = Hapus untuk diri sendiri saja');
-      if (deleteForEveryone) {
-        // Only the original sender may request global deletion. Remove the local
-        // copy only after the server confirms that authorization and deletion succeeded.
-        socket.emit('message:delete-everyone', { id: message.id, roomId: room.id }, (ack) => {
-          if (!ack?.ok) {
-            showToast(ack?.error || 'Gagal menghapus untuk semua orang.');
-            return;
-          }
-          room.messages = room.messages.filter((m) => m.id !== message.id);
-          saveRooms();
-          if (state.activeRoomId === room.id) renderMessages();
-        });
-        return;
-      }
-    }
-
-    // Delete-for-me is local to this account. A message sent by another person
-    // can never be globally deleted by this client.
-    room.messages = room.messages.filter((m) => m.id !== message.id);
-    saveRooms();
-    if (state.activeRoomId === room.id) renderMessages();
-  });
-  return actions;
 }
 
 function renderMessages() {
@@ -1046,9 +970,6 @@ function renderMessages() {
     if (message.error) {
       div.appendChild(document.createTextNode(`⚠️ pesan ini nggak bisa dibuka (${message.error})`));
     } else {
-      if (message.forwardedFrom) { const f = document.createElement('div'); f.className = 'msg-forwarded'; f.textContent = '↗ Diteruskan'; div.appendChild(f); }
-      if (message.replyTo) { const r = document.createElement('div'); r.className = 'msg-reply'; r.textContent = `↩ ${message.replyTo.text || 'Pesan'}`; div.appendChild(r); }
-      if (message.sticker) { const st = document.createElement('div'); st.className = 'msg-sticker'; st.textContent = message.sticker; div.appendChild(st); }
       if (message.attachment) div.appendChild(attachmentNode(message));
       if (message.text) div.appendChild(document.createTextNode(message.text));
     }
@@ -1058,7 +979,6 @@ function renderMessages() {
     meta.innerHTML = `${formatTime(message.at)} ${mine ? statusIcon(message.status) : ''}`;
     div.appendChild(meta);
 
-    div.appendChild(messageActions(message, room));
     el.messages.appendChild(div);
   }
 
@@ -1094,7 +1014,6 @@ function renderCall(call = {}) {
     el.incoming.hidden = true;
     state.incoming = null;
     el.remoteVideo.srcObject = null;
-    if (el.remoteAudio) el.remoteAudio.srcObject = null;
     el.localVideo.srcObject = null;
     if (call.endedPeer) {
       showToast(
@@ -1109,11 +1028,7 @@ function renderCall(call = {}) {
   if (call.localStream) el.localVideo.srcObject = call.localStream;
 
   if (call.remoteStream && call.remoteStream.getTracks().length) {
-    // Separate audio playback avoids a browser/video-element quirk where remote
-    // audio tracks are connected but inaudible on audio-only calls.
-    el.remoteVideo.muted = true;
     el.remoteVideo.srcObject = call.remoteStream;
-    if (el.remoteAudio) { el.remoteAudio.srcObject = call.remoteStream; el.remoteAudio.volume = 1; el.remoteAudio.play().catch(() => showToast('Browser memblokir audio otomatis. Ketuk layar lalu aktifkan suara.')); }
     el.callPlaceholder.hidden = true;
   } else {
     el.callPlaceholder.hidden = false;
@@ -1570,8 +1485,7 @@ function renderStatuses() {
     ? `${mine.length} status · terakhir ${formatListTime(mine.at(-1).at)}`
     : 'Ketuk buat tambah status';
 
-  const chattedUids = new Set([...state.rooms.values()].filter((room) => room.type === 'dm' && room.messages.some((m) => !m.system)).flatMap((room) => room.members.filter((uid) => uid !== state.me.uid)));
-  const owners = statusOwnerList().filter((uid) => uid !== state.me.uid && chattedUids.has(uid));
+  const owners = statusOwnerList().filter((uid) => uid !== state.me.uid);
   el.statusList.innerHTML = '';
   el.statusList.hidden = owners.length === 0;
 
@@ -1695,7 +1609,7 @@ function applyOwnPhoto(photoURL) {
 /* ------------------------------------------------------------------ *
  * Status: penampil + pembuat
  * ------------------------------------------------------------------ */
-const STATUS_SHOW_MS = 7000;
+const STATUS_SHOW_MS = 5000;
 let statusToken = 0;
 let statusAdvance = null;
 
@@ -1766,7 +1680,7 @@ async function renderStatusView() {
 
   markStatusSeen(status.id);
   await paintStatusStage(decoded, mine ? 'Ketuk ikon tempat sampah buat menghapus ini' : '');
-  if (!decoded.attachment?.mime?.startsWith('video/')) scheduleStatusAdvance();
+  scheduleStatusAdvance();
 }
 
 async function paintStatusStage(decoded, hint = '') {
@@ -1776,21 +1690,18 @@ async function paintStatusStage(decoded, hint = '') {
   }
 
   if (decoded.attachment) {
-    el.statusStage.innerHTML = '<div class="status-note">Membuka media…</div>';
+    el.statusStage.innerHTML = '<div class="status-note">Membuka gambar…</div>';
     try {
       const url = await fetchAttachment({
         attachment: decoded.attachment,
         getIdToken: () => state.auth.getIdToken(),
       });
-      const isVideo = decoded.attachment.mime?.startsWith('video/');
       el.statusStage.innerHTML = `
-        ${isVideo ? '<video class="status-video" controls autoplay playsinline></video>' : '<img class="status-image" alt="Status" />'}
+        <img class="status-image" alt="Status" />
         ${decoded.text ? `<span class="status-caption">${esc(decoded.text)}</span>` : ''}
         ${hint ? `<span class="status-hint">${esc(hint)}</span>` : ''}
       `;
-      const media = el.statusStage.querySelector(isVideo ? 'video' : 'img');
-      media.src = url;
-      if (isVideo) { media.onended = () => nextStatus(1); media.play().catch(() => {}); }
+      el.statusStage.querySelector('img').src = url;
     } catch (err) {
       el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#7f1d1d">⚠️ ${esc(err.message)}</div>`;
     }
@@ -1805,8 +1716,12 @@ async function paintStatusStage(decoded, hint = '') {
 
 async function publishStatus({ text, color, attachment }) {
   // Everybody who can see the name gets a wrapped copy of the status key.
-  const chattedUids = new Set([...state.rooms.values()].filter((room) => room.type === 'dm' && room.messages.some((m) => !m.system)).flatMap((room) => room.members.filter((uid) => uid !== state.me.uid)));
-  const audience = [...new Set([...state.directory.filter((user) => user.uid !== state.me.uid && user.publicKey && chattedUids.has(user.uid)).map((user) => user.uid), state.me.uid])];
+  const audience = [
+    ...new Set([
+      ...state.directory.filter((user) => user.uid !== state.me.uid && user.publicKey).map((user) => user.uid),
+      state.me.uid,
+    ]),
+  ];
 
   const keys = new Map();
   for (const uid of audience) {
@@ -1861,8 +1776,8 @@ function openStatusComposer() {
           `<button type="button" class="swatch${index === 0 ? ' active' : ''}" data-color="${color}" style="--swatch:${color}" aria-label="Warna ${index + 1}"></button>`
       ).join('')}
     </div>
-    <p class="sub" id="status-note">Pilih warna latar, atau lampirkan foto/video.</p>
-    <input type="file" id="status-photo" accept="image/*,video/mp4,video/webm,video/quicktime" hidden />
+    <p class="sub" id="status-note">Pilih warna latar, atau lampirkan foto.</p>
+    <input type="file" id="status-photo" accept="image/*" hidden />
     <div class="modal-actions">
       <button data-close>Batal</button>
       <button data-photo>Lampirkan foto</button>
@@ -1887,7 +1802,7 @@ function openStatusComposer() {
 
   el.modalCard.querySelector('#status-photo').addEventListener('change', (event) => {
     [chosenFile] = event.target.files || [];
-    note().textContent = chosenFile ? `Siap dibagikan: ${chosenFile.name}` : 'Pilih warna latar, atau lampirkan foto/video.';
+    note().textContent = chosenFile ? `Siap dibagikan: ${chosenFile.name}` : 'Pilih warna latar, atau lampirkan foto.';
   });
 
   el.modalCard.querySelector('[data-publish]').addEventListener('click', async () => {
@@ -2120,17 +2035,6 @@ el.modal.addEventListener('click', (event) => {
 });
 
 el.btnAttach.addEventListener('click', () => el.fileInput.click());
-function showEmojiPicker(button, stickerMode = false) {
-  document.querySelector('.emoji-picker')?.remove();
-  const values = stickerMode ? ['😂','🥹','😍','😭','👍','❤️','🔥','🙏','🎉','😎','🤔','💯','👀','✨','🫡','🤝','🥳','🤗','💖','🙌'] : ['😀','😂','🥹','😍','🥳','😭','👍','❤️','🔥','🙏','🎉','🤔','😎','💯','👀','✨','😊','😅','😴','👏','💀','🫶','😡','🤩','🙃','😇'];
-  const picker = document.createElement('div'); picker.className = 'emoji-picker';
-  for (const value of values) { const b = document.createElement('button'); b.type = 'button'; b.textContent = value; b.title = stickerMode ? 'Kirim stiker' : 'Masukkan emoji'; b.addEventListener('click', () => { picker.remove(); if (stickerMode) sendMessage('', null, { sticker: value }); else { const start = el.input.selectionStart ?? el.input.value.length; const end = el.input.selectionEnd ?? start; el.input.value = el.input.value.slice(0,start) + value + el.input.value.slice(end); el.input.focus(); el.input.setSelectionRange(start + value.length, start + value.length); } }); picker.appendChild(b); }
-  document.body.appendChild(picker); const rect = button.getBoundingClientRect(); picker.style.left = `${Math.min(rect.left, window.innerWidth - 260)}px`; picker.style.bottom = `${Math.max(12, window.innerHeight - rect.top + 8)}px`;
-  const close = (event) => { if (!picker.contains(event.target) && event.target !== button) { picker.remove(); document.removeEventListener('pointerdown', close); } }; setTimeout(() => document.addEventListener('pointerdown', close), 0);
-}
-$('#btn-emoji')?.addEventListener('click', (event) => showEmojiPicker(event.currentTarget, false));
-$('#btn-sticker')?.addEventListener('click', (event) => showEmojiPicker(event.currentTarget, true));
-$('#reply-cancel')?.addEventListener('click', () => { state.replyTo = null; if (el.replyBar) el.replyBar.hidden = true; });
 el.fileInput.addEventListener('change', async () => {
   const files = [...el.fileInput.files];
   el.fileInput.value = '';
