@@ -204,6 +204,35 @@ test('1:1 message is encrypted in transit and readable by both parties', async (
   bob.close();
 });
 
+test('only the original sender can delete a message for everyone', async () => {
+  const alice = await new Client('delete-owner').init();
+  const bob = await new Client('delete-recipient').init();
+  await sleep(40);
+
+  const roomId = [alice.uid, bob.uid].sort().join(':');
+  const key = await alice.keyWith(bob.uid, bob.identity.publicKey);
+  const { ack: sent } = await alice.send({
+    roomId: `dm:${roomId}`,
+    members: [alice.uid, bob.uid],
+    text: 'message to delete',
+    keys: new Map([[alice.uid, key], [bob.uid, key]]),
+  });
+  assert.equal(sent.ok, true);
+
+  const unauthorized = await new Promise((resolve) => {
+    bob.socket.emit('message:delete-everyone', { id: sent.id, roomId: `dm:${roomId}` }, resolve);
+  });
+  assert.equal(unauthorized.ok, false, "recipient must not delete another person\'s message for everyone");
+
+  const authorized = await new Promise((resolve) => {
+    alice.socket.emit('message:delete-everyone', { id: sent.id, roomId: `dm:${roomId}` }, resolve);
+  });
+  assert.equal(authorized.ok, true, 'original sender can delete their message for everyone');
+
+  alice.close();
+  bob.close();
+});
+
 test('server memory only ever holds ciphertext and public keys', async () => {
   const alice = await new Client('alice2').init();
   const bob = await new Client('bob2').init();
