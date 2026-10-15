@@ -62,6 +62,16 @@ services:
         sync: false
       - key: SUPABASE_BUCKET
         value: attachments
+
+      # ── Admin (laporan + blokir) ────────────────────────────────────────
+      # Email yang boleh membuka /admin.html. Boleh lebih dari satu, pisahkan
+      # dengan koma. Tanpa ini aplikasinya tetap jalan, tapi nggak ada yang
+      # bisa masuk ke halaman adminnya.
+      # Login pakai nomor HP (tanpa email)? Pakai ADMIN_UIDS, isinya uid dari
+      # halaman Pengaturan akun itu — tapi jangan tulis keduanya di sini,
+      # ADMIN_UIDS cukup ditambahkan manual di dashboard Render.
+      - key: ADMIN_EMAILS
+        sync: false
       # 45 MiB: satu file = satu objek, dan free plan Supabase mentok 50 MB.
       - key: MAX_UPLOAD_BYTES
         value: "47185920"

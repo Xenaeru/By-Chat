@@ -22,9 +22,19 @@ process.env.NODE_ENV = 'test';
 process.env.AUTH_MODE = 'dev';
 process.env.STORAGE_DRIVER = 'local';
 process.env.LOCAL_STORAGE_DIR = path.join(TMP, 'attachments');
+process.env.LOCAL_AVATAR_DIR = path.join(TMP, 'avatars');
+// Username claims belong to the temp dir too, so a check run never leaves names
+// behind in the developer's data/ folder.
+process.env.USERNAME_STORE = path.join(TMP, 'usernames.json');
+process.env.MODERATION_STORE = path.join(TMP, 'moderation.json');
+process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
+// `andi` yang jadi admin di jalur ini, jadi tautan admin muncul di sidebar-nya
+// dan halaman /admin.html benar-benar bisa dibuka — sekaligus bisa diuji bahwa
+// akun lain ditolak.
+process.env.ADMIN_UIDS = `dev-${crypto.createHash('sha256').update('andi').digest('hex').slice(0, 20)}`;
 process.env.PORT = process.env.PORT || '4400';
 
-const { server, directory, inbox } = await import('../server.js');
+const { server, directory, inbox, statuses, moderation } = await import('../server.js');
 await new Promise((resolve) => (server.listening ? resolve() : server.once('listening', resolve)));
 
 const BASE_URL = `http://127.0.0.1:${process.env.PORT}`;
@@ -95,12 +105,63 @@ async function login(browser, username) {
     (await display(page, '#login-firebase')) === 'none'
   );
 
+  check(`${username}: kartu login memakai logo baru`, (await page.$('.brand-mark')) !== null);
+  const logoWidth = await page.$eval('.brand-mark', (img) => img.naturalWidth);
+  check(`${username}: file logo benar-benar termuat`, logoWidth > 0, `naturalWidth=${logoWidth}`);
+
   await page.type('#login-username', username);
   await page.click('#login-submit');
   await page.waitForSelector('#app:not([hidden])', { timeout: 15000 });
   await page.waitForFunction(() => document.querySelector('#me-status')?.textContent.includes('online'), {
     timeout: 15000,
   });
+
+  // Signing in is not the whole story: a fresh account has to claim a username
+  // before the server will relay anything, so the gate is part of the flow.
+  await page.waitForSelector('#onboarding:not([hidden])', { timeout: 15000 });
+  check(
+    `${username}: diminta memilih username setelah masuk`,
+    (await display(page, '#onboarding')) === 'grid'
+  );
+
+  await page.focus('#username-input');
+  // Empty the pre-filled suggestion through the real `input` path rather than
+  // editing it in place — a stray character left behind would silently change
+  // the name under test.
+  await page.$eval('#username-input', (field) => {
+    field.value = '';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.type('#username-input', username);
+  const typed = await page.$eval('#username-input', (field) => field.value);
+  check(`${username}: nama yang diketik masuk apa adanya`, typed === username, typed);
+  await page.waitForFunction(
+    (name) => {
+      const note = document.querySelector('#username-status');
+      const button = document.querySelector('#username-submit');
+      // The button is only unlocked by a fresh answer for the current value, so
+      // waiting on it too rules out reading a stale "available" note.
+      return (
+        note?.classList.contains('good') &&
+        note.textContent.includes(`@${name}`) &&
+        Boolean(button) && button.disabled === false
+      );
+    },
+    { timeout: 10000 },
+    username
+  );
+  check(`${username}: server bilang nama itu masih kosong`, true);
+
+  await page.click('#username-submit');
+  await page.waitForSelector('#onboarding[hidden]', { timeout: 15000 });
+  await page.waitForFunction(
+    (name) => document.querySelector('#me-name')?.textContent === name,
+    { timeout: 10000 },
+    username
+  );
+  check(`${username}: username langsung jadi identitas di sidebar`, true);
+  const avatarHue = await page.$eval('#me-avatar', (el) => el.style.getPropertyValue('--hue'));
+  check(`${username}: warna avatar diturunkan dari namanya`, avatarHue !== '', `--hue="${avatarHue}"`);
 
   check(`${username}: layar login hilang setelah masuk`, (await display(page, '#login')) === 'none');
   check(`${username}: aplikasi benar-benar tampil`, (await display(page, '#app')) === 'grid');
@@ -110,8 +171,76 @@ async function login(browser, username) {
     (await display(page, '#call-overlay')) === 'none'
   );
   check(`${username}: tombol log keluar terlihat`, (await display(page, '#btn-logout')) !== 'none');
+  check(`${username}: layar sambutan tampil sebelum ada chat`, (await display(page, '#empty-state')) !== 'none');
+  check(
+    `${username}: fitur utama dijelaskan di layar sambutan`,
+    (await page.$$eval('#empty-state .chip', (nodes) => nodes.length)) === 3
+  );
+
+  // Tampilan tidak bisa dinilai dari satu nilai, tapi tata letak yang rusak
+  // selalu kelihatan dari ukuran nol dan halaman yang meluber ke samping.
+  const layout = await page.evaluate(() => {
+    const box = (selector) => {
+      const node = document.querySelector(selector);
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      return { w: Math.round(rect.width), h: Math.round(rect.height) };
+    };
+    return {
+      chatList: box('#chat-list'),
+      statusPanel: box('.status-panel'),
+      overflowX: document.documentElement.scrollWidth - window.innerWidth,
+      accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+    };
+  });
+  check(
+    `${username}: panel sidebar benar-benar punya ukuran`,
+    [layout.chatList, layout.statusPanel].every((rect) => rect && rect.w > 0 && rect.h > 0),
+    JSON.stringify(layout)
+  );
+  check(`${username}: halaman nggak meluber ke samping`, layout.overflowX <= 1, `overflow ${layout.overflowX}px`);
+  check(
+    `${username}: warna aksen mengikuti palet logo`,
+    layout.accent === '#38c6ff',
+    layout.accent
+  );
 
   return { context, page };
+}
+
+/**
+ * The other half of the rule: a name somebody already holds must be refused in
+ * the UI, not just on the server.
+ */
+async function expectUsernameRefused(browser) {
+  const context = await browser.createBrowserContext();
+  const page = await context.newPage();
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#login:not([hidden])', { timeout: 15000 });
+  await page.type('#login-username', 'penyusup');
+  await page.click('#login-submit');
+  await page.waitForSelector('#onboarding:not([hidden])', { timeout: 15000 });
+
+  await page.focus('#username-input');
+  await page.$eval('#username-input', (field) => {
+    field.value = '';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  // Different case on purpose: 'andi' is taken, and so is 'ANDI'.
+  await page.type('#username-input', 'ANDI');
+  await page.waitForFunction(
+    () => document.querySelector('#username-status')?.classList.contains('bad'),
+    { timeout: 10000 }
+  );
+
+  const state = await page.evaluate(() => ({
+    note: document.querySelector('#username-status').textContent,
+    disabled: document.querySelector('#username-submit').disabled,
+  }));
+  check('username yang sudah dipakai ditolak di layar', /sudah dipakai/.test(state.note), state.note);
+  check('tombol simpan terkunci selama namanya sudah dipakai', state.disabled === true);
+
+  await context.close();
 }
 
 /** A valid, deterministic SVG so the attachment renders inline (no download plumbing). */
@@ -129,6 +258,257 @@ function writeSampleImage() {
     sha256: crypto.createHash('sha256').update(svg).digest('hex'),
     bytes: Buffer.byteLength(svg),
   };
+}
+
+/**
+ * Buka halaman tambah kontak, cari satu orang, dan kembalikan hasil teratasnya.
+ * Ini jalur yang sekarang dipakai setiap percakapan baru, jadi dipakai berkali-kali.
+ */
+async function findContact(page, query) {
+  await page.click('#btn-new-chat');
+  await page.waitForSelector('#contact-page:not([hidden])', { timeout: 10000 });
+  await page.$eval('#contact-query', (field) => {
+    field.value = '';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.type('#contact-query', query);
+  await page.click('#contact-submit');
+  await page.waitForSelector('#contact-results:not([hidden]) .contact-result', { timeout: 15000 });
+  return page.$eval('.contact-result', (li) => ({
+    uid: li.dataset.uid,
+    text: li.textContent,
+    avatar: li.querySelector('.avatar')?.style.backgroundImage || '',
+  }));
+}
+
+/**
+ * Foto profil dan status lewat jalur yang berbeda dari pesan: foto profil
+ * memang publik, status tetap terenkripsi. Keduanya diuji dari UI aslinya.
+ *
+ * @returns {string} teks status yang tadi dikirim, buat dicek di memori server
+ */
+async function checkPhotoAndStatus(andi, budi) {
+  const png = path.join(TMP, 'foto-profil.png');
+  fs.writeFileSync(
+    png,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AARAAH/wAB/9p9AAAAAElFTkSuQmCC',
+      'base64'
+    )
+  );
+
+  /* ---- Foto profil ---- */
+  await andi.page.click('#btn-settings');
+  await andi.page.waitForSelector('#settings-avatar', { timeout: 10000 });
+  const avatarInput = await andi.page.$('#avatar-input');
+  await avatarInput.uploadFile(png);
+  await andi.page.waitForFunction(
+    () => (document.querySelector('#settings-avatar')?.style.backgroundImage || '').includes('/api/avatar/'),
+    { timeout: 15000 }
+  );
+  check('Foto profil terpasang dari Pengaturan', true);
+
+  await andi.page.click('[data-close]');
+  await andi.page.waitForSelector('#modal[hidden]', { timeout: 10000 });
+  await andi.page.waitForFunction(
+    () => (document.querySelector('#me-avatar')?.style.backgroundImage || '').includes('/api/avatar/'),
+    { timeout: 10000 }
+  );
+  check('Avatar di sidebar memakai foto yang baru diunggah', true);
+
+  // Kontak lain melihat foto yang sama saat mencari namanya, tanpa minta apa pun.
+  const listed = await findContact(budi.page, 'andi');
+  check(
+    'Kontak lain melihat foto profil itu',
+    listed.avatar.includes('/api/avatar/'),
+    listed.avatar || '(tanpa foto)'
+  );
+  await budi.page.click('#contact-back');
+  await budi.page.waitForSelector('#contact-page[hidden]', { timeout: 10000 });
+
+  /* ---- Status ---- */
+  const statusText = `status uji otomatis ${Date.now()}`;
+  await andi.page.click('#status-me-add');
+  await andi.page.waitForSelector('#status-text', { timeout: 10000 });
+  await andi.page.type('#status-text', statusText);
+  await andi.page.click('.modal-card [data-publish]');
+  await andi.page.waitForFunction(
+    (text) => document.querySelector('#status-stage .status-text')?.textContent.includes(text),
+    { timeout: 15000 },
+    statusText
+  );
+  check('Status sendiri langsung tampil penuh layar', true);
+  await andi.page.click('#status-viewer-close');
+  await andi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
+
+  await budi.page.waitForSelector('.status-item', { timeout: 15000 });
+  const ringed = await budi.page.$eval('.status-item .avatar', (node) => node.classList.contains('ring'));
+  check('Status yang belum dibuka ditandai cincin', ringed === true);
+
+  await budi.page.click('.status-item');
+  await budi.page.waitForFunction(
+    (text) => document.querySelector('#status-stage .status-text')?.textContent.includes(text),
+    { timeout: 15000 },
+    statusText
+  );
+  check('Budi membaca isi status terenkripsi itu', true);
+  await budi.page.click('#status-viewer-close');
+  await budi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
+  await budi.page.waitForFunction(
+    () => document.querySelector('.status-item')?.textContent.includes('Sudah dilihat'),
+    { timeout: 10000 }
+  );
+  check('Sesudah dibaca, status ditandai sudah dilihat', true);
+
+  /* ---- Status foto: jalur lampiran terenkripsi lewat status ---- */
+  await andi.page.click('#status-me-add');
+  await andi.page.waitForSelector('#status-photo', { timeout: 10000 });
+  const statusPhoto = await andi.page.$('#status-photo');
+  await statusPhoto.uploadFile(png);
+  await andi.page.click('.modal-card [data-publish]');
+  await andi.page.waitForFunction(
+    () => Boolean(document.querySelector('#status-stage .status-image')),
+    { timeout: 20000 }
+  );
+  check('Status foto sendiri tampil', true);
+  await andi.page.click('#status-viewer-close');
+  await andi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
+
+  // Budi membuka lagi: yang pertama sudah dilihat, jadi pembukanya seharusnya
+  // langsung ke status foto. Kalau ternyata mulai dari awal, maju satu langkah.
+  const photoShown = () =>
+    budi.page.waitForFunction(
+      () => (document.querySelector('#status-stage .status-image')?.naturalWidth || 0) > 0,
+      { timeout: 8000 }
+    );
+
+  await budi.page.waitForSelector('.status-item', { timeout: 15000 });
+  await budi.page.click('.status-item');
+  const straightToPhoto = await photoShown().then(
+    () => true,
+    () => false
+  );
+  if (!straightToPhoto) {
+    await budi.page.click('#status-next');
+    await photoShown();
+  }
+  check('Status foto sampai ke Budi dan berhasil didekripsi', true);
+  await budi.page.click('#status-viewer-close');
+  await budi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
+
+  return statusText;
+}
+
+/**
+ * Laporan + halaman admin, lewat jalur yang benar-benar dipakai orang:
+ * Andi melaporkan Budi dari header chat, halaman admin membaca laporannya,
+ * lalu memblokir dan membuka blokir lagi — dan sisi Budi ikut diperiksa.
+ */
+async function checkReportAndAdmin(andi, budi) {
+  /* ---- Laporkan dari header chat ---- */
+  await andi.page.waitForSelector('#chat-view:not([hidden])');
+  check('Tombol lapor ada di chat pribadi', (await andi.page.$eval('#btn-report', (e) => !e.hidden)) === true);
+
+  await andi.page.click('#btn-report');
+  await andi.page.waitForSelector('#report-reason', { timeout: 10000 });
+  const reasonCount = await andi.page.$$eval('#report-reason option', (nodes) => nodes.length);
+  check('Alasan laporan datang dari server', reasonCount >= 4, `${reasonCount} pilihan`);
+
+  await andi.page.select('#report-reason', 'spam');
+  await andi.page.type('#report-detail', 'kirim iklan terus');
+  await andi.page.click('.modal-card [data-send]');
+  await andi.page.waitForFunction(() => document.querySelector('#modal')?.hidden === true, { timeout: 15000 });
+  check('Laporan bisa dikirim dari layar', true);
+
+  const stored = moderation
+    .reports()
+    .find((report) => report.from === devUid('andi') && report.about === devUid('budi'));
+  check(
+    'Server menyimpan laporan itu beserta alasannya',
+    Boolean(stored) && stored.reason === 'spam' && stored.detail === 'kirim iklan terus',
+    JSON.stringify(stored)
+  );
+  check(
+    'Isi chat tidak ikut ke dalam laporan',
+    !JSON.stringify(stored).includes('rahasia dari andi'),
+    JSON.stringify(stored)
+  );
+
+  /* ---- Halaman admin ---- */
+  // Akun biasa ditolak oleh servernya, bukan cuma disembunyikan tautannya.
+  const intruder = await budi.context.newPage();
+  await intruder.goto(`${BASE_URL}/admin.html`, { waitUntil: 'domcontentloaded' });
+  await intruder.waitForSelector('#denied:not([hidden])', { timeout: 15000 });
+  const deniedText = await intruder.$eval('#denied-detail', (node) => node.textContent);
+  check('Akun bukan admin ditolak halaman admin', /bukan admin/i.test(deniedText), deniedText);
+  await intruder.close();
+
+  check(
+    'Tautan admin cuma muncul untuk yang punya aksesnya',
+    (await andi.page.$eval('#btn-admin', (node) => !node.hidden)) === true &&
+      (await budi.page.$eval('#btn-admin', (node) => node.hidden)) === true
+  );
+
+  // Sesi chat Andi dipakai ulang di halaman admin, jadi nggak ada login kedua.
+  const adminPage = await andi.context.newPage();
+  adminPage.on('pageerror', (err) => CONSOLE_LOG.push(`admin pageerror: ${err.message}`));
+  await adminPage.goto(`${BASE_URL}/admin.html`, { waitUntil: 'domcontentloaded' });
+  await adminPage.waitForSelector('#admin:not([hidden])', { timeout: 15000 });
+  check('Halaman admin terbuka untuk akun admin', (await display(adminPage, '#admin')) !== 'none');
+  check('Tidak ada form login kedua di halaman admin', (await display(adminPage, '#login')) === 'none');
+
+  await adminPage.waitForFunction(
+    () => document.querySelector('#tab-reports')?.textContent.trim() === 'Laporan 1',
+    { timeout: 15000 }
+  );
+  const panelText = await adminPage.$eval('#admin-panel', (node) => node.textContent);
+  check('Laporan terlihat di halaman admin', /spam/i.test(panelText), panelText.slice(0, 120));
+  const stats = await adminPage.$$eval('.admin-stat strong', (nodes) => nodes.map((node) => node.textContent));
+  check('Statistik admin menghitung laporan terbuka', stats[0] === '1', JSON.stringify(stats));
+
+  // Blokir Budi dari daftar pengguna.
+  await adminPage.click('.admin-tab[data-tab="users"]');
+  await adminPage.waitForSelector('#admin-search', { timeout: 10000 });
+  await adminPage.type('#admin-search', 'budi');
+  await adminPage.waitForFunction(
+    () => [...document.querySelectorAll('[data-user] strong')].some((node) => node.textContent.includes('budi')),
+    { timeout: 10000 }
+  );
+  await adminPage.evaluate(() => {
+    const card = [...document.querySelectorAll('[data-user]')].find((node) => node.textContent.includes('budi'));
+    card.querySelector('[data-act="ban"]').click();
+  });
+  await adminPage.waitForSelector('#ban-reason', { timeout: 10000 });
+  await adminPage.type('#ban-reason', 'uji otomatis');
+  await adminPage.click('.modal-card [data-ok]');
+  await adminPage.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('diblokir'), {
+    timeout: 15000,
+  });
+  check('Admin bisa memblokir akun dari halaman admin', true);
+
+  // Sisi Budi: sesi yang sedang jalan langsung berhenti, dengan alasannya.
+  await budi.page.waitForSelector('#banned:not([hidden])', { timeout: 15000 });
+  const bannedReason = await budi.page.$eval('#banned-reason', (node) => node.textContent);
+  check('Akun yang diblokir melihat alasan dari admin', bannedReason.includes('uji otomatis'), bannedReason);
+  check('Aplikasi chat disembunyikan setelah diblokir', (await display(budi.page, '#app')) === 'none');
+
+  // Buka blokir lagi, dan Budi bisa kembali dengan username yang sama.
+  await adminPage.click('.admin-tab[data-tab="bans"]');
+  await adminPage.waitForSelector('[data-act="unban"]', { timeout: 10000 });
+  await adminPage.click('[data-act="unban"]');
+  await adminPage.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('dibuka'), {
+    timeout: 15000,
+  });
+  check('Admin bisa membuka blokir', true);
+
+  await budi.page.reload({ waitUntil: 'domcontentloaded' });
+  await budi.page.waitForSelector('#app:not([hidden])', { timeout: 15000 });
+  await budi.page.waitForFunction(() => document.querySelector('#me-name')?.textContent === 'budi', {
+    timeout: 15000,
+  });
+  check('Setelah blokirnya dibuka, akunnya jalan lagi seperti semula', true);
+
+  await adminPage.close();
 }
 
 const browser = await puppeteer.launch({
@@ -152,20 +532,71 @@ try {
   activeClients.andi = andi;
   const budi = await login(browser, 'budi');
   activeClients.budi = budi;
+  await expectUsernameRefused(browser);
+  const statusText = await checkPhotoAndStatus(andi, budi);
 
-  /* ---- 1. Opening a chat ---------------------------------------- */
+  /* ---- 1. Mencari kontak sebelum bisa chat ---------------------- */
   await andi.page.click('#btn-new-chat');
-  await andi.page.waitForSelector('.picker li', { timeout: 10000 });
-  const pickedBudi = await andi.page.evaluate(() => {
-    const li = [...document.querySelectorAll('.picker li')].find((n) => n.textContent.includes('budi'));
-    if (li) li.click();
-    return Boolean(li);
+  await andi.page.waitForSelector('#contact-page:not([hidden])');
+  check('Tombol ＋ membuka halaman tambah kontak', (await display(andi.page, '#contact-page')) === 'grid');
+  check('Daftar orang nggak langsung bermunculan', (await display(andi.page, '#contact-results')) === 'none');
+  check(
+    'Halaman tambah kontak bukan modal yang menutupi layar',
+    (await display(andi.page, '#modal')) === 'none'
+  );
+  check(
+    'Sidebar tetap punya ukuran selama halaman itu terbuka',
+    await andi.page.$eval('#chat-list, .sidebar', (node) => node.getBoundingClientRect().width > 0)
+  );
+
+  // Kueri yang terlalu pendek ditahan sebelum menyentuh server.
+  await andi.page.type('#contact-query', 'bu');
+  await andi.page.click('#contact-submit');
+  await andi.page.waitForFunction(
+    () => document.querySelector('#contact-note')?.classList.contains('bad'),
+    { timeout: 10000 }
+  );
+  const shortNote = await andi.page.$eval('#contact-note', (node) => node.textContent);
+  check('Pencarian ditolak kalau kurang dari 3 karakter', /3 karakter/i.test(shortNote), shortNote);
+
+  await andi.page.$eval('#contact-query', (field) => {
+    field.value = '';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  check('Andi menemukan Budi di daftar kontak', pickedBudi);
+  await andi.page.type('#contact-query', 'budi');
+  await andi.page.click('#contact-submit');
+  await andi.page.waitForSelector('#contact-results:not([hidden]) .contact-result', { timeout: 15000 });
+  const foundBudi = await andi.page.$eval('.contact-result', (li) => li.textContent);
+  check('Andi menemukan Budi lewat username', /budi/i.test(foundBudi), foundBudi);
+  check('Hasil pencarian bilang alasannya ketemu', /ditemukan lewat username/i.test(foundBudi), foundBudi);
+
+  await andi.page.click('.contact-result');
+  await andi.page.waitForSelector('#contact-page[hidden]', { timeout: 10000 });
   await andi.page.waitForSelector('#chat-view:not([hidden])');
+  check('Chat baru terbuka setelah kontaknya ditemukan', true);
   check('Panel chat terlihat', (await display(andi.page, '#chat-view')) === 'flex');
+  const composerBox = await andi.page.evaluate(() => {
+    const box = (selector) => {
+      const node = document.querySelector(selector);
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      return { w: Math.round(rect.width), h: Math.round(rect.height) };
+    };
+    return { input: box('#composer-input'), send: box('.send'), attach: box('#btn-attach') };
+  });
+  check(
+    'Komposer dan tombol kirim benar-benar bisa dipakai (bukan ukuran nol)',
+    [composerBox.input, composerBox.send, composerBox.attach].every(
+      (rect) => rect && rect.w > 0 && rect.h > 0
+    ),
+    JSON.stringify(composerBox)
+  );
   check('Layar sambutan hilang saat chat dibuka', (await display(andi.page, '#empty-state')) === 'none');
   check('Tombol telpon muncul di chat pribadi', (await andi.page.$eval('#btn-call-audio', (e) => !e.hidden)) === true);
+  check(
+    'Ikon tombol dirender sebagai SVG, bukan emoji',
+    await andi.page.$eval('#btn-call-audio, .send, #btn-attach', (node) => node.querySelector('svg') !== null)
+  );
 
   /* ---- 2. Text message ------------------------------------------ */
   const andiMessage = 'halo budi 👋 ini rahasia dari andi';
@@ -194,6 +625,9 @@ try {
 
   /* ---- 3. Encrypted attachment ---------------------------------- */
   const sample = writeSampleImage();
+  // Status foto juga menaruh blob di folder yang sama, jadi yang dihitung di
+  // sini adalah blob yang benar-benar muncul akibat kiriman ini.
+  const blobsBefore = new Set(listFiles(process.env.LOCAL_STORAGE_DIR));
   const fileInput = await andi.page.$('#file-input');
   await fileInput.uploadFile(sample.file);
 
@@ -205,8 +639,8 @@ try {
   check('Andi mengirim lampiran terenkripsi', true);
 
   // Whatever landed on disk must be ciphertext under a meaningless name.
-  const storedFiles = listFiles(process.env.LOCAL_STORAGE_DIR);
-  check('Lampiran tersimpan sebagai satu blob', storedFiles.length === 1, JSON.stringify(storedFiles));
+  const storedFiles = listFiles(process.env.LOCAL_STORAGE_DIR).filter((file) => !blobsBefore.has(file));
+  check('Lampiran tersimpan sebagai tepat satu blob baru', storedFiles.length === 1, JSON.stringify(storedFiles));
   check(
     'Nama file asli nggak bocor ke penyimpanan',
     !storedFiles[0].includes('rahasia-desain'),
@@ -334,6 +768,8 @@ try {
   await budi.page.waitForFunction(() => document.querySelector('#call-overlay').hidden === true, { timeout: 15000 });
   check('Menutup panggilan mengembalikan kedua sisi ke chat', true);
 
+  await checkReportAndAdmin(andi, budi);
+
   /* ---- 5. Nothing readable on the server ------------------------ */
   const serverMemory = JSON.stringify({
     directory: [...directory.entries()].map(([uid, e]) => ({
@@ -342,9 +778,14 @@ try {
       publicKey: e.publicKey,
     })),
     inbox: [...inbox.entries()],
+    statuses: [...statuses.entries()],
+    // Laporan memang pernah berisi tulisan seseorang — tapi tulisan pelapornya
+    // sendiri, bukan isi percakapan.
+    reports: moderation.reports(),
   });
   check('Server tidak pernah memegang teks pesan', !serverMemory.includes('rahasia dari andi'));
   check('Server tidak pernah memegang isi file', !serverMemory.includes('a884'));
+  check('Server tidak pernah memegang isi status', !serverMemory.includes(statusText));
 
   for (const [name, client] of [['andi', andi], ['budi', budi]]) {
     const uid = devUid(name);
@@ -365,6 +806,15 @@ try {
   for (const [name, client] of Object.entries(activeClients)) {
     const toast = await client.page.$eval('#toast', (e) => (e.hidden ? '' : e.textContent)).catch(() => '');
     if (toast) console.error(`[${name}] toast: ${toast}`);
+    const gate = await client.page
+      .evaluate(() => ({
+        onboarding: document.querySelector('#onboarding')?.hidden === false,
+        username: document.querySelector('#username-input')?.value,
+        status: document.querySelector('#username-status')?.textContent,
+        submitDisabled: document.querySelector('#username-submit')?.disabled,
+      }))
+      .catch(() => null);
+    if (gate) console.error(`[${name}] username: ${JSON.stringify(gate)}`);
     const call = await client.page
       .evaluate(() => ({
         status: document.querySelector('#call-status')?.textContent,

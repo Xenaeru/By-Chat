@@ -20,6 +20,25 @@ import path from 'node:path';
 
 const SAFE_PATH = /^att\/\d{4}\/\d{2}\/[A-Za-z0-9_-]{1,64}\/[a-f0-9]{32}$/;
 
+/** A uid is safe to use as a filename once it matches the auth rule. */
+export const isSafeUid = (uid) => typeof uid === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(uid);
+
+/**
+ * Identify an image from its leading bytes rather than trusting whatever the
+ * client claimed in a header. Returns null for anything that is not an image we
+ * are willing to serve back to a browser.
+ */
+export function sniffImageType(buffer) {
+  if (!buffer || buffer.length < 12) return null;
+  const bytes = Buffer.from(buffer.buffer ?? buffer, buffer.byteOffset ?? 0, Math.min(buffer.length, 16));
+  if (bytes[0] === 0x89 && bytes.toString('latin1', 1, 4) === 'PNG') return 'image/png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP') {
+    return 'image/webp';
+  }
+  return null;
+}
+
 export function newBlobPath(uid) {
   const now = new Date();
   const safeUid = uid.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) || 'anon';
@@ -41,9 +60,40 @@ async function createSupabaseStorage(config) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const bucket = config.storage.bucket;
+  const avatarObject = (uid) => `avatars/${uid}`;
 
   return {
     driver: 'supabase',
+
+    /* Profile photos. Deliberately NOT encrypted: a profile photo is meant to be
+     * seen by everyone who can see your name, so it lives beside the bucket's
+     * ciphertext blobs as an ordinary image object. */
+    async putAvatar(uid, buffer, contentType) {
+      const { error } = await client.storage
+        .from(bucket)
+        .upload(avatarObject(uid), buffer, { upsert: true, contentType });
+      if (error) throw new Error(`Supabase avatar gagal: ${error.message}`);
+      return { version: String(Date.now()), contentType, size: buffer.length };
+    },
+
+    async getAvatar(uid) {
+      const { data, error } = await client.storage.from(bucket).download(avatarObject(uid));
+      if (error || !data) return null;
+      const buffer = Buffer.from(await data.arrayBuffer());
+      return { buffer, contentType: sniffImageType(buffer), version: String(Date.now()) };
+    },
+
+    async removeAvatar(uid) {
+      await client.storage.from(bucket).remove([avatarObject(uid)]);
+    },
+
+    async listAvatars() {
+      const { data, error } = await client.storage.from(bucket).list('avatars', { limit: 1000 });
+      if (error || !Array.isArray(data)) return [];
+      return data
+        .filter((object) => object.name && !object.name.endsWith('/'))
+        .map((object) => ({ uid: object.name, version: String(Date.parse(object.updated_at) || 0) }));
+    },
 
     async createUploadTarget(blobPath) {
       const { data, error } = await client.storage.from(bucket).createSignedUploadUrl(blobPath);
@@ -87,10 +137,47 @@ export function resolveLocalPath(dir, blobPath) {
 
 async function createLocalStorage(config) {
   const dir = config.storage.localDir;
+  const avatarDir = config.storage.avatarDir;
   await fs.mkdir(dir, { recursive: true });
 
   return {
     driver: 'local',
+
+    /* Profile photos, next to the encrypted blobs but not part of them. */
+    async putAvatar(uid, buffer) {
+      if (!isSafeUid(uid)) throw new Error('uid tidak valid');
+      await fs.mkdir(avatarDir, { recursive: true });
+      const file = path.join(avatarDir, uid);
+      await fs.writeFile(file, buffer);
+      const stat = await fs.stat(file);
+      return { version: String(Math.round(stat.mtimeMs)), size: stat.size };
+    },
+
+    async getAvatar(uid) {
+      if (!isSafeUid(uid)) return null;
+      try {
+        const buffer = await fs.readFile(path.join(avatarDir, uid));
+        const contentType = sniffImageType(buffer);
+        if (!contentType) return null;
+        return { buffer, contentType, version: String(buffer.length) };
+      } catch {
+        return null;
+      }
+    },
+
+    async removeAvatar(uid) {
+      if (!isSafeUid(uid)) return;
+      await fs.rm(path.join(avatarDir, uid), { force: true });
+    },
+
+    async listAvatars() {
+      try {
+        const names = await fs.readdir(avatarDir);
+        return names.filter(isSafeUid).map((uid) => ({ uid, version: '0' }));
+      } catch {
+        return [];
+      }
+    },
 
     async createUploadTarget(blobPath) {
       return {

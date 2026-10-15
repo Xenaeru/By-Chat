@@ -10,7 +10,7 @@
  *              config.js refuses to start with this driver when
  *              NODE_ENV=production, so it can never be exposed by accident.
  *
- * `verify()` resolves to a profile: { uid, displayName, phone, photoURL }.
+ * `verify()` resolves to a profile: { uid, displayName, phone, email, photoURL }.
  */
 
 const UID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -31,6 +31,9 @@ function normalizeProfile(raw) {
     uid,
     displayName: clean(raw?.displayName, 40) || `user-${uid.slice(0, 6)}`,
     phone: clean(raw?.phone, 20) || null,
+    // Email sudah diverifikasi penyedia login (Google/HP), jadi aman dipakai
+    // buat mencari kontak — tapi tidak pernah disiarkan ke klien lain.
+    email: clean(raw?.email, 254).toLowerCase() || null,
     photoURL: /^https:\/\//.test(raw?.photoURL || '') ? raw.photoURL : null,
   };
 }
@@ -68,6 +71,7 @@ async function createFirebaseVerifier(authConfig) {
         uid: decoded.uid,
         displayName: decoded.name,
         phone: decoded.phone_number,
+        email: decoded.email,
         photoURL: decoded.picture,
       });
     },
@@ -105,9 +109,9 @@ export async function createVerifier(config) {
 }
 
 /** The token the dev client should send. Exported so tests and the client agree. */
-export function makeDevToken({ uid, displayName, phone, photoURL }) {
-  const payload = Buffer.from(JSON.stringify({ uid, displayName, phone, photoURL })).toString(
-    'base64url'
-  );
+export function makeDevToken({ uid, displayName, phone, photoURL, email }) {
+  const payload = Buffer.from(
+    JSON.stringify({ uid, displayName, phone, photoURL, email })
+  ).toString('base64url');
   return `dev.${payload}`;
 }

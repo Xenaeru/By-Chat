@@ -7,6 +7,8 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { REPORT_REASONS, MAX_DETAIL } from './moderation.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Node can read a .env file itself (21.7+). Absent file is fine.
@@ -68,6 +70,54 @@ if (storageDriver === 'supabase' && !(supabaseUrl && supabaseServiceKey)) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Usernames (@name)
+ * ------------------------------------------------------------------ */
+
+// Claims have to outlive a restart, otherwise the namespace is just a race.
+// Supabase is used when that driver is active; otherwise this JSON file.
+const usernameStore = {
+  file: env.USERNAME_STORE || path.join(__dirname, 'data', 'usernames.json'),
+  object: env.USERNAME_STORE_OBJECT || 'registry/usernames.json',
+};
+
+/* ------------------------------------------------------------------ *
+ * Moderasi: siapa yang jadi admin, dan di mana datanya disimpan
+ * ------------------------------------------------------------------ */
+
+const cleanList = (value) =>
+  String(value ?? '')
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+// Dua jalan menuju admin: uid (cocok di mode dev maupun Firebase) atau email
+// yang sudah diverifikasi penyedia login. Daftar ini yang menentukan; halaman
+// admin sendiri nggak pernah memutuskan siapa yang boleh masuk.
+const adminUids = cleanList(env.ADMIN_UIDS);
+const adminEmails = cleanList(env.ADMIN_EMAILS).map((email) => email.toLowerCase());
+
+// Untuk data diskalakan halus, driver Supabase menyimpannya di dalam bucket
+// yang sudah dipakai blobs, sedangkan driver local memakai file JSON di data/.
+const registeredStore = (fileKey, objectKey, defaultFile, defaultObject) => ({
+  file: env[fileKey] || path.join(__dirname, 'data', defaultFile),
+  object: env[objectKey] || defaultObject,
+});
+
+const moderationStore = registeredStore(
+  'MODERATION_STORE',
+  'MODERATION_STORE_OBJECT',
+  'moderation.json',
+  'registry/moderation.json'
+);
+
+const accountStore = registeredStore(
+  'ACCOUNT_STORE',
+  'ACCOUNT_STORE_OBJECT',
+  'accounts.json',
+  'registry/accounts.json'
+);
+
+/* ------------------------------------------------------------------ *
  * TURN (needed for calls on real networks, not just LAN)
  * ------------------------------------------------------------------ */
 
@@ -106,10 +156,20 @@ export const config = {
     driver: storageDriver,
     bucket: supabaseBucket,
     localDir: env.LOCAL_STORAGE_DIR || path.join(__dirname, 'data', 'attachments'),
+    avatarDir: env.LOCAL_AVATAR_DIR || path.join(__dirname, 'data', 'avatars'),
     maxBytes: Number(env.MAX_UPLOAD_BYTES || 100 * 1024 * 1024),
   },
 
   iceServers,
+
+  usernames: usernameStore,
+  moderation: moderationStore,
+  accounts: accountStore,
+
+  admins: {
+    uids: adminUids,
+    emails: adminEmails,
+  },
 
   secrets: {
     supabaseUrl,
@@ -142,6 +202,14 @@ export function publicConfig() {
       enabled: bool(env.CALLS_ENABLED ?? 'true'),
       hasTurn: turnUrls.length > 0,
       iceServers: config.iceServers,
+    },
+    // Alasan laporan datang dari server supaya daftarnya cuma ada di satu
+    // tempat (moderation.js). `adminMode` dipakai halaman admin buat bilang
+    // terus terang kalau server ini belum punya admin sama sekali.
+    reports: {
+      reasons: REPORT_REASONS.map((reason) => ({ ...reason })),
+      maxDetail: MAX_DETAIL,
+      adminMode: config.admins.uids.length > 0 || config.admins.emails.length > 0,
     },
   };
 }

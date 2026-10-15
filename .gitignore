@@ -10,5 +10,8 @@ service-account*.json
 *firebase-adminsdk*.json
 google-application-credentials*.json
 
+# Hasil `npm run render-env` — berisi nilai rahasia siap tempel ke Render.
+render-env*.txt
+
 # Local attachment blobs and anything else written at runtime.
 data/

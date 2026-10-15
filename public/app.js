@@ -17,6 +17,7 @@ import { createCallManager } from './call.js';
 const identityKey = (uid) => `securechat.identity.v3.${uid}`;
 const roomsKey = (uid) => `securechat.rooms.v3.${uid}`;
 const verifiedKey = (uid) => `securechat.verified.v3.${uid}`;
+const statusSeenKey = (uid) => `securechat.status.v1.${uid}`;
 
 const store = {
   get(key, fallback = null) {
@@ -52,6 +53,7 @@ const state = {
   auth: null,
   profile: null,
   me: null,
+  username: null,
   directory: [],
   rooms: new Map(),
   activeRoomId: null,
@@ -63,6 +65,11 @@ const state = {
   incoming: null,
   blobUrls: new Map(),
   uploadToken: 0,
+  statuses: [],
+  statusSeen: new Set(),
+  statusDecoded: new Map(),
+  statusView: null,
+  isAdmin: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -86,10 +93,19 @@ const el = {
   otpCode: $('#otp-code'),
   recaptcha: $('#recaptcha-container'),
 
+  onboarding: $('#onboarding'),
+  usernameField: $('#username-field'),
+  usernameInput: $('#username-input'),
+  usernameMark: $('#username-mark'),
+  usernameStatus: $('#username-status'),
+  usernameSubmit: $('#username-submit'),
+  usernameLogout: $('#username-logout'),
+
   app: $('#app'),
   meAvatar: $('#me-avatar'),
   meName: $('#me-name'),
   meStatus: $('#me-status'),
+  btnAdmin: $('#btn-admin'),
   btnSettings: $('#btn-settings'),
   btnLogout: $('#btn-logout'),
   search: $('#search'),
@@ -136,6 +152,38 @@ const el = {
   btnAccept: $('#btn-accept'),
   btnDecline: $('#btn-decline'),
 
+  statusMe: $('#status-me'),
+  statusMeOpen: $('#status-me-open'),
+  statusMeAdd: $('#status-me-add'),
+  statusMeAvatar: $('#status-me-avatar'),
+  statusMeSub: $('#status-me-sub'),
+  statusList: $('#status-list'),
+  statusViewer: $('#status-viewer'),
+  statusProgress: $('#status-progress'),
+  statusStage: $('#status-stage'),
+  statusViewerAvatar: $('#status-viewer-avatar'),
+  statusViewerName: $('#status-viewer-name'),
+  statusViewerTime: $('#status-viewer-time'),
+  statusViewerCount: $('#status-viewer-count'),
+  statusViewerMenu: $('#status-viewer-menu'),
+  statusViewerClose: $('#status-viewer-close'),
+  statusPrev: $('#status-prev'),
+  statusNext: $('#status-next'),
+
+  btnReport: $('#btn-report'),
+
+  contactPage: $('#contact-page'),
+  contactBack: $('#contact-back'),
+  contactForm: $('#contact-form'),
+  contactQuery: $('#contact-query'),
+  contactSubmit: $('#contact-submit'),
+  contactNote: $('#contact-note'),
+  contactResults: $('#contact-results'),
+
+  banned: $('#banned'),
+  bannedReason: $('#banned-reason'),
+  bannedLogout: $('#banned-logout'),
+
   modal: $('#modal'),
   modalCard: $('#modal-card'),
   toast: $('#toast'),
@@ -166,6 +214,39 @@ function showToast(message, ms = 4000) {
 }
 
 const peerByUid = (uid) => state.directory.find((u) => u.uid === uid);
+
+/*
+ * Avatar colour is derived from the name, so the same person is always the same
+ * colour — you recognise a contact before you finish reading the name.
+ */
+function nameHue(name) {
+  let hue = 0;
+  for (const char of String(name)) hue = (hue * 31 + char.codePointAt(0)) % 360;
+  return hue;
+}
+
+const photoFor = (uid) => (uid ? peerByUid(uid)?.photoURL || null : null);
+
+function paintAvatars(root = document) {
+  for (const node of root.querySelectorAll('.avatar')) {
+    const seed = node.dataset.hueFor || node.textContent.trim();
+    if (seed) node.style.setProperty('--hue', nameHue(seed));
+
+    const photo = photoFor(node.dataset.uid);
+    const url = photo ? new URL(photo, location.origin).href : '';
+    // Only touch the style when the url really changed, otherwise every re-render
+    // would make the browser fetch the same picture again.
+    if ((node.dataset.photoUrl || '') === url) continue;
+    node.dataset.photoUrl = url;
+    if (url) {
+      node.style.backgroundImage = `url("${url}")`;
+      node.classList.add('has-photo');
+    } else {
+      node.style.removeProperty('background-image');
+      node.classList.remove('has-photo');
+    }
+  }
+}
 
 const packMessage = (text, attachment) => JSON.stringify({ text: text || '', attachment: attachment || null });
 
@@ -215,18 +296,23 @@ function ensureRoom({ id, name, type, members }) {
   let room = state.rooms.get(id);
   if (room) {
     room.members = members;
-    if (type === 'group' && name) room.name = name;
+    // Nama yang datang belakangan tetap disimpan: percakapan yang dimulai dari
+    // hasil pencarian kontak belum punya entri direktori saat itu.
+    if (name && (type === 'group' || !room.name)) room.name = name;
     return room;
   }
-  room = { id, name, type, members, messages: [] };
+  room = { id, name: name || null, type, members, messages: [] };
   state.rooms.set(id, room);
   return room;
 }
 
-const displayName = (room) =>
-  room.type === 'group' ? room.name : peerByUid(room.members.find((m) => m !== state.me.uid))?.displayName || 'Tidak dikenal';
-
 const otherUid = (room) => room.members.find((m) => m !== state.me.uid);
+
+// Nama milik direktori kalau orangnya dikenal; kalau belum (misalnya baru
+// ditemukan lewat pencarian kontak dan dia masih offline), nama yang tersimpan
+// di ruangannya yang dipakai.
+const displayName = (room) =>
+  room.type === 'group' ? room.name : peerByUid(otherUid(room))?.displayName || room.name || 'Tidak dikenal';
 
 function saveRooms() {
   if (!state.me) return;
@@ -286,7 +372,13 @@ function showLogin() {
   socket = null;
   state.me = null;
   state.profile = null;
+  state.username = null;
+  state.isAdmin = false;
   state.rooms.clear();
+  closeOnboarding();
+  closeContactPage();
+  el.btnAdmin.hidden = true;
+  el.banned.hidden = true;
   el.app.hidden = true;
   el.login.hidden = false;
 }
@@ -294,6 +386,7 @@ function showLogin() {
 async function enterApp(profile) {
   if (state.me?.uid === profile.uid && socket) return;
 
+  closeStatusViewer();
   const identity = await loadOrCreateIdentity(profile.uid);
   state.me = {
     uid: profile.uid,
@@ -305,6 +398,10 @@ async function enterApp(profile) {
 
   state.sharedKeys.clear();
   state.verified = new Set(store.get(verifiedKey(profile.uid), []));
+  state.statuses = [];
+  state.statusSeen = new Set(store.get(statusSeenKey(profile.uid), []));
+  state.statusDecoded.clear();
+  state.statusView = null;
   state.rooms.clear();
   state.unread.clear();
   loadRooms(profile.uid);
@@ -322,6 +419,121 @@ async function enterApp(profile) {
 function setStatus(text, online = false) {
   el.meStatus.textContent = text;
   el.meStatus.classList.toggle('online', online);
+}
+
+/* ------------------------------------------------------------------ *
+ * Username — the one thing a new account has to settle before it can chat
+ * ------------------------------------------------------------------ */
+function applyUsername(username) {
+  state.username = username;
+  state.profile = { ...state.profile, displayName: username };
+  if (state.me) state.me.displayName = username;
+  el.meName.textContent = username;
+  el.meAvatar.textContent = initials(username);
+  el.meAvatar.dataset.hueFor = username;
+  el.meAvatar.dataset.uid = state.me?.uid || '';
+  paintAvatars();
+}
+
+function setUsernameNote(text, kind = '') {
+  el.usernameStatus.textContent = text;
+  el.usernameStatus.hidden = !text;
+  el.usernameStatus.classList.toggle('good', kind === 'good');
+  el.usernameStatus.classList.toggle('bad', kind === 'bad');
+  el.usernameField.classList.toggle('good', kind === 'good');
+  el.usernameField.classList.toggle('bad', kind === 'bad');
+  el.usernameMark.textContent = kind === 'good' ? '✓' : kind === 'bad' ? '✕' : '';
+}
+
+/** "Azhari Pratama" -> "azhari.pratama": only a starting point for the user. */
+function usernameFromProfile(name) {
+  return String(name || '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 20);
+}
+
+function openOnboarding() {
+  el.onboarding.hidden = false;
+  if (!el.usernameInput.value) el.usernameInput.value = usernameFromProfile(state.profile?.displayName);
+  el.usernameSubmit.disabled = true;
+  setUsernameNote('Memeriksa ketersediaan…');
+  checkUsername();
+  el.usernameInput.focus();
+}
+
+function closeOnboarding() {
+  el.onboarding.hidden = true;
+}
+
+// The server owns the namespace, so the only honest availability answer comes
+// from it — the browser just asks and reports.
+let usernameCheckToken = 0;
+
+async function checkUsername() {
+  const value = el.usernameInput.value.trim();
+  if (!value) {
+    el.usernameSubmit.disabled = true;
+    return setUsernameNote('Username belum diisi.', 'bad');
+  }
+
+  const token = ++usernameCheckToken;
+  const result = await new Promise((resolve) => {
+    if (!socket?.connected) return resolve(null);
+    const timer = setTimeout(() => resolve(null), 3000);
+    socket.emit('username:check', value, (answer) => {
+      clearTimeout(timer);
+      resolve(answer || null);
+    });
+  });
+
+  if (token !== usernameCheckToken) return; // a newer keystroke already asked
+
+  if (!result) {
+    el.usernameSubmit.disabled = true;
+    return setUsernameNote('Server belum menjawab. Tunggu sebentar lalu coba lagi.', 'bad');
+  }
+  if (result.ok) {
+    el.usernameSubmit.disabled = false;
+    setUsernameNote(`@${result.username} masih kosong — siap dipakai.`, 'good');
+  } else {
+    el.usernameSubmit.disabled = true;
+    setUsernameNote(result.suggestion ? `${result.error} Coba "${result.suggestion}".` : result.error, 'bad');
+  }
+}
+
+async function claimUsername() {
+  const value = el.usernameInput.value.trim();
+  if (!value) return;
+
+  el.usernameSubmit.disabled = true;
+  el.usernameSubmit.textContent = 'Menyimpan…';
+
+  const result = await new Promise((resolve) => {
+    if (!socket?.connected) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
+    const timer = setTimeout(() => resolve({ ok: false, error: 'Server nggak menjawab. Coba lagi.' }), 8000);
+    socket.emit('username:claim', value, (answer) => {
+      clearTimeout(timer);
+      resolve(answer || { ok: false, error: 'Jawaban server tidak terbaca.' });
+    });
+  });
+
+  el.usernameSubmit.textContent = 'Pakai username ini';
+
+  if (!result.ok) {
+    el.usernameSubmit.disabled = false;
+    setUsernameNote(result.error || 'Gagal menyimpan username.', 'bad');
+    // The server knows what is free; take its suggestion rather than guess.
+    if (result.suggestion) el.usernameInput.value = result.suggestion;
+    return;
+  }
+
+  applyUsername(result.username);
+  await state.auth.setDisplayName(result.username).catch(() => {});
+  closeOnboarding();
+  showToast(`Username @${result.username} siap dipakai.`);
 }
 
 /* ------------------------------------------------------------------ *
@@ -343,9 +555,16 @@ function connect(token) {
   socket.on('connect', () => setStatus('online — terenkripsi end-to-end', true));
 
   socket.on('connect_error', (err) => {
+    // Server menyertakan alasan penolakan di `data`, jadi layar yang muncul
+    // bisa menjelaskan sebabnya, bukan cuma "nggak bisa tersambung".
+    if (err?.data?.banned) return showBanned(err.data.reason);
     setStatus('gagal tersambung');
     showToast(`Koneksi ditolak: ${err.message}`);
   });
+
+  // Diblokir saat sesi ini sedang jalan: servernya menutup koneksi, tapi kabar
+  // ini yang membuat layarnya langsung berubah.
+  socket.on('session:banned', ({ reason } = {}) => showBanned(reason));
 
   socket.on('disconnect', () => setStatus('terputus — mencoba lagi…'));
 
@@ -355,6 +574,21 @@ function connect(token) {
 
   socket.on('ready', (payload) => {
     state.directory = payload.directory || [];
+    state.statuses = payload.statuses || [];
+    state.statusDecoded.clear();
+    // Penanda ini cuma buat menampilkan tautan ke /admin.html; halaman itu
+    // sendiri memeriksa ulang ke server siapa yang boleh masuk.
+    state.isAdmin = Boolean(payload.admin);
+    el.btnAdmin.hidden = !state.isAdmin;
+    renderStatuses();
+    // A fresh account has no username yet, and the server refuses to relay
+    // messages until it has one — so this gate comes before anything else.
+    if (payload.username) {
+      applyUsername(payload.username);
+      closeOnboarding();
+    } else {
+      openOnboarding();
+    }
     renderChatList();
     for (const envelope of payload.inbox || []) receiveMessage(envelope);
     if (!state.activeRoomId) renderEmptyState();
@@ -367,9 +601,24 @@ function connect(token) {
     state.directory = list;
     renderChatList();
     renderPeerHeader();
+    renderStatuses();
   });
 
   socket.on('message', (envelope) => receiveMessage(envelope));
+
+  socket.on('status:new', (status) => {
+    state.statuses.push(status);
+    renderStatuses();
+    renderChatList();
+    const name = peerByUid(status.from)?.displayName || 'seseorang';
+    showToast(`Status baru dari ${name}.`, 3500);
+  });
+
+  socket.on('status:removed', ({ id }) => {
+    state.statuses = state.statuses.filter((status) => status.id !== id);
+    state.statusDecoded.delete(id);
+    renderStatuses();
+  });
 
   socket.on('typing', ({ roomId, from, typing }) => {
     const set = state.typingPeers.get(roomId) || new Set();
@@ -387,8 +636,10 @@ function setupCalls() {
     state.incoming = data;
     el.incomingName.textContent = data.from.displayName;
     el.incomingAvatar.textContent = initials(data.from.displayName);
+    el.incomingAvatar.dataset.uid = data.from.uid;
     el.incomingKind.textContent = data.video ? 'Panggilan video masuk' : 'Panggilan suara masuk';
     el.incoming.hidden = false;
+    paintAvatars();
     state.calls?.handleIncoming(data);
     renderCall(state.calls ? {} : {});
     showToast(`${data.from.displayName} menelepon…`, 5000);
@@ -579,6 +830,7 @@ function renderPeerHeader() {
   const name = displayName(room);
   el.peerName.textContent = room.type === 'group' ? room.name : name;
   el.peerAvatar.textContent = initials(room.type === 'group' ? room.name : name);
+  el.peerAvatar.dataset.uid = room.type === 'dm' ? otherUid(room) : '';
 
   const isDm = room.type === 'dm';
   const canCall = isDm && state.config.calls.enabled;
@@ -592,9 +844,16 @@ function renderPeerHeader() {
     return;
   }
 
+  el.btnReport.hidden = !isDm;
+
   const peer = peerByUid(otherUid(room));
   const shield = state.verified.has(otherUid(room)) ? '🛡️ ' : '';
-  el.peerSub.textContent = !peer ? 'tidak dikenal' : shield + (peer.online ? 'online' : 'terakhir dilihat baru-baru ini');
+  el.peerSub.textContent = !peer
+    ? room.name
+      ? 'offline — dia harus buka aplikasinya dulu'
+      : 'tidak dikenal'
+    : shield + (peer.online ? 'online' : 'terakhir dilihat baru-baru ini');
+  paintAvatars();
 }
 
 function renderChatList() {
@@ -617,10 +876,14 @@ function renderChatList() {
     const unread = state.unread.get(room.id) || 0;
     const peerOnline = room.type === 'dm' && peerByUid(otherUid(room))?.online;
 
+    const peerUid = room.type === 'dm' ? otherUid(room) : null;
+    const peerStatuses = peerUid ? statusesFrom(peerUid).length : 0;
+    const ring = peerStatuses ? (unseenStatusCount(peerUid) ? ' ring' : ' ring-seen') : '';
+
     const li = document.createElement('li');
     li.className = 'chat-item' + (room.id === state.activeRoomId ? ' active' : '');
     li.innerHTML = `
-      <div class="avatar">${esc(initials(name))}</div>
+      <div class="avatar${ring}"${peerUid ? ` data-uid="${esc(peerUid)}"` : ''}>${esc(initials(name))}</div>
       <div class="chat-item-main">
         <div class="chat-item-top">
           <span class="chat-item-name">${esc(name)}${room.type === 'group' ? ' 👥' : ''}</span>
@@ -632,11 +895,19 @@ function renderChatList() {
       ${unread ? `<span class="badge">${unread}</span>` : ''}
     `;
     li.addEventListener('click', () => selectRoom(room.id));
+    // Tapping the picture opens the status, the way the ring suggests it should.
+    if (peerStatuses) {
+      li.querySelector('.avatar').addEventListener('click', (event) => {
+        event.stopPropagation();
+        openStatusViewer(peerUid);
+      });
+    }
     el.chatList.appendChild(li);
   }
 
   el.chatListEmpty.hidden = shown > 0;
-  el.chatListEmpty.textContent = filter ? 'Nggak ada chat yang cocok.' : 'Belum ada chat. Tekan 💬 buat mulai.';
+  el.chatListEmpty.textContent = filter ? 'Nggak ada chat yang cocok.' : 'Belum ada chat. Tekan ＋ buat mulai.';
+  paintAvatars(el.chatList);
 }
 
 function preview(message) {
@@ -766,12 +1037,14 @@ function renderCall(call = {}) {
   const peerName = call.peer?.displayName || '—';
   el.callName.textContent = peerName;
   el.callAvatar.textContent = initials(peerName);
+  el.callAvatar.dataset.uid = call.peer?.uid || '';
   el.callStatus.textContent =
     call.status === 'outgoing' ? 'memanggil…' : call.status === 'incoming' ? 'panggilan masuk' : 'menyambungkan…';
 
   el.ctlMic.classList.toggle('off', call.micOn === false);
   el.ctlCamera.classList.toggle('off', call.cameraOn === false);
   el.ctlScreen.classList.toggle('off', call.screenSharing === true);
+  paintAvatars();
 }
 
 function startCall(video) {
@@ -793,6 +1066,7 @@ function startCall(video) {
 function openModal(html) {
   el.modalCard.innerHTML = html;
   el.modal.hidden = false;
+  paintAvatars(el.modalCard);
 }
 
 function closeModal() {
@@ -800,40 +1074,222 @@ function closeModal() {
   el.modalCard.innerHTML = '';
 }
 
-function openNewChat() {
-  const people = state.directory.filter((u) => u.uid !== state.me.uid);
-  openModal(`
-    <h3>Chat baru</h3>
-    <p class="sub">Pilih orang yang sudah pernah masuk.</p>
-    <ul class="picker">
-      ${people
-        .map(
-          (u) => `<li data-uid="${esc(u.uid)}">
-            <span class="avatar" style="width:30px;height:30px;font-size:13px">${esc(initials(u.displayName))}</span>
-            <span style="flex:1">${esc(u.displayName)}</span>
-            ${u.online ? '<span class="dot"></span>' : '<span class="muted" style="font-size:12px">offline</span>'}
-          </li>`
-        )
-        .join('')}
-    </ul>
-    ${people.length ? '' : '<p class="sub" style="margin-top:14px">Belum ada user lain. Buka aplikasi ini di jendela lain dan masuk dengan akun berbeda.</p>'}
-    <div class="modal-actions"><button data-close>Tutup</button></div>
-  `);
-  el.modalCard.querySelectorAll('[data-uid]').forEach((li) =>
-    li.addEventListener('click', () => {
-      const uid = li.dataset.uid;
-      const id = dmRoomId(state.me.uid, uid);
-      ensureRoom({ id, name: peerByUid(uid)?.displayName, type: 'dm', members: [state.me.uid, uid] });
-      saveRooms();
-      closeModal();
-      selectRoom(id);
-    })
+/* ------------------------------------------------------------------ *
+ * Tambah kontak
+ *
+ * Chat selalu lahir dari halaman ini. Alasannya bukan tampilan: server hanya
+ * bisa merelai pesan ke kunci publik yang sudah dikenal, dan satu-satunya cara
+ * mengenal orang adalah mencarinya lewat email, nomor HP, atau @username.
+ * `+` jadi membuka halaman ini, bukan daftar orang yang kebetulan online.
+ * ------------------------------------------------------------------ */
+const VIA_LABEL = { username: 'username', email: 'email', phone: 'nomor HP' };
+
+function setContactNote(text, kind = '') {
+  el.contactNote.textContent = text;
+  el.contactNote.hidden = !text;
+  el.contactNote.classList.toggle('good', kind === 'good');
+  el.contactNote.classList.toggle('bad', kind === 'bad');
+}
+
+function openContactPage() {
+  closeModal();
+  el.contactPage.hidden = false;
+  el.contactQuery.value = '';
+  el.contactResults.innerHTML = '';
+  el.contactResults.hidden = true;
+  setContactNote(
+    'Orang yang belum pernah kamu chat nggak muncul sendiri. Cari pakai email, nomor HP, atau @username — hasilnya tetap ada walau dia sedang offline.'
   );
+  el.contactQuery.focus();
+}
+
+function closeContactPage() {
+  el.contactPage.hidden = true;
+}
+
+function renderContactResults(results) {
+  el.contactResults.innerHTML = '';
+  el.contactResults.hidden = results.length === 0;
+
+  for (const person of results) {
+    const name = person.username || person.uid.slice(0, 8);
+    const status = person.banned
+      ? 'diblokir admin — nggak bisa di-chat'
+      : `${person.online ? 'online' : 'offline'} · ditemukan lewat ${VIA_LABEL[person.foundVia] || 'pencarian'}`;
+
+    const li = document.createElement('li');
+    li.className = 'contact-result';
+    li.dataset.uid = person.uid;
+    li.innerHTML = `
+      <span class="avatar" data-uid="${esc(person.uid)}">${esc(initials(name))}</span>
+      <span class="contact-result-main">
+        <strong>${esc(name)}</strong>
+        <span class="muted">${esc(status)}</span>
+      </span>
+      <span class="contact-go">${person.banned ? '—' : 'Chat'}</span>
+    `;
+    li.addEventListener('click', () => {
+      if (person.banned) return showToast('Akun itu diblokir admin, jadi nggak bisa di-chat.');
+      openContactRoom(person.uid, person.username);
+    });
+    el.contactResults.appendChild(li);
+  }
+
+  paintAvatars(el.contactResults);
+}
+
+async function lookupContact() {
+  const query = el.contactQuery.value.trim();
+  if (query.length < 3) {
+    return setContactNote('Tulis minimal 3 karakter: email, nomor HP, atau @username.', 'bad');
+  }
+
+  el.contactSubmit.disabled = true;
+  el.contactSubmit.textContent = 'Mencari…';
+  setContactNote('Mencari…');
+
+  const result = await new Promise((resolve) => {
+    if (!socket?.connected) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
+    const timer = setTimeout(() => resolve({ ok: false, error: 'Server nggak menjawab. Coba lagi.' }), 8000);
+    socket.emit('contact:lookup', query, (answer) => {
+      clearTimeout(timer);
+      resolve(answer || { ok: false, error: 'Jawaban server tidak terbaca.' });
+    });
+  });
+
+  el.contactSubmit.disabled = false;
+  el.contactSubmit.textContent = 'Cari';
+
+  if (!result.ok) return setContactNote(result.error || 'Pencarian gagal.', 'bad');
+
+  const results = result.results || [];
+  renderContactResults(results);
+  if (!results.length) {
+    return setContactNote(
+      `Tidak ada yang cocok dengan "${query}". Cek lagi ejaannya, atau minta dia masuk dulu supaya akunnya terdaftar.`,
+      'bad'
+    );
+  }
+  setContactNote(`${results.length} kontak ditemukan. Ketuk barisnya buat mulai chat.`, 'good');
+}
+
+function openContactRoom(uid, name) {
+  const id = dmRoomId(state.me.uid, uid);
+  ensureRoom({ id, name, type: 'dm', members: [state.me.uid, uid] });
+  saveRooms();
+  closeContactPage();
+  selectRoom(id);
+
+  // Kunci publik orang yang sedang offline belum tentu ada di perangkat ini,
+  // jadi direktori disegarkan: kalau dia online, chat-nya langsung bisa jalan.
+  socket?.emit('sync', {}, (answer) => {
+    if (!answer?.directory) return;
+    state.directory = answer.directory;
+    renderChatList();
+    renderPeerHeader();
+    renderStatuses();
+  });
+}
+
+/** Orang yang sudah kamu tambahkan sebagai kontak — sumber daftar anggota grup. */
+function contactList() {
+  const uids = new Set();
+  for (const room of state.rooms.values()) {
+    if (room.type !== 'dm') continue;
+    const uid = otherUid(room);
+    if (uid && uid !== state.me.uid) uids.add(uid);
+  }
+  return [...uids].map((uid) => ({
+    uid,
+    name: peerByUid(uid)?.displayName || state.rooms.get(dmRoomId(state.me.uid, uid))?.name || uid.slice(0, 8),
+    online: Boolean(peerByUid(uid)?.online),
+  }));
+}
+
+/* ------------------------------------------------------------------ *
+ * Laporan
+ * ------------------------------------------------------------------ */
+function openReportModal() {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room || room.type !== 'dm') return;
+
+  const target = otherUid(room);
+  const label = displayName(room);
+  const reasons = state.config.reports?.reasons || [];
+  const maxDetail = Number(state.config.reports?.maxDetail) || 400;
+
+  openModal(`
+    <h3>Laporkan ${esc(label)}</h3>
+    <p class="sub">
+      Laporan masuk ke admin aplikasi ini. Isi chat kamu nggak ikut terkirim — yang
+      dikirim cuma alasan dan catatan yang kamu tulis di bawah.
+    </p>
+
+    <label for="report-reason">Alasan</label>
+    <select id="report-reason">
+      ${reasons
+        .map((reason, index) => `<option value="${esc(reason.id)}"${index === 0 ? ' selected' : ''}>${esc(reason.label)}</option>`)
+        .join('')}
+    </select>
+
+    <label for="report-detail">Cerita singkat (opsional)</label>
+    <textarea id="report-detail" maxlength="${maxDetail}" placeholder="misal: dia kirim link penipuan dan minta uang"></textarea>
+
+    <div class="modal-actions">
+      <button data-close>Batal</button>
+      <button class="primary" data-send>Kirim laporan</button>
+    </div>
+  `);
+
   el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-send]').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = 'Mengirim…';
+
+    const reason = el.modalCard.querySelector('#report-reason').value;
+    const detail = el.modalCard.querySelector('#report-detail').value.trim();
+
+    const result = await new Promise((resolve) => {
+      if (!socket?.connected) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
+      const timer = setTimeout(() => resolve({ ok: false, error: 'Server nggak menjawab. Coba lagi.' }), 8000);
+      socket.emit('report:submit', { uid: target, reason, detail, roomId: room.id }, (answer) => {
+        clearTimeout(timer);
+        resolve(answer || { ok: false, error: 'Jawaban server tidak terbaca.' });
+      });
+    });
+
+    if (!result.ok) {
+      button.disabled = false;
+      button.textContent = 'Kirim laporan';
+      return showToast(result.error || 'Laporan gagal dikirim.');
+    }
+
+    closeModal();
+    showToast('Laporan terkirim ke admin. Terima kasih sudah bilang.');
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Akun diblokir
+ * ------------------------------------------------------------------ */
+function showBanned(reason) {
+  socket?.disconnect();
+  socket = null;
+  el.bannedReason.textContent = reason
+    ? `Alasan dari admin: ${reason}`
+    : 'Admin nggak menulis alasan. Coba tanya langsung ke pengelola aplikasi ini.';
+  el.banned.hidden = false;
+  el.app.hidden = true;
+  el.login.hidden = true;
+  el.onboarding.hidden = true;
 }
 
 function openNewGroup() {
-  const people = state.directory.filter((u) => u.uid !== state.me.uid);
+  // Anggota grup diambil dari kontak yang sudah ditambahkan, bukan dari daftar
+  // "siapa yang kebetulan online": kalau tidak, halaman tambah kontak cuma jadi
+  // formalitas yang bisa dilewati lewat grup.
+  const people = contactList();
   openModal(`
     <h3>Grup baru</h3>
     <p class="sub">Grup tetap end-to-end encrypted — kunci pesan dibungkus terpisah buat tiap anggota.</p>
@@ -844,7 +1300,7 @@ function openNewGroup() {
       ${people
         .map(
           (u) => `<li><input type="checkbox" value="${esc(u.uid)}" id="m-${esc(u.uid)}" />
-            <label for="m-${esc(u.uid)}" style="margin:0;color:var(--text);font-size:14px">${esc(u.displayName)}</label></li>`
+            <label for="m-${esc(u.uid)}" style="margin:0;color:var(--text);font-size:14px">${esc(u.name)}</label></li>`
         )
         .join('')}
     </ul>
@@ -872,8 +1328,23 @@ function openSettings() {
   openModal(`
     <h3>Pengaturan</h3>
     <p class="sub">${state.config.auth.mode === 'firebase' ? 'Login lewat Firebase' : 'Mode dev — identitas nggak diverifikasi'}</p>
-    <label for="display-name">Nama tampilan</label>
-    <input id="display-name" type="text" maxlength="40" value="${esc(state.profile.displayName)}" />
+
+    <div class="photo-row">
+      <div class="avatar big" id="settings-avatar" data-uid="${esc(state.me.uid)}">${esc(initials(state.username || state.profile.displayName))}</div>
+      <div class="photo-actions">
+        <button data-pick-photo class="ghost">Ganti foto</button>
+        <button data-remove-photo class="ghost">Hapus</button>
+        <span class="sub">PNG, JPEG, atau WebP — maksimal 2 MB. Foto profil <strong>tidak</strong> terenkripsi, jadi jangan pakai foto yang kamu nggak mau orang lihat.</span>
+      </div>
+      <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" hidden />
+    </div>
+
+    <label for="display-name">Username</label>
+    <input id="display-name" type="text" maxlength="20" value="${esc(state.username || state.profile.displayName)}" />
+    <p class="sub" style="margin:8px 0 0">
+      Orang lain lihat kamu sebagai <strong>@${esc(state.username || '—')}</strong>. Nama ini unik —
+      kalau sudah dipakai orang, ganti yang lain.
+    </p>
     <p class="sub" style="margin-top:16px">
       Akun: <code>${esc(state.me.uid.slice(0, 16))}…</code><br />
       ${state.profile.phone ? `Nomor: ${esc(state.profile.phone)}<br />` : ''}
@@ -890,13 +1361,41 @@ function openSettings() {
   el.modalCard.querySelector('[data-save]').addEventListener('click', async () => {
     const name = el.modalCard.querySelector('#display-name').value.trim();
     if (!name) return;
-    await state.auth.setDisplayName(name);
-    state.profile = { ...state.profile, displayName: name };
-    state.me.displayName = name;
-    el.meName.textContent = name;
-    socket?.emit('profile:update', { displayName: name });
+
+    // Renaming goes through the same namespace as the first claim, so a name
+    // somebody else already holds is refused here too.
+    const result = await new Promise((resolve) => {
+      if (!socket) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
+      socket.emit('profile:update', { displayName: name }, (answer) => resolve(answer || {}));
+    });
+    if (!result.ok) return showToast(result.error || 'Gagal simpan username.', 5000);
+
+    await state.auth.setDisplayName(result.username).catch(() => {});
+    applyUsername(result.username);
     closeModal();
-    showToast('Nama disimpan.');
+    showToast(`Username disimpan: @${result.username}`);
+  });
+
+  // The photo saves on its own, the way people expect from a profile picture.
+  el.modalCard.querySelector('[data-pick-photo]')?.addEventListener('click', () => {
+    el.modalCard.querySelector('#avatar-input')?.click();
+  });
+  el.modalCard.querySelector('#avatar-input')?.addEventListener('change', async (event) => {
+    const [file] = event.target.files || [];
+    event.target.value = '';
+    try {
+      await uploadAvatar(file);
+    } catch (err) {
+      showToast(`Foto profil: ${err.message}`, 6000);
+    }
+  });
+  el.modalCard.querySelector('[data-remove-photo]')?.addEventListener('click', async () => {
+    try {
+      await removeAvatar();
+      showToast('Foto profil dihapus.');
+    } catch (err) {
+      showToast(`Foto profil: ${err.message}`, 6000);
+    }
   });
 }
 
@@ -934,6 +1433,443 @@ function openSafetyNumber() {
     });
   });
 }
+
+/* ------------------------------------------------------------------ *
+ * Status — hilang sendiri setelah 24 jam
+ *
+ * Isinya lewat jalur yang persis sama dengan pesan grup: satu blob terenkripsi
+ * dengan kunci yang dibungkus terpisah untuk tiap kontak. Server cuma tahu
+ * siapa yang memasang sesuatu dan kapan.
+ * ------------------------------------------------------------------ */
+const STATUS_TTL_MS = 24 * 60 * 60 * 1000;
+const STATUS_BACKGROUNDS = ['#1231f0', '#0369a1', '#0f766e', '#7c3aed', '#b91c1c', '#0f172a', '#a16207'];
+
+const liveStatuses = () => state.statuses.filter((status) => status.at > Date.now() - STATUS_TTL_MS);
+
+const statusesFrom = (uid) =>
+  liveStatuses()
+    .filter((status) => status.from === uid)
+    .sort((a, b) => a.at - b.at);
+
+const unseenStatusCount = (uid) =>
+  uid === state.me?.uid ? 0 : statusesFrom(uid).filter((status) => !state.statusSeen.has(status.id)).length;
+
+/** Siapa yang punya status aktif; yang belum dilihat ditaruh di depan. */
+function statusOwnerList() {
+  const owners = [];
+  for (const status of liveStatuses()) if (!owners.includes(status.from)) owners.push(status.from);
+
+  return owners.sort((a, b) => {
+    const unseen = (unseenStatusCount(b) > 0 ? 1 : 0) - (unseenStatusCount(a) > 0 ? 1 : 0);
+    if (unseen) return unseen;
+    return (statusesFrom(b).at(-1)?.at || 0) - (statusesFrom(a).at(-1)?.at || 0);
+  });
+}
+
+function markStatusSeen(id) {
+  if (state.statusSeen.has(id)) return;
+  state.statusSeen.add(id);
+  store.set(statusSeenKey(state.me.uid), [...state.statusSeen].slice(-500));
+  renderStatuses();
+  renderChatList();
+}
+
+function renderStatuses() {
+  if (!state.me) return;
+
+  const mine = statusesFrom(state.me.uid);
+  el.statusMeAvatar.textContent = initials(state.username || state.profile.displayName);
+  el.statusMeAvatar.dataset.uid = state.me.uid;
+  el.statusMeAvatar.classList.toggle('ring', mine.length > 0);
+  el.statusMeSub.textContent = mine.length
+    ? `${mine.length} status · terakhir ${formatListTime(mine.at(-1).at)}`
+    : 'Ketuk buat tambah status';
+
+  const owners = statusOwnerList().filter((uid) => uid !== state.me.uid);
+  el.statusList.innerHTML = '';
+  el.statusList.hidden = owners.length === 0;
+
+  for (const uid of owners) {
+    const name = peerByUid(uid)?.displayName || uid.slice(0, 8);
+    const unseen = unseenStatusCount(uid) > 0;
+    const last = statusesFrom(uid).at(-1);
+
+    const li = document.createElement('li');
+    li.className = 'status-item';
+    li.dataset.uid = uid;
+    li.innerHTML = `
+      <span class="avatar ${unseen ? 'ring' : 'ring-seen'}" data-uid="${esc(uid)}">${esc(initials(name))}</span>
+      <span class="status-item-text">
+        <strong>${esc(name)}</strong>
+        <span class="muted">${unseen ? 'Belum dilihat' : 'Sudah dilihat'} · ${formatListTime(last.at)}</span>
+      </span>
+    `;
+    li.addEventListener('click', () => openStatusViewer(uid));
+    el.statusList.appendChild(li);
+  }
+
+  paintAvatars();
+}
+
+/** Status baru: { text, color, attachment }. Teks lama tetap terbaca. */
+function unpackStatus(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.text === 'string') {
+      return { text: parsed.text, color: parsed.color || null, attachment: parsed.attachment || null };
+    }
+  } catch {
+    /* payload teks biasa */
+  }
+  return { text: String(raw ?? ''), color: null, attachment: null };
+}
+
+async function decodeStatus(status) {
+  const cached = state.statusDecoded.get(status.id);
+  if (cached) return cached;
+
+  let decoded;
+  try {
+    // A status can arrive from somebody this device has not met yet.
+    if (!peerByUid(status.from)) await new Promise((resolve) => socket.emit('sync', {}, resolve));
+    const key = await sharedKeyWith(status.from);
+    decoded = unpackStatus(await decryptMessage(status.payload, state.me.uid, key));
+    decoded.error = null;
+  } catch (err) {
+    decoded = { text: '', color: null, attachment: null, error: err.message };
+  }
+
+  state.statusDecoded.set(status.id, decoded);
+  return decoded;
+}
+
+/* ------------------------------------------------------------------ *
+ * Foto profil
+ *
+ * Satu-satunya unggahan yang sengaja TIDAK dienkripsi: foto profil memang
+ * untuk dilihat orang yang melihat namamu. Server tetap memeriksa ukuran dan
+ * jenis gambar dari byte aslinya, bukan dari header yang dikirim browser.
+ * ------------------------------------------------------------------ */
+
+/** Perkecil foto besar supaya unggahannya kecil; PNG/WebP kecil dibiarkan utuh. */
+async function prepareAvatarFile(file) {
+  if (file.size <= 512 * 1024 && ['image/png', 'image/webp'].includes(file.type)) return file;
+
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 512 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.88));
+  if (!blob) throw new Error('Gagal memproses gambar.');
+  return blob;
+}
+
+async function uploadAvatar(file) {
+  if (!file) return;
+  const token = await state.auth.getIdToken();
+  if (!token) throw new Error('Belum login.');
+
+  const body = await prepareAvatarFile(file);
+  const response = await fetch('/api/profile/avatar', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': body.type || 'image/jpeg' },
+    body,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Gagal unggah (${response.status}).`);
+
+  applyOwnPhoto(data.photoURL);
+  showToast('Foto profil diperbarui.');
+}
+
+async function removeAvatar() {
+  const token = await state.auth.getIdToken();
+  const response = await fetch('/api/profile/avatar', {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || `Gagal menghapus (${response.status}).`);
+  }
+  applyOwnPhoto(null);
+}
+
+function applyOwnPhoto(photoURL) {
+  const entry = peerByUid(state.me.uid);
+  if (entry) entry.photoURL = photoURL || null;
+  state.profile = { ...state.profile, photoURL: photoURL || null };
+  paintAvatars();
+}
+
+/* ------------------------------------------------------------------ *
+ * Status: penampil + pembuat
+ * ------------------------------------------------------------------ */
+const STATUS_SHOW_MS = 5000;
+let statusToken = 0;
+let statusAdvance = null;
+
+async function openStatusViewer(uid, at = null) {
+  const list = statusesFrom(uid);
+  if (!list.length) return;
+
+  const firstUnseen = list.findIndex((status) => !state.statusSeen.has(status.id));
+  state.statusView = { uid, index: at ?? (firstUnseen === -1 ? 0 : firstUnseen), token: ++statusToken };
+  el.statusViewer.hidden = false;
+  renderStatusView();
+}
+
+function closeStatusViewer() {
+  state.statusView = null;
+  statusToken++;
+  clearTimeout(statusAdvance);
+  if (el.statusViewer) el.statusViewer.hidden = true;
+  if (el.statusStage) el.statusStage.innerHTML = '';
+  if (state.me) renderStatuses();
+}
+
+function nextStatus(step) {
+  const view = state.statusView;
+  if (!view) return;
+
+  const list = statusesFrom(view.uid);
+  const next = view.index + step;
+  if (next < 0) return;
+  if (next >= list.length) return closeStatusViewer();
+
+  view.index = next;
+  view.token = ++statusToken;
+  renderStatusView();
+}
+
+function scheduleStatusAdvance() {
+  clearTimeout(statusAdvance);
+  if (!state.statusView) return;
+  statusAdvance = setTimeout(() => nextStatus(1), STATUS_SHOW_MS);
+}
+
+async function renderStatusView() {
+  const view = state.statusView;
+  if (!view) return;
+
+  const list = statusesFrom(view.uid);
+  if (!list.length || view.index >= list.length) return closeStatusViewer();
+
+  const status = list[view.index];
+  const mine = view.uid === state.me.uid;
+  const name = mine ? `@${state.username || 'aku'}` : peerByUid(view.uid)?.displayName || 'Tidak dikenal';
+
+  el.statusViewerName.textContent = name;
+  el.statusViewerAvatar.textContent = initials(name);
+  el.statusViewerAvatar.dataset.uid = view.uid;
+  el.statusViewerTime.textContent = formatListTime(status.at);
+  el.statusViewerCount.textContent = `${view.index + 1} dari ${list.length}`;
+  el.statusViewerMenu.hidden = !mine;
+  el.statusProgress.innerHTML = list
+    .map((_, i) => `<i class="${i < view.index ? 'done' : i === view.index ? 'now' : ''}"></i>`)
+    .join('');
+
+  el.statusStage.innerHTML = '<div class="status-note">Membuka…</div>';
+  const decoded = await decodeStatus(status);
+  // Kabur kalau pembukanya sudah pindah atau ditutup selagi menunggu.
+  if (!state.statusView || state.statusView.token !== view.token) return;
+
+  markStatusSeen(status.id);
+  await paintStatusStage(decoded, mine ? 'Ketuk ikon tempat sampah buat menghapus ini' : '');
+  scheduleStatusAdvance();
+}
+
+async function paintStatusStage(decoded, hint = '') {
+  if (decoded.error) {
+    el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#7f1d1d">⚠️ ${esc(decoded.error)}</div>`;
+    return;
+  }
+
+  if (decoded.attachment) {
+    el.statusStage.innerHTML = '<div class="status-note">Membuka gambar…</div>';
+    try {
+      const url = await fetchAttachment({
+        attachment: decoded.attachment,
+        getIdToken: () => state.auth.getIdToken(),
+      });
+      el.statusStage.innerHTML = `
+        <img class="status-image" alt="Status" />
+        ${decoded.text ? `<span class="status-caption">${esc(decoded.text)}</span>` : ''}
+        ${hint ? `<span class="status-hint">${esc(hint)}</span>` : ''}
+      `;
+      el.statusStage.querySelector('img').src = url;
+    } catch (err) {
+      el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#7f1d1d">⚠️ ${esc(err.message)}</div>`;
+    }
+    return;
+  }
+
+  el.statusStage.innerHTML = `
+    <div class="status-text" style="--status-bg:${decoded.color || STATUS_BACKGROUNDS[0]}">${esc(decoded.text)}</div>
+    ${hint ? `<span class="status-hint">${esc(hint)}</span>` : ''}
+  `;
+}
+
+async function publishStatus({ text, color, attachment }) {
+  // Everybody who can see the name gets a wrapped copy of the status key.
+  const audience = [
+    ...new Set([
+      ...state.directory.filter((user) => user.uid !== state.me.uid && user.publicKey).map((user) => user.uid),
+      state.me.uid,
+    ]),
+  ];
+
+  const keys = new Map();
+  for (const uid of audience) {
+    try {
+      keys.set(uid, await sharedKeyWith(uid));
+    } catch {
+      /* tanpa kunci publiknya dia memang nggak bisa baca */
+    }
+  }
+
+  const payload = await encryptMessage(
+    JSON.stringify({ text, color, attachment: attachment || null }),
+    keys
+  );
+
+  const result = await new Promise((resolve) => {
+    if (!socket?.connected) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
+    const timer = setTimeout(() => resolve({ ok: false, error: 'Server nggak menjawab.' }), 20000);
+    socket.emit('status:publish', { payload, members: [...keys.keys()] }, (answer) => {
+      clearTimeout(timer);
+      resolve(answer || {});
+    });
+  });
+
+  if (!result.ok) throw new Error(result.error || 'Gagal membagikan status.');
+
+  // The publisher is not sent its own status back, so keep it locally.
+  state.statuses.push({ id: result.id, from: state.me.uid, at: result.at, payload });
+  renderStatuses();
+  return result;
+}
+
+async function deleteStatus(id) {
+  const result = await new Promise((resolve) => {
+    if (!socket) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
+    socket.emit('status:remove', id, resolve);
+  });
+  if (!result?.ok) throw new Error(result?.error || 'Gagal menghapus status.');
+  state.statuses = state.statuses.filter((status) => status.id !== id);
+  state.statusDecoded.delete(id);
+  renderStatuses();
+}
+
+function openStatusComposer() {
+  openModal(`
+    <h3>Buat status</h3>
+    <p class="sub">Hilang sendiri setelah 24 jam. Isinya terenkripsi end-to-end — server cuma lihat blob.</p>
+    <textarea id="status-text" maxlength="280" placeholder="Tulis sesuatu…"></textarea>
+    <div class="swatch-row" id="status-colors">
+      ${STATUS_BACKGROUNDS.map(
+        (color, index) =>
+          `<button type="button" class="swatch${index === 0 ? ' active' : ''}" data-color="${color}" style="--swatch:${color}" aria-label="Warna ${index + 1}"></button>`
+      ).join('')}
+    </div>
+    <p class="sub" id="status-note">Pilih warna latar, atau lampirkan foto.</p>
+    <input type="file" id="status-photo" accept="image/*" hidden />
+    <div class="modal-actions">
+      <button data-close>Batal</button>
+      <button data-photo>Lampirkan foto</button>
+      <button class="primary" data-publish>Bagikan</button>
+    </div>
+  `);
+
+  let chosenFile = null;
+  let color = STATUS_BACKGROUNDS[0];
+  const note = () => el.modalCard.querySelector('#status-note');
+
+  el.modalCard.querySelector('#status-colors').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-color]');
+    if (!button) return;
+    color = button.dataset.color;
+    for (const node of el.modalCard.querySelectorAll('.swatch')) node.classList.toggle('active', node === button);
+  });
+
+  el.modalCard.querySelector('[data-photo]').addEventListener('click', () => {
+    el.modalCard.querySelector('#status-photo').click();
+  });
+
+  el.modalCard.querySelector('#status-photo').addEventListener('change', (event) => {
+    [chosenFile] = event.target.files || [];
+    note().textContent = chosenFile ? `Siap dibagikan: ${chosenFile.name}` : 'Pilih warna latar, atau lampirkan foto.';
+  });
+
+  el.modalCard.querySelector('[data-publish]').addEventListener('click', async () => {
+    const text = el.modalCard.querySelector('#status-text').value.trim();
+    if (!text && !chosenFile) return showToast('Tulis sesuatu atau lampirkan foto dulu.');
+
+    const publish = el.modalCard.querySelector('[data-publish]');
+    publish.disabled = true;
+
+    try {
+      let attachment = null;
+      if (chosenFile) {
+        attachment = await uploadAttachment({
+          file: chosenFile,
+          getIdToken: () => state.auth.getIdToken(),
+          maxBytes: state.config.files.maxBytes,
+          onStage: (stage, fraction) => {
+            const verb = stage === 'encrypt' ? 'Mengenkripsi' : 'Mengunggah';
+            note().textContent = `${verb} ${chosenFile.name}… ${Math.round(fraction * 100)}%`;
+          },
+        });
+      }
+
+      await publishStatus({ text, color, attachment });
+      closeModal();
+      showToast('Status dibagikan. Hilang sendiri dalam 24 jam.');
+      const mine = statusesFrom(state.me.uid);
+      openStatusViewer(state.me.uid, mine.length - 1);
+    } catch (err) {
+      note().textContent = `Gagal: ${err.message}`;
+      publish.disabled = false;
+    }
+  });
+
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+}
+
+/* ------------------------------------------------------------------ *
+ * Username wiring
+ * ------------------------------------------------------------------ */
+let usernameTimer = null;
+
+el.usernameInput.addEventListener('input', () => {
+  el.usernameSubmit.disabled = true;
+  // The previous answer was about a different value, so stop showing it as if
+  // it still described what is in the field.
+  setUsernameNote('Memeriksa ketersediaan…');
+  clearTimeout(usernameTimer);
+  // Typing should not fire a request per keystroke, but the answer still has to
+  // arrive while the person is looking at the field.
+  usernameTimer = setTimeout(checkUsername, 300);
+});
+
+el.usernameInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    if (!el.usernameSubmit.disabled) claimUsername();
+  }
+});
+
+el.usernameSubmit.addEventListener('click', claimUsername);
+
+el.usernameLogout.addEventListener('click', async () => {
+  if (!confirm('Keluar dan pakai akun lain?')) return;
+  await state.auth.signOut();
+  location.reload();
+});
 
 /* ------------------------------------------------------------------ *
  * Login wiring
@@ -1028,7 +1964,51 @@ el.btnLogout.addEventListener('click', async () => {
 });
 
 el.btnSettings.addEventListener('click', openSettings);
-el.btnNewChat.addEventListener('click', openNewChat);
+// `+` membuka halaman tambah kontak, bukan daftar orang yang sedang online.
+el.btnNewChat.addEventListener('click', openContactPage);
+el.btnReport.addEventListener('click', openReportModal);
+el.btnAdmin.addEventListener('click', () => window.open('/admin.html', '_blank', 'noopener'));
+el.contactForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  lookupContact();
+});
+el.contactBack.addEventListener('click', closeContactPage);
+el.bannedLogout.addEventListener('click', async () => {
+  await state.auth.signOut();
+  location.reload();
+});
+
+/* Status: satu baris di sidebar buat lihat punya sendiri, satu tombol buat bikin. */
+el.statusMeOpen.addEventListener('click', () => {
+  const mine = statusesFrom(state.me.uid);
+  if (mine.length) openStatusViewer(state.me.uid, mine.length - 1);
+  else openStatusComposer();
+});
+el.statusMeAdd.addEventListener('click', openStatusComposer);
+
+el.statusViewerClose.addEventListener('click', closeStatusViewer);
+el.statusPrev.addEventListener('click', () => nextStatus(-1));
+el.statusNext.addEventListener('click', () => nextStatus(1));
+el.statusViewerMenu.addEventListener('click', async () => {
+  const view = state.statusView;
+  if (!view || view.uid !== state.me.uid) return;
+  const status = statusesFrom(view.uid)[view.index];
+  if (!status) return;
+
+  try {
+    await deleteStatus(status.id);
+    showToast('Status dihapus.');
+    nextStatus(0);
+  } catch (err) {
+    showToast(err.message);
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (!el.statusViewer.hidden) return closeStatusViewer();
+  if (!el.contactPage.hidden) closeContactPage();
+});
 el.btnNewGroup.addEventListener('click', openNewGroup);
 el.btnVerify.addEventListener('click', openSafetyNumber);
 el.btnBack.addEventListener('click', () => el.app.classList.remove('show-chat'));

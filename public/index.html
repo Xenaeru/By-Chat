@@ -3,21 +3,53 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<meta name="theme-color" content="#111b21" />
-<title>Secure Chat</title>
+<meta name="theme-color" content="#04070f" />
+<title>By Chat</title>
 <link rel="stylesheet" href="style.css" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔒</text></svg>" />
+<link rel="icon" href="/logo.svg" type="image/svg+xml" />
 </head>
 <body>
+
+<!-- ── Ikon (satu set, diambil lewat <use>) ────────────────────────── -->
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.4 13.7 9 19.2 10.6 13.7 12.2 12 17.8 10.3 12.2 4.8 10.6 10.3 9z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.6" y="10" width="14.8" height="10.4" rx="2.7"/><path d="M8.2 10V7.6a3.8 3.8 0 0 1 7.6 0V10"/><path d="M12 14v2.4"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20.5 12.1c0 4-3.8 7.3-8.5 7.3a9.9 9.9 0 0 1-2.6-.35L4.6 20.6l1-3.4a6.9 6.9 0 0 1-2.1-5.1C3.5 8.1 7.3 4.9 12 4.9s8.5 3.2 8.5 7.2z"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9.2" cy="8.6" r="3.2"/><path d="M3.7 19c0-2.9 2.5-4.7 5.5-4.7s5.5 1.8 5.5 4.7"/><path d="M15.9 6.2a3 3 0 0 1 0 5.9"/><path d="M17.3 18.9c0-1.5-.4-2.7-1.2-3.6 2.4.2 4.2 1.6 4.2 3.7"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4.5 7.5h9.2M17.6 7.5h1.9M4.5 16.5h3.4M11.8 16.5h7.7"/><circle cx="15.6" cy="7.5" r="2.1"/><circle cx="9.8" cy="16.5" r="2.1"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14.5 12H4.6m0 0 3.3-3.3M4.6 12l3.3 3.3"/><path d="M11.4 5.6A6.6 6.6 0 0 1 20.4 12a6.6 6.6 0 0 1-9 6.4"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.6 5.6 8.2 12l6.4 6.4"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><path d="M6.3 4 9 7.3l-1.7 2.4a11.6 11.6 0 0 0 5.5 5.3l2.3-1.7 3.4 2.8-1.3 3A16.1 16.1 0 0 1 3.3 4.9z"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="6.4" width="11.6" height="11.2" rx="2.6"/><path d="M14.6 11.6 21 8.2v7.6l-6.4-3.4z"/></symbol>
+  <symbol id="i-screen" viewBox="0 0 24 24"><rect x="3" y="4.6" width="18" height="12" rx="2.4"/><path d="M8.6 20h6.8M12 16.6V20"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.2 19 6v5.4c0 4-2.9 7.4-7 9.5-4.1-2.1-7-5.5-7-9.5V6z"/><path d="M9.4 12.1 11.3 14l3.5-4"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="M19.6 12.3 12.9 19a4 4 0 0 1-5.7-5.7l7.4-7.4a2.7 2.7 0 0 1 3.8 3.8l-7.4 7.4a1.4 1.4 0 0 1-2-2l6.5-6.5"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M20.2 4 3.6 10.8l6.1 2.3 2.3 6.1z"/><path d="M9.7 13.1 20.2 4"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9.1" y="3" width="5.8" height="10.4" rx="2.9"/><path d="M5.6 11.4a6.4 6.4 0 0 0 12.8 0M12 17.8V21"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M13.6 3.5H7.4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9.2a2 2 0 0 0 2-2V8.5z"/><path d="M13.4 3.6v5h5.1"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.6 6.6l10.8 10.8M17.4 6.6 6.6 17.4"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.6 7h14.8M9.6 7V5.3c0-.7.5-1.3 1.2-1.3h2.4c.7 0 1.2.6 1.2 1.3V7"/><path d="M6.6 7l.9 12a2 2 0 0 0 2 1.9h5a2 2 0 0 0 2-1.9l.9-12"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.3"/><path d="M15.7 15.7 20.4 20.4"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6.4 21V4.2"/><path d="M6.4 4.6c3.3-1.5 5.8 1.3 9.2.3 1.7-.5 2.9-.4 2.9-.4v8.4s-1.2-.1-2.9.4c-3.4 1-5.9-1.8-9.2-.3z"/></symbol>
+  <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.3"/><path d="M6.2 6.2 17.8 17.8"/></symbol>
+  <symbol id="i-user-plus" viewBox="0 0 24 24"><circle cx="10" cy="8.4" r="3.4"/><path d="M3.6 19.2c0-3 2.9-4.9 6.4-4.9 1.2 0 2.4.2 3.4.7"/><path d="M17.6 13.4v6M14.6 16.4h6"/></symbol>
+</svg>
 
 <div id="boot" class="boot"><div class="spinner"></div></div>
 
 <!-- ── Login ───────────────────────────────────────────────────────── -->
 <div id="login" class="login" hidden>
+  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+
   <div class="login-card">
-    <div class="login-logo">🔒</div>
-    <h1>Secure Chat</h1>
-    <p class="muted">Pesan, file, dan panggilan terenkripsi end-to-end. Server cuma perantara.</p>
+    <div class="brand">
+      <img class="brand-mark" src="/logo.svg" alt="By Chat" width="54" height="54" />
+      <div>
+        <h1 class="wordmark"><span class="word-by">By</span><span class="word-chat">Chat</span></h1>
+        <p class="brand-tag">Pesan, file, panggilan, dan status <strong>terenkripsi end-to-end</strong>.</p>
+      </div>
+    </div>
 
     <!-- Firebase: Google + nomor HP -->
     <div id="login-firebase" hidden>
@@ -28,12 +60,14 @@
       <div class="divider"><span>atau pakai nomor HP</span></div>
 
       <div id="phone-step-1">
+        <label for="phone-number">Nomor HP</label>
         <input id="phone-number" type="tel" inputmode="tel" placeholder="+62 812 3456 7890" />
         <button id="btn-send-code" class="primary">Kirim kode OTP</button>
       </div>
 
       <div id="phone-step-2" hidden>
         <p class="muted small">Kode dikirim ke <strong id="phone-shown">—</strong></p>
+        <label for="otp-code">Kode 6 angka</label>
         <input id="otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" />
         <button id="btn-verify-code" class="primary">Verifikasi</button>
         <button id="btn-change-phone" class="link">Ganti nomor</button>
@@ -58,6 +92,34 @@
   </div>
 </div>
 
+<!-- ── Pilih username (sekali per akun) ────────────────────────────── -->
+<div id="onboarding" class="onboarding" hidden>
+  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <div class="onboarding-card">
+    <img class="onboarding-mark" src="/logo.svg" alt="By Chat" width="48" height="48" />
+    <span class="step-pill"><svg class="ico"><use href="#i-spark" /></svg> Satu langkah lagi</span>
+    <h1>Pilih username kamu</h1>
+    <p class="muted">
+      Ini nama yang dilihat orang lain. Sekali dipakai, orang lain nggak bisa ambil —
+      termasuk kalau cuma beda huruf besar/kecil atau beda titik.
+    </p>
+
+    <div class="username-field" id="username-field">
+      <span class="at">@</span>
+      <label for="username-input" class="sr-only">Username</label>
+      <input id="username-input" maxlength="20" autocomplete="off" autocapitalize="none"
+             autocorrect="off" spellcheck="false" placeholder="misal: azhari" />
+      <span id="username-mark" class="mark" aria-hidden="true"></span>
+    </div>
+
+    <p id="username-status" class="field-note" hidden></p>
+
+    <button id="username-submit" class="primary" disabled>Pakai username ini</button>
+    <button id="username-logout" class="link">Pakai akun lain</button>
+  </div>
+</div>
+
 <!-- ── App ─────────────────────────────────────────────────────────── -->
 <div id="app" class="app" hidden>
 
@@ -68,38 +130,81 @@
         <strong id="me-name">—</strong>
         <span class="muted" id="me-status">menyambung…</span>
       </div>
-      <button id="btn-settings" class="icon-btn" title="Pengaturan">⚙️</button>
-      <button id="btn-logout" class="icon-btn" title="Keluar">⎋</button>
+      <button id="btn-admin" class="icon-btn" title="Halaman admin" aria-label="Halaman admin" hidden>
+        <svg class="ico"><use href="#i-shield" /></svg>
+      </button>
+      <button id="btn-settings" class="icon-btn" title="Pengaturan" aria-label="Pengaturan">
+        <svg class="ico"><use href="#i-sliders" /></svg>
+      </button>
+      <button id="btn-logout" class="icon-btn" title="Keluar" aria-label="Keluar">
+        <svg class="ico"><use href="#i-logout" /></svg>
+      </button>
     </header>
+
+    <div class="status-panel">
+      <div class="status-me" id="status-me">
+        <button type="button" class="status-me-main" id="status-me-open">
+          <span class="avatar" id="status-me-avatar">?</span>
+          <span class="status-me-text">
+            <strong>Status saya</strong>
+            <span class="muted" id="status-me-sub">Ketuk buat tambah status</span>
+          </span>
+        </button>
+        <button type="button" class="icon-btn" id="status-me-add" title="Buat status" aria-label="Buat status">
+          <svg class="ico"><use href="#i-plus" /></svg>
+        </button>
+      </div>
+      <ul class="status-list" id="status-list" hidden></ul>
+    </div>
 
     <div class="sidebar-actions">
       <input id="search" class="search" placeholder="Cari chat…" />
-      <button id="btn-new-chat" class="icon-btn big" title="Chat baru">💬</button>
-      <button id="btn-new-group" class="icon-btn big" title="Grup baru">👥</button>
+      <button id="btn-new-chat" class="icon-btn big" title="Tambah kontak" aria-label="Tambah kontak">
+        <svg class="ico"><use href="#i-user-plus" /></svg>
+      </button>
+      <button id="btn-new-group" class="icon-btn big" title="Grup baru" aria-label="Grup baru">
+        <svg class="ico"><use href="#i-users" /></svg>
+      </button>
     </div>
 
     <ul id="chat-list" class="chat-list"></ul>
-    <p id="chat-list-empty" class="empty-note">Belum ada chat. Tekan 💬 buat mulai.</p>
+    <p id="chat-list-empty" class="empty-note">Belum ada chat. Tekan ＋ buat tambah kontak.</p>
   </aside>
 
   <main class="chat" id="chat">
     <section class="empty-state" id="empty-state">
-      <div class="empty-art">🔐</div>
-      <h2>Secure Chat</h2>
-      <p>Pilih chat di kiri, atau mulai yang baru.<br />Pesan, file, dan panggilan end-to-end encrypted.</p>
+      <div class="empty-art"><img src="/logo.svg" alt="" width="68" height="68" /></div>
+      <h2>Pilih chat buat mulai</h2>
+      <p>Pesan, file, dan panggilan di sini terenkripsi end-to-end.<br />Server cuma perantara buta — dia nggak bisa baca apa pun.</p>
+      <div class="chips">
+        <span class="chip"><svg class="ico"><use href="#i-shield" /></svg> E2EE</span>
+        <span class="chip"><svg class="ico"><use href="#i-clip" /></svg> File terenkripsi</span>
+        <span class="chip"><svg class="ico"><use href="#i-phone" /></svg> Panggilan WebRTC</span>
+      </div>
     </section>
 
     <section class="chat-view" id="chat-view" hidden>
       <header class="chat-header">
-        <button id="btn-back" class="icon-btn back" title="Kembali">←</button>
+        <button id="btn-back" class="icon-btn back" title="Kembali" aria-label="Kembali">
+          <svg class="ico"><use href="#i-back" /></svg>
+        </button>
         <div class="avatar" id="peer-avatar">?</div>
         <div class="chat-title">
           <strong id="peer-name">—</strong>
           <span class="muted" id="peer-sub">—</span>
         </div>
-        <button id="btn-call-audio" class="icon-btn" title="Telpon suara">📞</button>
-        <button id="btn-call-video" class="icon-btn" title="Video call">🎥</button>
-        <button id="btn-verify" class="icon-btn" title="Safety number">🛡️</button>
+        <button id="btn-call-audio" class="icon-btn" title="Telpon suara" aria-label="Telpon suara">
+          <svg class="ico"><use href="#i-phone" /></svg>
+        </button>
+        <button id="btn-call-video" class="icon-btn" title="Video call" aria-label="Video call">
+          <svg class="ico"><use href="#i-video" /></svg>
+        </button>
+        <button id="btn-verify" class="icon-btn" title="Safety number" aria-label="Safety number">
+          <svg class="ico"><use href="#i-shield" /></svg>
+        </button>
+        <button id="btn-report" class="icon-btn danger" title="Laporkan pengguna ini" aria-label="Laporkan pengguna ini" hidden>
+          <svg class="ico"><use href="#i-flag" /></svg>
+        </button>
       </header>
 
       <div id="messages" class="messages"></div>
@@ -112,13 +217,64 @@
       </div>
 
       <form id="composer" class="composer">
-        <button type="button" id="btn-attach" class="icon-btn big" title="Kirim file">📎</button>
+        <button type="button" id="btn-attach" class="icon-btn big round" title="Kirim file" aria-label="Kirim file">
+          <svg class="ico"><use href="#i-clip" /></svg>
+        </button>
         <input type="file" id="file-input" hidden multiple />
         <textarea id="composer-input" rows="1" placeholder="Tulis pesan terenkripsi…"></textarea>
-        <button type="submit" class="send" title="Kirim">➤</button>
+        <button type="submit" class="send" title="Kirim" aria-label="Kirim">
+          <svg class="ico"><use href="#i-send" /></svg>
+        </button>
       </form>
     </section>
   </main>
+</div>
+
+<!-- ── Halaman tambah kontak ─────────────────────────────────────────
+     Sengaja halaman, bukan modal: orang harus benar-benar tahu bahwa satu
+     kontak harus dicari dulu sebelum bisa di-chat. -->
+<div id="contact-page" class="contact-page" hidden>
+  <div class="contact-card">
+    <header class="contact-head">
+      <button type="button" id="contact-back" class="icon-btn" title="Kembali" aria-label="Kembali">
+        <svg class="ico"><use href="#i-back" /></svg>
+      </button>
+      <div class="contact-title">
+        <strong>Tambah kontak</strong>
+        <span class="muted">Chat cuma bisa dibuat setelah kontaknya ditemukan di sini.</span>
+      </div>
+    </header>
+
+    <form id="contact-form" class="contact-form" autocomplete="off">
+      <div class="contact-field">
+        <svg class="ico"><use href="#i-search" /></svg>
+        <label for="contact-query" class="sr-only">Email, nomor HP, atau username</label>
+        <input id="contact-query" maxlength="120" autocapitalize="none" autocorrect="off"
+               spellcheck="false" placeholder="email, nomor HP, atau @username" />
+      </div>
+      <button type="submit" id="contact-submit" class="primary">Cari</button>
+    </form>
+
+    <p id="contact-note" class="field-note" hidden></p>
+    <ul id="contact-results" class="picker contact-results" hidden></ul>
+  </div>
+</div>
+
+<!-- ── Akun diblokir ───────────────────────────────────────────────── -->
+<div id="banned" class="onboarding" hidden>
+  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <div class="onboarding-card">
+    <img class="onboarding-mark" src="/logo.svg" alt="By Chat" width="48" height="48" />
+    <span class="step-pill danger"><svg class="ico"><use href="#i-ban" /></svg> Akses dihentikan</span>
+    <h1>Akun kamu diblokir</h1>
+    <p class="muted" id="banned-reason">—</p>
+    <p class="muted small">
+      Kalau menurut kamu ini keliru, hubungi admin aplikasi ini. Selama diblokir, akun ini nggak
+      bisa mengirim pesan, mengunggah file, atau menelepon.
+    </p>
+    <button id="banned-logout" class="primary">Keluar dari akun ini</button>
+  </div>
 </div>
 
 <!-- ── Call overlay ────────────────────────────────────────────────── -->
@@ -132,10 +288,10 @@
   <video id="local-video" class="local-video" autoplay playsinline muted></video>
 
   <div class="call-controls">
-    <button id="ctl-mic" class="ctl" title="Mikrofon">🎙️</button>
-    <button id="ctl-camera" class="ctl" title="Kamera">📹</button>
-    <button id="ctl-screen" class="ctl" title="Bagikan layar">🖥️</button>
-    <button id="ctl-hangup" class="ctl danger" title="Akhiri">📵</button>
+    <button id="ctl-mic" class="ctl" title="Mikrofon" aria-label="Mikrofon"><svg class="ico"><use href="#i-mic" /></svg></button>
+    <button id="ctl-camera" class="ctl" title="Kamera" aria-label="Kamera"><svg class="ico"><use href="#i-video" /></svg></button>
+    <button id="ctl-screen" class="ctl" title="Bagikan layar" aria-label="Bagikan layar"><svg class="ico"><use href="#i-screen" /></svg></button>
+    <button id="ctl-hangup" class="ctl hangup" title="Akhiri" aria-label="Akhiri"><svg class="ico"><use href="#i-phone" /></svg></button>
   </div>
 </div>
 
@@ -147,9 +303,33 @@
     <span class="muted" id="incoming-kind">Panggilan masuk</span>
   </div>
   <div class="incoming-actions">
-    <button id="btn-decline" class="ctl danger" title="Tolak">📵</button>
-    <button id="btn-accept" class="ctl accept" title="Terima">📞</button>
+    <button id="btn-decline" class="ctl hangup" title="Tolak" aria-label="Tolak"><svg class="ico"><use href="#i-phone" /></svg></button>
+    <button id="btn-accept" class="ctl accept" title="Terima" aria-label="Terima"><svg class="ico"><use href="#i-phone" /></svg></button>
   </div>
+</div>
+
+<!-- ── Status viewer ──────────────────────────────────────────────── -->
+<div id="status-viewer" class="status-viewer" hidden>
+  <div class="status-progress" id="status-progress"></div>
+
+  <header class="status-head">
+    <span class="avatar" id="status-viewer-avatar">?</span>
+    <span class="status-head-text">
+      <strong id="status-viewer-name">—</strong>
+      <span class="muted"><span id="status-viewer-time">—</span> · <span id="status-viewer-count"></span></span>
+    </span>
+    <button type="button" class="icon-btn" id="status-viewer-menu" title="Hapus status ini" aria-label="Hapus status ini" hidden>
+      <svg class="ico"><use href="#i-trash" /></svg>
+    </button>
+    <button type="button" class="icon-btn" id="status-viewer-close" title="Tutup" aria-label="Tutup">
+      <svg class="ico"><use href="#i-close" /></svg>
+    </button>
+  </header>
+
+  <div class="status-stage" id="status-stage"></div>
+
+  <button type="button" class="status-nav prev" id="status-prev" aria-label="Status sebelumnya"></button>
+  <button type="button" class="status-nav next" id="status-next" aria-label="Status berikutnya"></button>
 </div>
 
 <div id="modal" class="modal" hidden><div class="modal-card" id="modal-card"></div></div>

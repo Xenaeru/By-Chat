@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="By Chat">
+  <defs>
+    <linearGradient id="bychatMark" x1="18%" y1="4%" x2="86%" y2="96%">
+      <stop offset="0" stop-color="#5cd6ff"/>
+      <stop offset="45%" stop-color="#2ba8ff"/>
+      <stop offset="100%" stop-color="#1231f0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Garis pesan -->
+  <rect x="6" y="39" width="22" height="9" rx="4.5" fill="#63d8ff"/>
+  <rect x="6" y="54" width="14" height="9" rx="4.5" fill="#63d8ff"/>
+
+  <!-- Balon percakapan -->
+  <rect x="34" y="19" width="52" height="52" rx="18" fill="url(#bychatMark)"/>
+  <path d="M45 65.5 25.5 80.5l26.5-8.5z" fill="url(#bychatMark)"/>
+
+  <!-- Titik menulis -->
+  <circle cx="48" cy="45" r="4.6" fill="#f4fbff"/>
+  <circle cx="60" cy="45" r="4.6" fill="#f4fbff"/>
+  <circle cx="72" cy="45" r="4.6" fill="#f4fbff"/>
+</svg>

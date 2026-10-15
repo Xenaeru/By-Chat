@@ -12,7 +12,9 @@
     "start": "node server.js",
     "test": "node --test \"test/*.test.mjs\"",
     "test:browser": "node scripts/browser-check.mjs",
+    "screenshots": "node scripts/screenshot.mjs",
     "check-env": "node scripts/check-env.mjs",
+    "render-env": "node scripts/render-env.mjs",
     "set-service-account": "node scripts/set-service-account.mjs",
     "verify-token": "node scripts/verify-firebase-token.mjs"
   },
