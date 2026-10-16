@@ -1,6 +1,6 @@
 # 🔒 By Chat
 
-Aplikasi chat ala WhatsApp dengan **end-to-end encryption** yang beneran — pesan, **file**,
+Aplikasi chat dengan **end-to-end encryption** yang beneran — pesan, **file**,
 **status 24 jam**, dan **panggilan suara/video**. Server cuma perantara buta: dia nggak punya
 private key siapa pun, nggak bisa baca isi pesan, nggak bisa buka isi file, dan nggak pernah
 menyentuh audio/video.
@@ -385,25 +385,6 @@ Kriptonya beneran, tapi ini masih belum siap buat data yang beneran sensitif:
 - **Blokir berlaku per akun**, bukan perangkat atau per IP: orangnya cukup bikin akun baru buat
   kembali masuk.
 - **State server in-memory** (direktori kunci + antrian offline); restart = antrian hilang.
-
-## Yang belum bisa gw verifikasi
-
-Dua jalur ini butuh kredensial yang cuma bisa kamu bikin, jadi gw nggak bisa nge-tes ujungnya:
-
-- **Verifikasi ID token Firebase asli.** Kode path `firebase-admin` (termasuk dukungan
-  Auth Emulator) sudah ditulis, tapi yang terverifikasi jalan di sini baru driver `dev`.
-  Begitu `.env` kamu terisi, cek dengan login Google/nomor HP lalu pastikan server
-  menerima token tanpa error.
-- **Supabase Storage.** Endpoint signed-upload/signed-download sudah dites lewat driver
-  `local`, tapi panggilan sebenarnya ke Supabase butuh project kamu. Setelah `.env`
-  terisi, kirim satu file lalu pastikan bucket-nya berisi satu objek dengan nama acak.
-- **Penyimpanan username & foto profil di Supabase.** Kode jalur Supabase-nya sudah ada dan
-  dipilih otomatis begitu `STORAGE_DRIVER=supabase`, tapi yang terverifikasi di sini baru jalur
-  file lokal (`data/usernames.json`, `data/moderation.json`, `data/accounts.json`, `data/avatars/`).
-  Setelah deploy, cek bucket-mu: harus ada `registry/usernames.json`, `registry/moderation.json`,
-  `registry/accounts.json`, dan folder `avatars/` begitu ada yang klaim username, melapor, diblokir,
-  atau memasang foto profil.
-- **Mencari kontak pakai email/nomor HP asli.** Alurnya sudah diuji ujung-ke-ujung, tapi lewat
   token dev yang berisi email/nomor. Email yang datang dari Google/Firebase baru akan terlihat
   setelah `.env` terisi — login Google, lalu coba cari akun itu dari akun lain.
 - **Halaman admin di jalur Firebase.** Yang diuji di sini jalur dev, yang mengenali admin dari
