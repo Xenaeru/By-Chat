@@ -1,28 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 128" role="img" aria-label="By Chat">
-  <defs>
-    <linearGradient id="bychatMark" x1="18%" y1="4%" x2="86%" y2="96%">
-      <stop offset="0" stop-color="#5cd6ff"/>
-      <stop offset="45%" stop-color="#2ba8ff"/>
-      <stop offset="100%" stop-color="#1231f0"/>
-    </linearGradient>
-    <linearGradient id="bychatWord" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0" stop-color="#4ec8ff"/>
-      <stop offset="100%" stop-color="#1f4bff"/>
-    </linearGradient>
-  </defs>
-
+  <!-- Lockup (mark + wordmark) dengan palet DESIGN.md: {colors.primary} #2563eb,
+       {colors.primary-deep} #1d4ed8, dan {colors.ink} #17202a. Tanpa gradasi. -->
   <g transform="translate(8 8)">
-    <rect x="4" y="30" width="20" height="8" rx="4" fill="#63d8ff"/>
-    <rect x="4" y="43" width="13" height="8" rx="4" fill="#63d8ff"/>
-    <rect x="30" y="13" width="46" height="46" rx="16" fill="url(#bychatMark)"/>
-    <path d="M40 55 22 68l24-7.5z" fill="url(#bychatMark)"/>
-    <circle cx="42.5" cy="36" r="4.1" fill="#f4fbff"/>
-    <circle cx="53" cy="36" r="4.1" fill="#f4fbff"/>
-    <circle cx="63.5" cy="36" r="4.1" fill="#f4fbff"/>
+    <rect x="4" y="30" width="20" height="8" rx="2" fill="#1d4ed8"/>
+    <rect x="4" y="43" width="13" height="8" rx="2" fill="#1d4ed8"/>
+    <rect x="30" y="13" width="46" height="46" rx="16" fill="#2563eb"/>
+    <path d="M40 55 22 68l24-7.5z" fill="#2563eb"/>
+    <circle cx="42.5" cy="36" r="4.1" fill="#ffffff"/>
+    <circle cx="53" cy="36" r="4.1" fill="#ffffff"/>
+    <circle cx="63.5" cy="36" r="4.1" fill="#ffffff"/>
   </g>
 
   <text x="112" y="74" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-        font-size="42" font-weight="800" letter-spacing="-1.5" fill="#ffffff">By</text>
+        font-size="42" font-weight="500" letter-spacing="-0.5" fill="#17202a">By</text>
   <text x="168" y="74" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-        font-size="42" font-weight="800" letter-spacing="-1.5" fill="url(#bychatWord)">Chat</text>
+        font-size="42" font-weight="500" letter-spacing="-0.5" fill="#2563eb">Chat</text>
 </svg>

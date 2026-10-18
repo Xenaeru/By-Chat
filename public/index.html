@@ -3,10 +3,17 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<meta name="theme-color" content="#04070f" />
+<meta name="theme-color" content="#f7f8fa" />
 <title>By Chat</title>
+<!-- Inter, keluarga huruf yang ditulis DESIGN.md. Kalau font ini gagal
+     dimuat, rangkaian fallback di style.css tetap menampilkan halaman
+     dengan benar. -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
 <link rel="stylesheet" href="style.css" />
 <link rel="icon" href="/logo.svg" type="image/svg+xml" />
+<link rel="manifest" href="/manifest.webmanifest" />
 </head>
 <body>
 
@@ -52,14 +59,16 @@
   <symbol id="i-checks" viewBox="0 0 24 24"><path d="M2.6 12.6 6.6 16.6 13.4 8.6"/><path d="M10.8 15.3 12.6 16.9 19.4 9.2"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4.6 20.4 19H3.6z"/><path d="M12 10v4M12 16.6v.2"/></symbol>
   <symbol id="i-forwarded" viewBox="0 0 24 24"><path d="M10.8 6.6 15.6 11l-4.8 4.4"/><path d="M15.2 11H8.9c-2.8 0-4.3 1.7-4.3 4.3v2.1"/></symbol>
+
+  <!-- Riwayat panggilan -->
+  <symbol id="i-call-out" viewBox="0 0 24 24"><path d="M7.6 16.4 16.4 7.6"/><path d="M12.6 7.6h3.8v3.8"/></symbol>
+  <symbol id="i-call-in" viewBox="0 0 24 24"><path d="M7.6 7.6 16.4 16.4"/><path d="M16.4 12.6v3.8h-3.8"/></symbol>
 </svg>
 
 <div id="boot" class="boot"><div class="spinner"></div></div>
 
 <!-- ── Login ───────────────────────────────────────────────────────── -->
 <div id="login" class="login" hidden>
-  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-
   <div class="login-card">
     <div class="brand">
       <img class="brand-mark" src="/logo.svg" alt="By Chat" width="54" height="54" />
@@ -69,29 +78,13 @@
       </div>
     </div>
 
-    <!-- Firebase: Google + nomor HP -->
+    <!-- Firebase: cuma Google. Login nomor HP (OTP SMS) sudah dibuang:
+         itu fitur berbayar di Firebase, jadi jalurnya nggak pernah bisa
+         dipakai di project gratis. -->
     <div id="login-firebase" hidden>
       <button id="btn-google" class="oauth">
         <span class="g-icon">G</span> Lanjut dengan Google
       </button>
-
-      <div class="divider"><span>atau pakai nomor HP</span></div>
-
-      <div id="phone-step-1">
-        <label for="phone-number">Nomor HP</label>
-        <input id="phone-number" type="tel" inputmode="tel" placeholder="+62 812 3456 7890" />
-        <button id="btn-send-code" class="primary">Kirim kode OTP</button>
-      </div>
-
-      <div id="phone-step-2" hidden>
-        <p class="muted small">Kode dikirim ke <strong id="phone-shown">—</strong></p>
-        <label for="otp-code">Kode 6 angka</label>
-        <input id="otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" />
-        <button id="btn-verify-code" class="primary">Verifikasi</button>
-        <button id="btn-change-phone" class="link">Ganti nomor</button>
-      </div>
-
-      <div id="recaptcha-container"></div>
     </div>
 
     <!-- Dev: cuma nama -->
@@ -108,12 +101,16 @@
 
     <p id="login-error" class="error" hidden></p>
   </div>
+
+  <footer class="site-foot">
+    <p>
+      Kunci enkripsinya cuma ada di perangkat kamu. Server menyimpan ciphertext, bukan isi pesan.
+    </p>
+  </footer>
 </div>
 
 <!-- ── Pilih username (sekali per akun) ────────────────────────────── -->
 <div id="onboarding" class="onboarding" hidden>
-  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-
   <div class="onboarding-card">
     <img class="onboarding-mark" src="/logo.svg" alt="By Chat" width="48" height="48" />
     <span class="step-pill"><svg class="ico"><use href="#i-spark" /></svg> Satu langkah lagi</span>
@@ -141,39 +138,41 @@
 <!-- ── App ─────────────────────────────────────────────────────────── -->
 <div id="app" class="app" hidden>
 
-  <aside class="sidebar">
-    <header class="sidebar-header">
-      <div class="avatar" id="me-avatar">?</div>
-      <div class="sidebar-me">
-        <strong id="me-name">—</strong>
-        <span class="muted" id="me-status">menyambung…</span>
-      </div>
+  <!-- Rail ikon (desktop): pindah panel, sama seperti sidebar WhatsApp Web. -->
+  <nav class="rail" id="rail" aria-label="Menu utama">
+    <img class="rail-logo" src="/logo.svg" alt="By Chat" width="34" height="34" />
+
+    <button type="button" class="rail-btn" data-view="chats" title="Chat" aria-label="Chat" aria-pressed="true">
+      <svg class="ico"><use href="#i-chat" /></svg>
+      <span class="nav-badge" id="rail-unread" hidden></span>
+    </button>
+    <button type="button" class="rail-btn" data-view="status" title="Status" aria-label="Status" aria-pressed="false">
+      <svg class="ico"><use href="#i-spark" /></svg>
+      <span class="nav-dot" id="rail-status-dot" hidden></span>
+    </button>
+    <button type="button" class="rail-btn" data-view="calls" title="Panggilan" aria-label="Panggilan" aria-pressed="false">
+      <svg class="ico"><use href="#i-phone" /></svg>
+    </button>
+    <button type="button" class="rail-btn" data-view="settings" title="Pengaturan" aria-label="Pengaturan" aria-pressed="false">
+      <svg class="ico"><use href="#i-sliders" /></svg>
+    </button>
+
+    <span class="rail-spacer"></span>
+
+    <button type="button" class="rail-btn rail-me" data-view="settings" title="Akun saya" aria-label="Akun saya">
+      <span class="avatar" id="rail-avatar">?</span>
+    </button>
+  </nav>
+
+  <div class="lists" id="lists">
+
+  <section class="panel sidebar" data-panel="chats" id="panel-chats">
+    <header class="panel-head">
+      <h1 class="panel-title">Chat</h1>
       <button id="btn-admin" class="icon-btn" title="Halaman admin" aria-label="Halaman admin" hidden>
         <svg class="ico"><use href="#i-shield" /></svg>
       </button>
-      <button id="btn-settings" class="icon-btn" title="Pengaturan" aria-label="Pengaturan">
-        <svg class="ico"><use href="#i-sliders" /></svg>
-      </button>
-      <button id="btn-logout" class="icon-btn" title="Keluar" aria-label="Keluar">
-        <svg class="ico"><use href="#i-logout" /></svg>
-      </button>
     </header>
-
-    <div class="status-panel">
-      <div class="status-me" id="status-me">
-        <button type="button" class="status-me-main" id="status-me-open">
-          <span class="avatar" id="status-me-avatar">?</span>
-          <span class="status-me-text">
-            <strong>Status saya</strong>
-            <span class="muted" id="status-me-sub">Ketuk buat tambah status</span>
-          </span>
-        </button>
-        <button type="button" class="icon-btn" id="status-me-add" title="Buat status" aria-label="Buat status">
-          <svg class="ico"><use href="#i-plus" /></svg>
-        </button>
-      </div>
-      <ul class="status-list" id="status-list" hidden></ul>
-    </div>
 
     <div class="sidebar-actions">
       <input id="search" class="search" placeholder="Cari chat…" />
@@ -186,12 +185,104 @@
     </div>
 
     <ul id="chat-list" class="chat-list"></ul>
-    <p id="chat-list-empty" class="empty-note">Belum ada chat. Tekan ＋ buat tambah kontak.</p>
-  </aside>
+    <p id="chat-list-empty" class="empty-note">Tekan ＋ buat tambah kontak dulu, baru percakapan bisa dibuka.</p>
+
+    <p class="panel-foot">Terenkripsi end-to-end · server cuma perantara buta</p>
+  </section>
+
+  <!-- Panel status: daftar pembaruan dari kontak yang sudah pernah chat. -->
+  <section class="panel" data-panel="status" id="panel-status" hidden>
+    <header class="panel-head">
+      <h1 class="panel-title">Status</h1>
+      <button type="button" class="icon-btn" id="status-me-add" title="Buat status" aria-label="Buat status">
+        <svg class="ico"><use href="#i-plus" /></svg>
+      </button>
+    </header>
+
+    <div class="status-me" id="status-me">
+      <button type="button" class="status-me-main" id="status-me-open">
+        <span class="avatar" id="status-me-avatar">?</span>
+        <span class="status-me-text">
+          <strong>Status saya</strong>
+          <span class="muted" id="status-me-sub">Ketuk buat tambah status</span>
+        </span>
+      </button>
+    </div>
+
+    <p class="panel-label">Pembaruan terbaru</p>
+    <ul class="status-list" id="status-list"></ul>
+    <p id="status-empty" class="empty-note">
+      Belum ada status. Status cuma bisa dilihat dari orang yang sudah pernah chat dengan kamu.
+    </p>
+    <p class="panel-foot">Hilang sendiri setelah 24 jam · isinya tetap terenkripsi</p>
+  </section>
+
+  <!-- Panel panggilan: riwayat disimpan di perangkat ini, bukan di server. -->
+  <section class="panel" data-panel="calls" id="panel-calls" hidden>
+    <header class="panel-head">
+      <h1 class="panel-title">Panggilan</h1>
+    </header>
+    <ul class="call-list" id="call-list"></ul>
+    <p id="call-empty" class="empty-note">
+      Belum ada panggilan. Riwayat ini cuma tersimpan di perangkat kamu, dan server nggak tahu isinya.
+    </p>
+    <p class="panel-foot">Suara, video, dan bagikan layar 1:1</p>
+  </section>
+
+  <!-- Panel pengaturan: profil, notifikasi, keluar. -->
+  <section class="panel" data-panel="settings" id="panel-settings" hidden>
+    <header class="panel-head">
+      <h1 class="panel-title">Pengaturan</h1>
+    </header>
+
+    <div class="settings-body">
+      <div class="settings-profile">
+        <span class="avatar big" id="me-avatar">?</span>
+        <div class="settings-profile-text">
+          <strong id="me-name">—</strong>
+          <span class="muted" id="me-status">menyambung…</span>
+        </div>
+      </div>
+
+      <div class="photo-actions">
+        <button type="button" class="ghost" data-pick-photo>Ganti foto</button>
+        <button type="button" class="ghost" data-remove-photo>Hapus</button>
+        <span class="sub">PNG, JPEG, atau WebP — maksimal 2 MB. Foto profil <strong>tidak</strong> terenkripsi, jadi jangan pakai foto yang kamu nggak mau orang lihat.</span>
+      </div>
+      <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" hidden />
+
+      <label for="display-name">Username</label>
+      <div class="settings-field">
+        <input id="display-name" type="text" maxlength="20" autocomplete="off" />
+        <button type="button" class="primary" data-save>Simpan</button>
+      </div>
+      <p class="field-note" data-name-note>
+        Orang lain lihat kamu sebagai <strong data-name-tag>@—</strong>. Nama ini unik — kalau sudah dipakai orang, ganti yang lain.
+      </p>
+
+      <div class="settings-row">
+        <div class="settings-row-text">
+          <strong>Notifikasi pesan</strong>
+          <span class="muted" data-notify-note>—</span>
+        </div>
+        <button type="button" class="ghost" data-notify-toggle aria-pressed="false">Aktifkan</button>
+      </div>
+
+      <div class="settings-row">
+        <div class="settings-row-text">
+          <strong>Keluar</strong>
+          <span class="muted">Identitas dan riwayat di browser ini akan dihapus dan nggak bisa dibuka lagi.</span>
+        </div>
+        <button type="button" class="ghost danger" id="btn-logout">Keluar</button>
+      </div>
+    </div>
+  </section>
+
+  </div>
 
   <main class="chat" id="chat">
     <section class="empty-state" id="empty-state">
-      <div class="empty-art"><img src="/logo.svg" alt="" width="68" height="68" /></div>
+      <div class="empty-art"><img src="/logo.svg" alt="" width="56" height="56" /></div>
       <h2>Pilih chat buat mulai</h2>
       <p>Pesan, file, dan panggilan di sini terenkripsi end-to-end.<br />Server cuma perantara buta — dia nggak bisa baca apa pun.</p>
       <div class="chips">
@@ -257,6 +348,28 @@
       </form>
     </section>
   </main>
+
+  <!-- Navbar bawah (hp): oval, melayang, dan berkaca seperti WhatsApp iPhone. -->
+  <nav class="tabbar" id="tabbar" aria-label="Menu utama">
+    <button type="button" class="tab-btn" data-view="chats" aria-pressed="true">
+      <svg class="ico"><use href="#i-chat" /></svg>
+      <span class="tab-label">Chat</span>
+      <span class="nav-badge" id="tab-unread" hidden></span>
+    </button>
+    <button type="button" class="tab-btn" data-view="status" aria-pressed="false">
+      <svg class="ico"><use href="#i-spark" /></svg>
+      <span class="tab-label">Status</span>
+      <span class="nav-dot" id="tab-status-dot" hidden></span>
+    </button>
+    <button type="button" class="tab-btn" data-view="calls" aria-pressed="false">
+      <svg class="ico"><use href="#i-phone" /></svg>
+      <span class="tab-label">Panggilan</span>
+    </button>
+    <button type="button" class="tab-btn" data-view="settings" aria-pressed="false">
+      <svg class="ico"><use href="#i-sliders" /></svg>
+      <span class="tab-label">Pengaturan</span>
+    </button>
+  </nav>
 </div>
 
 <!-- ── Halaman tambah kontak ─────────────────────────────────────────
@@ -291,8 +404,6 @@
 
 <!-- ── Akun diblokir ───────────────────────────────────────────────── -->
 <div id="banned" class="onboarding" hidden>
-  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-
   <div class="onboarding-card">
     <img class="onboarding-mark" src="/logo.svg" alt="By Chat" width="48" height="48" />
     <span class="step-pill danger"><svg class="ico"><use href="#i-ban" /></svg> Akses dihentikan</span>

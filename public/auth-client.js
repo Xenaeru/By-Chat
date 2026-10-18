@@ -1,9 +1,11 @@
 /**
  * auth-client.js — sign-in drivers for the browser.
  *
- *   firebase : real Firebase Authentication. Google sign-in via popup, phone
- *              sign-in via SMS OTP. The SDK is loaded from Google's CDN as an
- *              ES module, so the app still needs no build step.
+ *   firebase : real Firebase Authentication, Google sign-in via popup. (SMS OTP
+ *              phone sign-in was removed: it is a paid Firebase tier, so that
+ *              path could never run on this project's plan.) The SDK is loaded
+ *              from Google's CDN as an ES module, so the app still needs no
+ *              build step.
  *   dev      : type a name, no verification. Only offered when the server
  *              itself is running in dev auth mode.
  *
@@ -70,23 +72,6 @@ async function createFirebaseAuth(authConfig) {
       const provider = new fbAuth.GoogleAuthProvider();
       const result = await fbAuth.signInWithPopup(auth, provider);
       return profileFromUser(result.user);
-    },
-
-    /** Returns a handle whose confirm(code) finishes the SMS OTP flow. */
-    async startPhoneSignIn(phoneNumber, recaptchaContainer) {
-      const verifier = new fbAuth.RecaptchaVerifier(auth, recaptchaContainer, { size: 'invisible' });
-      try {
-        const confirmation = await fbAuth.signInWithPhoneNumber(auth, phoneNumber, verifier);
-        return {
-          async confirm(code) {
-            const result = await confirmation.confirm(code);
-            return profileFromUser(result.user);
-          },
-        };
-      } catch (err) {
-        verifier.clear();
-        throw err;
-      }
     },
 
     async setDisplayName(name) {

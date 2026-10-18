@@ -10,6 +10,7 @@ import {
 import { createAuthClient } from './auth-client.js';
 import { uploadAttachment, fetchAttachment, formatBytes } from './files.js';
 import { createCallManager } from './call.js';
+import { createNotifier } from './notifications.js';
 
 /* ------------------------------------------------------------------ *
  * Local storage — everything here stays on this device.
@@ -79,6 +80,12 @@ const state = {
   statusDecoded: new Map(),
   statusView: null,
   isAdmin: false,
+  notifier: null,
+  /** Panel yang sedang terbuka di kolom daftar: chats | status | calls | settings. */
+  view: 'chats',
+  /** Riwayat panggilan lokal + panggilan yang sedang berjalan. */
+  callLog: [],
+  callEntry: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -92,15 +99,6 @@ const el = {
   loginSubmit: $('#login-submit'),
   loginError: $('#login-error'),
   btnGoogle: $('#btn-google'),
-  phoneStep1: $('#phone-step-1'),
-  phoneStep2: $('#phone-step-2'),
-  phoneNumber: $('#phone-number'),
-  phoneShown: $('#phone-shown'),
-  btnSendCode: $('#btn-send-code'),
-  btnVerifyCode: $('#btn-verify-code'),
-  btnChangePhone: $('#btn-change-phone'),
-  otpCode: $('#otp-code'),
-  recaptcha: $('#recaptcha-container'),
 
   onboarding: $('#onboarding'),
   usernameField: $('#username-field'),
@@ -111,11 +109,25 @@ const el = {
   usernameLogout: $('#username-logout'),
 
   app: $('#app'),
+  lists: $('#lists'),
+  rail: $('#rail'),
+  railAvatar: $('#rail-avatar'),
+  railUnread: $('#rail-unread'),
+  railStatusDot: $('#rail-status-dot'),
+  tabbar: $('#tabbar'),
+  tabUnread: $('#tab-unread'),
+  tabStatusDot: $('#tab-status-dot'),
   meAvatar: $('#me-avatar'),
   meName: $('#me-name'),
   meStatus: $('#me-status'),
+  displayName: $('#display-name'),
+  nameTag: $('[data-name-tag]'),
+  panelSettings: $('#panel-settings'),
+  avatarInput: $('#avatar-input'),
+  callList: $('#call-list'),
+  callEmpty: $('#call-empty'),
+  statusEmpty: $('#status-empty'),
   btnAdmin: $('#btn-admin'),
-  btnSettings: $('#btn-settings'),
   btnLogout: $('#btn-logout'),
   search: $('#search'),
   btnNewChat: $('#btn-new-chat'),
@@ -432,6 +444,14 @@ async function boot() {
   el.loginDev.hidden = firebaseMode;
   el.loginDevNote.hidden = firebaseMode;
 
+  // Notifikasi: dibuat sekali, dipakai ulang tiap akun. Kalau orangnya pernah
+  // menyalakannya, service worker dipasang lagi tanpa menanyakan izin ulang.
+  state.notifier = createNotifier({
+    onAction: handleNotificationAction,
+    onAccountUid: () => state.me?.uid || null,
+  });
+  state.notifier.resume();
+
   state.auth = await createAuthClient(state.config);
 
   state.auth.onUserChange((profile) => {
@@ -489,11 +509,15 @@ async function enterApp(profile) {
   state.rooms.clear();
   state.unread.clear();
   loadRooms(profile.uid);
+  state.callEntry = null;
+  loadCallLog(profile.uid);
 
   el.login.hidden = true;
   el.app.hidden = false;
-  el.meName.textContent = profile.displayName;
-  el.meAvatar.textContent = initials(profile.displayName);
+  document.title = 'By Chat';
+  renderSettings();
+  renderCalls();
+  setView('chats', { animate: false });
   setStatus('menyambung…');
 
   const token = await state.auth.getIdToken();
@@ -503,6 +527,155 @@ async function enterApp(profile) {
 function setStatus(text, online = false) {
   el.meStatus.textContent = text;
   el.meStatus.classList.toggle('online', online);
+}
+
+/* ------------------------------------------------------------------ *
+ * Shell: rail (desktop) + navbar bawah (hp) yang cuma memindahkan panel
+ * ------------------------------------------------------------------ */
+const VIEWS = ['chats', 'status', 'calls', 'settings'];
+
+/**
+ * Pindah panel di kolom daftar. Di hp ini yang bikin "halaman" berganti,
+ * dan percakapan yang sedang terbuka ikut ditutup supaya kembali ke daftar.
+ */
+function setView(view, { animate = true } = {}) {
+  if (!VIEWS.includes(view)) return;
+  state.view = view;
+
+  for (const panel of el.lists.querySelectorAll('.panel')) {
+    const active = panel.dataset.panel === view;
+    panel.hidden = !active;
+    if (!active) {
+      panel.classList.remove('view-in');
+      continue;
+    }
+    if (animate) {
+      // Animasi dimulai ulang tiap kali panelnya dibuka, bukan cuma sekali.
+      panel.classList.remove('view-in');
+      void panel.offsetWidth;
+      panel.classList.add('view-in');
+    }
+  }
+
+  for (const button of document.querySelectorAll('[data-view]')) {
+    const active = button.dataset.view === view;
+    button.setAttribute('aria-pressed', String(active));
+    button.classList.toggle('active', active);
+  }
+
+  // Di hp, memilih menu berarti kembali ke daftar (keluar dari percakapan).
+  el.app.classList.remove('show-chat');
+
+  if (view === 'settings') renderSettings();
+  if (view === 'calls') renderCalls();
+  if (view === 'status') renderStatuses();
+}
+
+/* ------------------------------------------------------------------ *
+ * Panggilan: riwayat lokal di perangkat ini
+ * ------------------------------------------------------------------ */
+const callLogKey = (uid) => `bychat.calls.v1.${uid}`;
+
+function loadCallLog(uid) {
+  state.callLog = store.get(callLogKey(uid), []) || [];
+}
+
+function saveCallLog() {
+  if (!state.me) return;
+  store.set(callLogKey(state.me.uid), state.callLog.slice(0, 50));
+}
+
+function addCallEntry(entry) {
+  state.callLog = [entry, ...state.callLog].slice(0, 50);
+  saveCallLog();
+  renderCalls();
+  paintNavBadges();
+}
+
+const CALL_STATUS_LABEL = {
+  answered: null,
+  missed: 'Tak terjawab',
+  unanswered: 'Tidak diangkat',
+};
+
+function callDuration(seconds) {
+  if (!seconds) return '';
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes} mnt ${seconds % 60} dtk` : `${seconds} dtk`;
+}
+
+function renderCalls() {
+  if (!el.callList) return;
+  el.callList.innerHTML = '';
+  el.callEmpty.hidden = state.callLog.length > 0;
+
+  for (const entry of state.callLog) {
+    const label = CALL_STATUS_LABEL[entry.status] || callDuration(entry.duration);
+    const li = document.createElement('li');
+    li.className = `call-item${entry.status === 'missed' ? ' missed' : ''}`;
+    li.dataset.uid = entry.uid || '';
+    li.innerHTML = `
+      <span class="avatar" data-uid="${esc(entry.uid || '')}">${esc(initials(entry.name))}</span>
+      <span class="call-item-main">
+        <strong>${esc(entry.name)}</strong>
+        <span class="muted">
+          <svg class="ico call-icon${entry.status === 'missed' ? ' bad' : ''}"><use href="#${entry.direction === 'in' ? 'i-call-in' : 'i-call-out'}" /></svg>
+          ${entry.direction === 'in' ? 'Masuk' : 'Keluar'}${entry.video ? ' · video' : ''}
+          ${label ? `· ${esc(label)}` : ''}
+        </span>
+      </span>
+      <span class="call-when muted">${formatListTime(entry.at)}</span>
+    `;
+    li.addEventListener('click', () => openCallPeer(entry.uid));
+    el.callList.appendChild(li);
+  }
+
+  paintAvatars(el.callList);
+}
+
+/** Mengetuk riwayat membuka percakapan orangnya, kalau roomnya memang ada. */
+function openCallPeer(uid) {
+  if (!uid) return;
+  const room = [...state.rooms.values()].find((entry) => entry.type === 'dm' && entry.members.includes(uid));
+  if (!room) return showToast('Percakapan dengan orang ini belum ada di perangkat ini.');
+  setView('chats');
+  selectRoom(room.id);
+}
+
+/**
+ * Satu panggilan dicatat dari perubahan keadaan call manager: mulai, terjawab
+ * (ada media), lalu selesai — lengkap dengan durasinya.
+ */
+function logCallState(call) {
+  const active = state.calls?.active;
+
+  if (active) {
+    if (!state.callEntry) {
+      const peer = call.peer || state.incoming?.from || null;
+      state.callEntry = {
+        id: `call:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        uid: peer?.uid || '',
+        name: peer?.displayName || '—',
+        photoURL: peer?.photoURL || null,
+        video: Boolean(call.video),
+        at: Date.now(),
+        direction: call.role === 'callee' ? 'in' : 'out',
+        answeredAt: null,
+      };
+    }
+    if (!state.callEntry.answeredAt && (call.status === 'active' || (call.remoteStream?.getTracks().length || 0) > 0)) {
+      state.callEntry.answeredAt = Date.now();
+    }
+    return;
+  }
+
+  if (!state.callEntry) return;
+  const entry = state.callEntry;
+  state.callEntry = null;
+  entry.duration = entry.answeredAt ? Math.max(1, Math.round((Date.now() - entry.answeredAt) / 1000)) : 0;
+  entry.status = entry.answeredAt ? 'answered' : entry.direction === 'in' ? 'missed' : 'unanswered';
+  delete entry.answeredAt;
+  addCallEntry(entry);
 }
 
 /* ------------------------------------------------------------------ *
@@ -516,6 +689,11 @@ function applyUsername(username) {
   el.meAvatar.textContent = initials(username);
   el.meAvatar.dataset.hueFor = username;
   el.meAvatar.dataset.uid = state.me?.uid || '';
+  el.displayName.value = username;
+  el.nameTag.textContent = `@${username}`;
+  el.railAvatar.textContent = initials(username);
+  el.railAvatar.dataset.hueFor = username;
+  el.railAvatar.dataset.uid = state.me?.uid || '';
   paintAvatars();
 }
 
@@ -676,6 +854,8 @@ function connect(token) {
     renderChatList();
     for (const envelope of payload.inbox || []) receiveMessage(envelope);
     if (!state.activeRoomId) renderEmptyState();
+    openRoomFromQuery();
+    flushNotificationReply();
     if (!payload.server?.calls?.hasTurn) {
       console.info('TURN belum dikonfigurasi — panggilan bisa gagal di NAT ketat/CGNAT.');
     }
@@ -854,11 +1034,88 @@ async function receiveMessage(envelope) {
     error,
   });
 
+  const reading =
+    state.activeRoomId === room.id && document.visibilityState === 'visible' && document.hasFocus();
   if (state.activeRoomId === room.id) renderMessages();
   else state.unread.set(room.id, (state.unread.get(room.id) || 0) + 1);
 
   saveRooms();
   renderChatList();
+
+  // Notifikasi cuma kalau orangnya memang tidak sedang membaca percakapan ini.
+  // Isinya sudah didekripsi di sini; SW cuma menampilkan teksnya.
+  if (!reading && envelope.from !== state.me.uid) notifyIncoming(room, envelope, parsed, error);
+}
+
+/** Cuplikan singkat untuk notifikasi — sama seperti yang tampil di daftar chat. */
+function notificationPreview(parsed, error) {
+  if (error) return 'Pesan tidak bisa dibuka di perangkat ini.';
+  const text = String(parsed.text || '').trim();
+  if (text) return text.length > 140 ? `${text.slice(0, 139)}…` : text;
+  if (parsed.attachment) return KIND_LABEL[fileKind(parsed.attachment.mime)] || 'Lampiran';
+  return 'Pesan baru';
+}
+
+function notifyIncoming(room, envelope, parsed, error) {
+  const sender =
+    peerByUid(envelope.from)?.displayName || (room.type === 'group' ? room.name : null) || 'Seseorang';
+  const title = room.type === 'group' && room.name ? `${sender} · ${room.name}` : sender;
+  state.notifier?.notify({
+    roomId: room.id,
+    uid: state.me?.uid,
+    title,
+    body: notificationPreview(parsed, error),
+  });
+}
+
+/**
+ * Aksi dari notifikasi: buka chat-nya, dan kalau platformnya mendukung balasan
+ * langsung (Chrome Android), kirim teks yang sudah diketik di sana.
+ */
+async function handleNotificationAction({ action = 'open', roomId, reply } = {}) {
+  if (!roomId) return;
+  const room = state.rooms.get(roomId);
+  if (!room) return;
+
+  // Notifikasi bisa diklik dari panel mana pun; percakapannya dibuka di panel
+  // Chat, dan di hp itu berarti keluar dulu dari daftarnya.
+  if (state.view !== 'chats') setView('chats');
+  if (state.activeRoomId !== roomId) selectRoom(roomId);
+
+  const text = String(reply || '').trim();
+  if (text) {
+    await sendToRoom(room, text, null);
+    showToast('Balasan dari notifikasi terkirim.');
+    return;
+  }
+
+  // Desktop belum punya kolom balas di notifikasi: chat dibuka dan kolom ketik
+  // langsung difokuskan, jadi balasannya tetap satu langkah.
+  if (action === 'reply') {
+    el.input.focus();
+    showToast(`Balas ${displayName(room)} di sini.`);
+  }
+}
+
+/** Balasan yang dititipkan service worker saat aplikasinya belum terbuka. */
+async function flushNotificationReply() {
+  const pending = await state.notifier?.takePendingReply();
+  if (!pending) return;
+  const room = state.rooms.get(pending.roomId);
+  if (!room) return;
+  await sendToRoom(room, pending.text, null);
+  showToast('Balasan dari notifikasi terkirim.');
+}
+
+/** `/?chat=<id>` — dipakai notifikasi untuk membuka percakapan yang tepat. */
+function openRoomFromQuery() {
+  const params = new URLSearchParams(location.search);
+  const roomId = params.get('chat');
+  if (!roomId) return;
+  history.replaceState(null, '', location.pathname);
+  if (!state.rooms.has(roomId)) return;
+  setView('chats', { animate: false });
+  selectRoom(roomId);
 }
 
 function pushSystemNote(room, text) {
@@ -1624,6 +1881,21 @@ function renderChatList() {
   el.chatListEmpty.hidden = shown > 0;
   el.chatListEmpty.textContent = filter ? 'Nggak ada chat yang cocok.' : 'Belum ada chat. Tekan ＋ buat mulai.';
   paintAvatars(el.chatList);
+
+  // Jumlah belum dibaca ikut ke judul tab, supaya kelihatan walau jendelanya
+  // sedang di belakang.
+  const unreadTotal = [...state.unread.values()].reduce((sum, count) => sum + count, 0);
+  document.title = unreadTotal ? `(${unreadTotal}) By Chat` : 'By Chat';
+  paintNavBadges(unreadTotal);
+}
+
+/** Badge jumlah belum dibaca di rail (desktop) dan navbar bawah (hp). */
+function paintNavBadges(unreadTotal = [...state.unread.values()].reduce((sum, count) => sum + count, 0)) {
+  for (const badge of [el.railUnread, el.tabUnread]) {
+    if (!badge) continue;
+    badge.hidden = unreadTotal === 0;
+    badge.textContent = unreadTotal > 99 ? '99+' : String(unreadTotal);
+  }
 }
 
 function preview(message) {
@@ -1861,6 +2133,7 @@ function attachCallMedia(node, stream) {
 
 function renderCall(call = {}) {
   const active = state.calls?.active;
+  logCallState(call);
   el.callOverlay.hidden = !active;
 
   if (!active) {
@@ -2153,7 +2426,7 @@ function openNewGroup() {
       ${people
         .map(
           (u) => `<li><input type="checkbox" value="${esc(u.uid)}" id="m-${esc(u.uid)}" />
-            <label for="m-${esc(u.uid)}" style="margin:0;color:var(--text);font-size:14px">${esc(u.name)}</label></li>`
+            <label for="m-${esc(u.uid)}" style="margin:0;color:var(--ink);font-size:14px">${esc(u.name)}</label></li>`
         )
         .join('')}
     </ul>
@@ -2176,80 +2449,82 @@ function openNewGroup() {
   });
 }
 
+/** Label + tombol notifikasi di panel Pengaturan, selalu mencerminkan izin asli browser. */
+function paintNotificationSetting() {
+  const note = el.panelSettings?.querySelector('[data-notify-note]');
+  const button = el.panelSettings?.querySelector('[data-notify-toggle]');
+  if (!note || !button) return;
+
+  const status = state.notifier?.state() || { supported: false, permission: 'unsupported', enabled: false };
+  button.setAttribute('aria-pressed', String(status.enabled));
+
+  if (!status.supported) {
+    note.textContent = 'Browser ini belum mendukung notifikasi web.';
+    button.textContent = 'Tidak didukung';
+    button.disabled = true;
+    return;
+  }
+
+  if (status.enabled) {
+    note.textContent =
+      'Aktif. Pesan baru muncul di luar jendela ini, dan bisa dibalas langsung dari notifikasi kalau browser mendukung.';
+    button.textContent = 'Matikan';
+    button.disabled = false;
+    return;
+  }
+
+  button.textContent = status.permission === 'denied' ? 'Diblokir browser' : 'Aktifkan';
+  button.disabled = status.permission === 'denied';
+  note.textContent =
+    status.permission === 'denied'
+      ? 'Izin notifikasi diblokir. Buka pengaturan situs di browser, izinkan notifikasi, lalu muat ulang halaman.'
+      : 'Pesan baru muncul di luar jendela ini — bisa dibalas langsung dari notifikasi di Chrome Android.';
+}
+
+/**
+ * Panel Pengaturan: identitas, foto, username, dan sakelar notifikasi.
+ * Semua elemennya statis di index.html, jadi tinggal diisi ulang — bukan
+ * dibangun ulang tiap dibuka (dulu bentuknya modal).
+ */
+function renderSettings() {
+  if (!state.me) return;
+  const name = state.username || state.profile?.displayName || '—';
+
+  el.meName.textContent = name;
+  el.displayName.value = name;
+  el.nameTag.textContent = `@${state.username || '—'}`;
+
+  el.meAvatar.textContent = initials(name);
+  el.meAvatar.dataset.hueFor = name;
+  el.meAvatar.dataset.uid = state.me.uid;
+  el.railAvatar.textContent = initials(name);
+  el.railAvatar.dataset.hueFor = name;
+  el.railAvatar.dataset.uid = state.me.uid;
+
+  paintNotificationSetting();
+  paintAvatars(el.panelSettings);
+}
+
+/** Simpan username baru lewat namespace yang sama dengan klaim pertama. */
+async function saveUsername() {
+  const name = el.displayName.value.trim();
+  if (!name || !state.me) return;
+
+  const result = await new Promise((resolve) => {
+    if (!socket) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
+    socket.emit('profile:update', { displayName: name }, (answer) => resolve(answer || {}));
+  });
+  if (!result.ok) return showToast(result.error || 'Gagal simpan username.', 5000);
+
+  await state.auth.setDisplayName(result.username).catch(() => {});
+  applyUsername(result.username);
+  renderSettings();
+  showToast(`Username disimpan: @${result.username}`);
+}
+
+/** Dipakai rail/navbar untuk keluar dari layar ini tanpa modal terpisah. */
 function openSettings() {
-  const { maxBytes } = state.config.files;
-  openModal(`
-    <h3>Pengaturan</h3>
-    <p class="sub">${state.config.auth.mode === 'firebase' ? 'Login lewat Firebase' : 'Mode dev — identitas nggak diverifikasi'}</p>
-
-    <div class="photo-row">
-      <div class="avatar big" id="settings-avatar" data-uid="${esc(state.me.uid)}">${esc(initials(state.username || state.profile.displayName))}</div>
-      <div class="photo-actions">
-        <button data-pick-photo class="ghost">Ganti foto</button>
-        <button data-remove-photo class="ghost">Hapus</button>
-        <span class="sub">PNG, JPEG, atau WebP — maksimal 2 MB. Foto profil <strong>tidak</strong> terenkripsi, jadi jangan pakai foto yang kamu nggak mau orang lihat.</span>
-      </div>
-      <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" hidden />
-    </div>
-
-    <label for="display-name">Username</label>
-    <input id="display-name" type="text" maxlength="20" value="${esc(state.username || state.profile.displayName)}" />
-    <p class="sub" style="margin:8px 0 0">
-      Orang lain lihat kamu sebagai <strong>@${esc(state.username || '—')}</strong>. Nama ini unik —
-      kalau sudah dipakai orang, ganti yang lain.
-    </p>
-    <p class="sub" style="margin-top:16px">
-      Akun: <code>${esc(state.me.uid.slice(0, 16))}…</code><br />
-      ${state.profile.phone ? `Nomor: ${esc(state.profile.phone)}<br />` : ''}
-      Penyimpanan file: <strong>${esc(state.config.files.driver)}</strong> (maks ${Math.round(maxBytes / 1024 / 1024)} MB)<br />
-      Relay panggilan: <strong>${state.config.calls.hasTurn ? 'STUN + TURN' : 'STUN saja'}</strong>
-    </p>
-    <p class="sub">Private key kamu cuma ada di browser ini. Ganti akun atau hapus data browser = riwayat lama nggak bisa dibuka lagi.</p>
-    <div class="modal-actions">
-      <button data-close>Tutup</button>
-      <button class="primary" data-save>Simpan</button>
-    </div>
-  `);
-  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
-  el.modalCard.querySelector('[data-save]').addEventListener('click', async () => {
-    const name = el.modalCard.querySelector('#display-name').value.trim();
-    if (!name) return;
-
-    // Renaming goes through the same namespace as the first claim, so a name
-    // somebody else already holds is refused here too.
-    const result = await new Promise((resolve) => {
-      if (!socket) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
-      socket.emit('profile:update', { displayName: name }, (answer) => resolve(answer || {}));
-    });
-    if (!result.ok) return showToast(result.error || 'Gagal simpan username.', 5000);
-
-    await state.auth.setDisplayName(result.username).catch(() => {});
-    applyUsername(result.username);
-    closeModal();
-    showToast(`Username disimpan: @${result.username}`);
-  });
-
-  // The photo saves on its own, the way people expect from a profile picture.
-  el.modalCard.querySelector('[data-pick-photo]')?.addEventListener('click', () => {
-    el.modalCard.querySelector('#avatar-input')?.click();
-  });
-  el.modalCard.querySelector('#avatar-input')?.addEventListener('change', async (event) => {
-    const [file] = event.target.files || [];
-    event.target.value = '';
-    try {
-      await uploadAvatar(file);
-    } catch (err) {
-      showToast(`Foto profil: ${err.message}`, 6000);
-    }
-  });
-  el.modalCard.querySelector('[data-remove-photo]')?.addEventListener('click', async () => {
-    try {
-      await removeAvatar();
-      showToast('Foto profil dihapus.');
-    } catch (err) {
-      showToast(`Foto profil: ${err.message}`, 6000);
-    }
-  });
+  setView('settings');
 }
 
 function openSafetyNumber() {
@@ -2295,9 +2570,39 @@ function openSafetyNumber() {
  * siapa yang memasang sesuatu dan kapan.
  * ------------------------------------------------------------------ */
 const STATUS_TTL_MS = 24 * 60 * 60 * 1000;
-const STATUS_BACKGROUNDS = ['#1231f0', '#0369a1', '#0f766e', '#7c3aed', '#b91c1c', '#0f172a', '#a16207'];
+// Pilihan warna status diambil dari palet DESIGN.md (By Chat Blue, deep blue,
+// ink, dan dua nada slate) supaya teks putih di atasnya selalu punya kontras
+// yang cukup dan nggak ada warna saturasi kedua yang masuk ke layar.
+const STATUS_BACKGROUNDS = ['#2563eb', '#1d4ed8', '#17202a', '#334155', '#475569'];
 
-const liveStatuses = () => state.statuses.filter((status) => status.at > Date.now() - STATUS_TTL_MS);
+/**
+ * Orang yang sudah pernah chat dengan kamu: anggota ruang yang sudah punya
+ * minimal satu pesan (DM maupun grup). Dipakai dua arah — untuk siapa kunci
+ * status dibungkus, dan status siapa yang boleh muncul di sidebar — jadi orang
+ * yang belum pernah chat sama sekali nggak bisa lihat status kamu, dan kamu
+ * nggak bisa lihat status mereka.
+ */
+function chatPartnerUids() {
+  const me = state.me?.uid;
+  const uids = new Set();
+  for (const room of state.rooms.values()) {
+    if (!room.messages?.length) continue;
+    for (const member of room.members || []) if (member && member !== me) uids.add(member);
+  }
+  return uids;
+}
+
+/**
+ * Status yang boleh dilihat di perangkat ini: punyamu sendiri, plus punya orang
+ * yang sudah pernah chat. Saringan ini juga yang menyembunyikan status lama
+ * yang dulu disiarkan ke semua orang sebelum aturannya berubah.
+ */
+const liveStatuses = () => {
+  const partners = chatPartnerUids();
+  return state.statuses.filter(
+    (status) => status.at > Date.now() - STATUS_TTL_MS && (status.from === state.me?.uid || partners.has(status.from))
+  );
+};
 
 const statusesFrom = (uid) =>
   liveStatuses()
@@ -2340,7 +2645,10 @@ function renderStatuses() {
 
   const owners = statusOwnerList().filter((uid) => uid !== state.me.uid);
   el.statusList.innerHTML = '';
-  el.statusList.hidden = owners.length === 0;
+  el.statusEmpty.hidden = owners.length > 0;
+  // Titik di rail/navbar: ada status kontak yang belum kamu buka.
+  const unseen = owners.some((uid) => unseenStatusCount(uid) > 0);
+  for (const dot of [el.railStatusDot, el.tabStatusDot]) if (dot) dot.hidden = !unseen;
 
   for (const uid of owners) {
     const name = peerByUid(uid)?.displayName || uid.slice(0, 8);
@@ -2538,7 +2846,7 @@ async function renderStatusView() {
 
 async function paintStatusStage(decoded, hint = '') {
   if (decoded.error) {
-    el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#7f1d1d">⚠️ ${esc(decoded.error)}</div>`;
+    el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#5a1313">⚠️ ${esc(decoded.error)}</div>`;
     return;
   }
 
@@ -2568,13 +2876,10 @@ async function paintStatusStage(decoded, hint = '') {
 }
 
 async function publishStatus({ text, color, attachment }) {
-  // Everybody who can see the name gets a wrapped copy of the status key.
-  const audience = [
-    ...new Set([
-      ...state.directory.filter((user) => user.uid !== state.me.uid && user.publicKey).map((user) => user.uid),
-      state.me.uid,
-    ]),
-  ];
+  // Kunci statusnya cuma dibungkus buat orang yang sudah pernah chat: status
+  // bukan siaran publik lagi, dan server cuma meneruskan ke daftar ini.
+  const partners = [...chatPartnerUids()].filter((uid) => peerByUid(uid)?.publicKey);
+  const audience = [...new Set([...partners, state.me.uid])];
 
   const keys = new Map();
   for (const uid of audience) {
@@ -2622,6 +2927,10 @@ function openStatusComposer() {
   openModal(`
     <h3>Buat status</h3>
     <p class="sub">Hilang sendiri setelah 24 jam. Isinya terenkripsi end-to-end — server cuma lihat blob.</p>
+    <p class="sub">
+      Cuma orang yang <strong>sudah pernah chat</strong> dengan kamu yang bisa lihat ini
+      (${chatPartnerUids().size} orang).
+    </p>
     <textarea id="status-text" maxlength="280" placeholder="Tulis sesuatu…"></textarea>
     <div class="swatch-row" id="status-colors">
       ${STATUS_BACKGROUNDS.map(
@@ -2747,50 +3056,6 @@ function googleError(err) {
   return err.message || 'Login Google gagal.';
 }
 
-el.btnSendCode.addEventListener('click', async () => {
-  el.loginError.hidden = true;
-  const phone = el.phoneNumber.value.trim();
-  if (!phone) return showToast('Isi nomor HP dulu (format internasional, misal +62812…).');
-
-  el.btnSendCode.disabled = true;
-  el.btnSendCode.textContent = 'Mengirim…';
-  try {
-    const handle = await state.auth.startPhoneSignIn(phone, el.recaptcha);
-    state.phoneHandle = handle;
-    el.phoneShown.textContent = phone;
-    el.phoneStep1.hidden = true;
-    el.phoneStep2.hidden = false;
-    el.otpCode.focus();
-  } catch (err) {
-    el.loginError.textContent = err.message || 'Gagal kirim OTP.';
-    el.loginError.hidden = false;
-  } finally {
-    el.btnSendCode.disabled = false;
-    el.btnSendCode.textContent = 'Kirim kode OTP';
-  }
-});
-
-el.btnVerifyCode.addEventListener('click', async () => {
-  const code = el.otpCode.value.trim();
-  if (!code) return;
-  el.loginError.hidden = true;
-  el.btnVerifyCode.disabled = true;
-  try {
-    await state.phoneHandle.confirm(code);
-  } catch (err) {
-    el.loginError.textContent = err.message || 'Kode salah.';
-    el.loginError.hidden = false;
-  } finally {
-    el.btnVerifyCode.disabled = false;
-  }
-});
-
-el.btnChangePhone.addEventListener('click', () => {
-  el.phoneStep1.hidden = false;
-  el.phoneStep2.hidden = true;
-  el.otpCode.value = '';
-});
-
 el.loginDev.addEventListener('submit', async (event) => {
   event.preventDefault();
   el.loginError.hidden = true;
@@ -2816,7 +3081,53 @@ el.btnLogout.addEventListener('click', async () => {
   location.reload();
 });
 
-el.btnSettings.addEventListener('click', openSettings);
+// Rail (desktop) dan navbar bawah (hp) memindahkan panel yang sama; satu
+// handler untuk keduanya, jadi nggak ada dua jalur yang bisa berbeda perilaku.
+for (const button of document.querySelectorAll('[data-view]')) {
+  button.addEventListener('click', () => setView(button.dataset.view));
+}
+
+// Isi panel Pengaturan: foto profil (disimpan sendiri saat dipilih), username,
+// dan sakelar notifikasi.
+el.displayName.value = el.displayName.value || '';
+el.panelSettings.querySelector('[data-save]').addEventListener('click', saveUsername);
+el.displayName.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    saveUsername();
+  }
+});
+el.panelSettings.querySelector('[data-pick-photo]').addEventListener('click', () => el.avatarInput.click());
+el.avatarInput.addEventListener('change', async (event) => {
+  const [file] = event.target.files || [];
+  event.target.value = '';
+  try {
+    await uploadAvatar(file);
+  } catch (err) {
+    showToast(`Foto profil: ${err.message}`, 6000);
+  }
+});
+el.panelSettings.querySelector('[data-remove-photo]').addEventListener('click', async () => {
+  try {
+    await removeAvatar();
+    showToast('Foto profil dihapus.');
+  } catch (err) {
+    showToast(`Foto profil: ${err.message}`, 6000);
+  }
+});
+el.panelSettings.querySelector('[data-notify-toggle]').addEventListener('click', async () => {
+  if (!state.notifier) return;
+  if (state.notifier.state().enabled) {
+    state.notifier.disable();
+    paintNotificationSetting();
+    showToast('Notifikasi dimatikan.');
+    return;
+  }
+
+  const result = await state.notifier.enable();
+  paintNotificationSetting();
+  showToast(result.ok ? 'Notifikasi aktif.' : result.error, result.ok ? 3000 : 7000);
+});
 // `+` membuka halaman tambah kontak, bukan daftar orang yang sedang online.
 el.btnNewChat.addEventListener('click', openContactPage);
 el.btnReport.addEventListener('click', openReportModal);

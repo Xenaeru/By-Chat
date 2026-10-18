@@ -67,9 +67,9 @@ services:
       # Email yang boleh membuka /admin.html. Boleh lebih dari satu, pisahkan
       # dengan koma. Tanpa ini aplikasinya tetap jalan, tapi nggak ada yang
       # bisa masuk ke halaman adminnya.
-      # Login pakai nomor HP (tanpa email)? Pakai ADMIN_UIDS, isinya uid dari
-      # halaman Pengaturan akun itu — tapi jangan tulis keduanya di sini,
-      # ADMIN_UIDS cukup ditambahkan manual di dashboard Render.
+      # Login-nya Google, jadi email selalu ada. ADMIN_UIDS cuma perlu buat
+      # akun tanpa email (mode dev) — tambahkan manual di dashboard Render,
+      # jangan tulis keduanya di sini.
       - key: ADMIN_EMAILS
         sync: false
       # 45 MiB: satu file = satu objek, dan free plan Supabase mentok 50 MB.

@@ -1011,3 +1011,33 @@ test('a banned account is cut off everywhere, and unbanning gives it back', asyn
   petugas.close();
   back.close();
 });
+
+/* ------------------------------------------------------------------ *
+ * Notifikasi: aset yang harus bisa diambil browser
+ * ------------------------------------------------------------------ */
+
+test('aset notifikasi disajikan apa adanya: manifest, service worker, modulnya', async () => {
+  const manifest = await fetch(`${BASE_URL}/manifest.webmanifest`);
+  assert.equal(manifest.status, 200);
+  const parsed = JSON.parse(await manifest.text());
+  assert.equal(parsed.name, 'By Chat');
+  assert.equal(parsed.start_url, '/');
+  assert.equal(parsed.scope, '/');
+  assert.ok(parsed.icons.some((icon) => icon.src === '/logo.svg'), JSON.stringify(parsed.icons));
+
+  // Service worker harus dilayani dari akar situs: dari subfolder scope-nya
+  // tidak akan mencakup aplikasinya.
+  const sw = await fetch(`${BASE_URL}/sw.js`);
+  assert.equal(sw.status, 200);
+  const swSource = await sw.text();
+  assert.match(swSource, /notificationclick/);
+  assert.match(swSource, /bychat:notification/);
+
+  const module = await fetch(`${BASE_URL}/notifications.js`);
+  assert.equal(module.status, 200);
+  const moduleSource = await module.text();
+  assert.match(moduleSource, /requestPermission/);
+
+  const html = await fetch(`${BASE_URL}/`).then((res) => res.text());
+  assert.match(html, /rel="manifest"/);
+});

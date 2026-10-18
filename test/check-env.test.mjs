@@ -53,7 +53,7 @@ test('a fully-filled .env passes', () => {
   const result = run(writeEnv(dir, GOOD));
 
   assert.equal(result.status, 0, result.stdout);
-  assert.match(result.stdout, /Login Google \/ nomor HP : SIAP/);
+  assert.match(result.stdout, /Login Google : SIAP/);
   assert.match(result.stdout, /Kirim file              : SIAP/);
   assert.match(result.stdout, /Semua kunci wajib sudah benar/);
 });
@@ -66,9 +66,9 @@ test('the .env.example placeholders are reported as not ready', () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stdout, /FIREBASE_PROJECT_ID.*MASIH NILAI CONTOH/s);
-  assert.match(result.stdout, /Login Google \/ nomor HP : BELUM SIAP/);
+  assert.match(result.stdout, /Login Google : BELUM SIAP/);
   // Nothing in the template may be mistaken for a working secret.
-  assert.equal(/Login Google \/ nomor HP : SIAP/.test(result.stdout), false);
+  assert.equal(/Login Google : SIAP/.test(result.stdout), false);
 });
 
 test('a publishable Supabase key is flagged with the reason it fails', () => {
@@ -106,7 +106,7 @@ test('a service account pasted across several lines is caught', () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stdout, /BUKAN JSON valid|kepotong beberapa baris/);
-  assert.match(result.stdout, /Login Google \/ nomor HP : BELUM SIAP/);
+  assert.match(result.stdout, /Login Google : BELUM SIAP/);
 });
 
 test('a service account from another project is warned about', () => {

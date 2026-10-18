@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import puppeteer from 'puppeteer-core';
+import { io as ioClient } from 'socket.io-client';
 
 const CALL_DEBUG = process.env.CALL_DEBUG === '1';
 
@@ -35,6 +36,9 @@ process.env.ADMIN_UIDS = `dev-${crypto.createHash('sha256').update('andi').diges
 process.env.PORT = process.env.PORT || '4400';
 
 const { server, directory, inbox, statuses, moderation } = await import('../server.js');
+// Token dev yang sama dengan yang dipakai browser, buat satu klien mentah di
+// bawah: pembuktian sisi penerima bahwa status orang asing tetap diabaikan.
+const { makeDevToken } = await import('../auth.js');
 await new Promise((resolve) => (server.listening ? resolve() : server.once('listening', resolve)));
 
 const BASE_URL = `http://127.0.0.1:${process.env.PORT}`;
@@ -70,6 +74,151 @@ function check(label, condition, detail = '') {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const display = (page, sel) => page.$eval(sel, (e) => getComputedStyle(e).display);
 
+/**
+ * DESIGN.md bukan cuma dokumen: palet, bentuk, dan tipografinya diperiksa dari
+ * nilai yang benar-benar dihitung browser. Tampilan yang menyimpang — gradasi
+ * dekoratif, tombol bulat, warna saturasi di luar palet — ketahuan di sini.
+ *
+ * `kind` menentukan gelembung mana yang diuji: 'out' untuk halaman orang yang
+ * sudah mengirim pesan, 'in' untuk halaman penerimanya.
+ */
+async function verifyDesignSystem(page, label, kind) {
+  // Kursor dijauhkan dulu: kalau dia kebetulan berhenti di atas tombol, warna
+  // tombolnya ketangkap di tengah animasi hover (mis. rgb(29, 78, 216) alih-alih
+  // rgb(37, 99, 235)) dan pemeriksaannya jadi gagal karena alasan yang salah.
+  await page.mouse.move(2, 2);
+  await sleep(250);
+
+  const design = await page.evaluate(() => {
+    const pick = (selector, props) => {
+      const node = document.querySelector(selector);
+      if (!node) return null;
+      const computed = getComputedStyle(node);
+      const out = {};
+      for (const prop of props) out[prop] = computed[prop];
+      return out;
+    };
+    const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const bubbles = [...document.querySelectorAll('.msg')].map((node) => {
+      const computed = getComputedStyle(node);
+      return {
+        out: node.classList.contains('out'),
+        background: computed.backgroundColor,
+        colour: computed.color,
+        radii: [
+          computed.borderTopLeftRadius,
+          computed.borderTopRightRadius,
+          computed.borderBottomRightRadius,
+          computed.borderBottomLeftRadius,
+        ],
+      };
+    });
+    return {
+      tokens: {
+        primary: token('--primary'),
+        canvas: token('--canvas'),
+        cloud: token('--cloud'),
+        ink: token('--ink'),
+      },
+      body: pick('body', ['backgroundColor', 'color', 'fontFamily', 'backgroundImage']),
+      primaryButton: pick('.primary', ['backgroundColor', 'borderRadius', 'textTransform', 'letterSpacing']),
+      sendButton: pick('.send', ['backgroundColor', 'borderRadius']),
+      rail: pick('#rail', ['backgroundColor', 'borderRightColor']),
+      lists: pick('#lists', ['backgroundColor', 'borderRightColor']),
+      panelTitle: pick('.panel-head .panel-title', ['color', 'fontSize']),
+      conversation: pick('.messages', ['backgroundColor']),
+      selectedRow: pick('.chat-item.active', ['backgroundColor']),
+      card: pick('.modal-card', ['borderRadius', 'backgroundColor', 'boxShadow']),
+      field: pick('.search', ['borderRadius', 'minHeight']),
+      avatar: pick('.avatar', ['borderRadius']),
+      bubbles,
+    };
+  });
+
+  check(
+    `${label}: token DESIGN.md terpasang (primary, canvas, cloud, ink)`,
+    design.tokens.primary === '#2563eb' &&
+      design.tokens.canvas === '#ffffff' &&
+      design.tokens.cloud === '#f7f8fa' &&
+      design.tokens.ink === '#17202a',
+    JSON.stringify(design.tokens)
+  );
+  check(
+    `${label}: latar aplikasi {colors.cloud}, permukaannya rata tanpa gradasi`,
+    design.body.backgroundColor === 'rgb(247, 248, 250)' && design.body.backgroundImage === 'none',
+    JSON.stringify(design.body)
+  );
+  check(`${label}: teks memakai {colors.ink}`, design.body.color === 'rgb(23, 32, 42)', design.body.color);
+  check(
+    `${label}: huruf Inter sesuai DESIGN.md`,
+    /Inter/.test(design.body.fontFamily),
+    design.body.fontFamily
+  );
+  check(
+    `${label}: CTA By Chat Blue, sudut 8px, label kalimat biasa (bukan kapital)`,
+    design.primaryButton?.backgroundColor === 'rgb(37, 99, 235)' &&
+      design.primaryButton?.borderRadius === '8px' &&
+      design.primaryButton?.textTransform === 'none' &&
+      design.primaryButton?.letterSpacing === 'normal',
+    JSON.stringify(design.primaryButton)
+  );
+  check(
+    `${label}: tombol kirim ikut 8px di atas biru`,
+    design.sendButton?.backgroundColor === 'rgb(37, 99, 235)' && design.sendButton?.borderRadius === '8px',
+    JSON.stringify(design.sendButton)
+  );
+  check(
+    `${label}: input sudut 8px dengan tinggi minimal 44px`,
+    design.field?.borderRadius === '8px' && parseFloat(design.field?.minHeight) >= 44,
+    JSON.stringify(design.field)
+  );
+  // {"colors.ink-surface"} cuma dipakai sesekali (panggilan, penampil media),
+  // jadi shell-nya nggak boleh berupa slab gelap: rail abu lembut, kolom daftar
+  // putih dengan garis rambut 1px.
+  check(
+    `${label}: rail kanvas kelabu, kolom daftar permukaan putih`,
+    design.rail?.backgroundColor === 'rgb(247, 248, 250)' &&
+      design.rail?.borderRightColor === 'rgb(228, 232, 239)' &&
+      design.lists?.backgroundColor === 'rgb(255, 255, 255)' &&
+      design.lists?.borderRightColor === 'rgb(228, 232, 239)' &&
+      design.panelTitle?.color === 'rgb(23, 32, 42)' &&
+      design.panelTitle?.fontSize === '20px',
+    JSON.stringify({ rail: design.rail, lists: design.lists, title: design.panelTitle })
+  );
+  check(
+    `${label}: permukaan percakapan putih {colors.canvas}`,
+    design.conversation?.backgroundColor === 'rgb(255, 255, 255)',
+    design.conversation?.backgroundColor
+  );
+  check(
+    `${label}: baris chat terpilih memakai {colors.primary-tint}`,
+    design.selectedRow?.backgroundColor === 'rgb(239, 246, 255)',
+    design.selectedRow?.backgroundColor
+  );
+  check(
+    `${label}: kartu melayang 16px dengan bayangan Floating Modal`,
+    design.card?.borderRadius === '16px' &&
+      design.card?.backgroundColor === 'rgb(255, 255, 255)' &&
+      design.card?.boxShadow !== 'none',
+    JSON.stringify(design.card)
+  );
+  // DESIGN.md tidak mengatur bentuk avatar; yang dipilih produknya bulat penuh.
+  check(`${label}: avatar bulat penuh`, design.avatar?.borderRadius === '50%', design.avatar?.borderRadius);
+
+  const bubble = design.bubbles.find((entry) => (kind === 'out' ? entry.out : !entry.out));
+  check(
+    kind === 'out'
+      ? `${label}: gelembung sendiri biru pucat {colors.primary-soft}, teks ink, ekor 4px`
+      : `${label}: gelembung lawan putih {colors.bubble-in}, sudut kartu 16px, ekor 4px`,
+    Boolean(bubble) &&
+      bubble.background === (kind === 'out' ? 'rgb(232, 240, 255)' : 'rgb(255, 255, 255)') &&
+      bubble.colour === 'rgb(23, 32, 42)' &&
+      bubble.radii.filter((radius) => radius === '16px').length === 3 &&
+      bubble.radii.filter((radius) => radius === '4px').length === 1,
+    JSON.stringify(bubble)
+  );
+}
+
 /* ---- Alat bantu interaksi ------------------------------------------ *
  * Klik dan sentuhan cuma diproses untuk halaman yang sedang tampil, dan dua
  * halaman di sini bergantian jadi yang tampil. Jadi setiap kali mau
@@ -78,6 +227,28 @@ const display = (page, sel) => page.$eval(sel, (e) => getComputedStyle(e).displa
  * bawaan kadang memakai titik yang ketutup kolom ketik, jadi kliknya tidak
  * sampai ke tujuannya. */
 const front = (page) => page.bringToFront();
+
+/**
+ * Pindah panel lewat menu yang benar-benar dipakai orang: rail di desktop,
+ * navbar bawah di hp. Yang diklik adalah tombol yang memang terlihat, jadi
+ * jalur ini juga berlaku kalau layarnya sedang sempit.
+ */
+const goView = async (page, view) => {
+  await front(page);
+  const clicked = await page.evaluate((name) => {
+    const button = [...document.querySelectorAll(`[data-view="${name}"]`)].find(
+      (node) => node.getBoundingClientRect().width > 0
+    );
+    button?.click();
+    return Boolean(button);
+  }, view);
+  if (!clicked) throw new Error(`menu ${view} nggak ketemu di layar ini`);
+  await page.waitForFunction(
+    (name) => document.querySelector(`.panel[data-panel="${name}"]`)?.hidden === false,
+    { timeout: 5000 },
+    view
+  );
+};
 
 const menuActions = (page) =>
   page.$$eval('#msg-menu-list .msg-menu-item', (nodes) => nodes.map((node) => node.dataset.action));
@@ -128,6 +299,315 @@ const pickMenuAction = (page, action) =>
 /** The dev driver derives the uid from the name, so we can predict it here. */
 const devUid = (name) => 'dev-' + crypto.createHash('sha256').update(name).digest('hex').slice(0, 20);
 
+/**
+ * Notifikasi: sakelar di Pengaturan, service worker, dan balasan dari
+ * notifikasi. `roomId` DM dihitung dengan rumus yang sama seperti crypto.js.
+ */
+async function checkNotifications(andi, budi) {
+  const roomId = `dm:${[devUid('andi'), devUid('budi')].sort().join(':')}`;
+
+  await front(andi.page);
+  await goView(andi.page, 'settings');
+  const row = await andi.page.evaluate(() => ({
+    hasToggle: Boolean(document.querySelector('[data-notify-toggle]')),
+    pressed: document.querySelector('[data-notify-toggle]')?.getAttribute('aria-pressed'),
+    note: document.querySelector('[data-notify-note]')?.textContent || '',
+  }));
+  check(
+    'Panel Pengaturan punya sakelar notifikasi yang jelas keadaannya',
+    row.hasToggle && row.pressed === 'false' && row.note.length > 10,
+    JSON.stringify(row)
+  );
+
+  await andi.page.click('[data-notify-toggle]');
+  await andi.page.waitForFunction(
+    () => document.querySelector('[data-notify-toggle]')?.getAttribute('aria-pressed') === 'true',
+    { timeout: 10000 }
+  );
+  const grant = await andi.page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready;
+    return { permission: Notification.permission, active: Boolean(registration.active), scope: registration.scope };
+  });
+  check(
+    'Menyalakan notifikasi memasang service worker di scope aplikasi',
+    grant.permission === 'granted' && grant.active && grant.scope === `${BASE_URL}/`,
+    JSON.stringify(grant)
+  );
+
+  await goView(andi.page, 'chats');
+
+  // Andi pindah ke percakapan lain (grup kecil dengan Budi), jadi pesan yang
+  // masuk ke DM-nya datang saat DM itu memang tidak sedang dibaca.
+  await andi.page.click('#btn-new-group');
+  await andi.page.waitForSelector('#group-name', { timeout: 10000 });
+  await andi.page.type('#group-name', 'Rapat Tim');
+  await andi.page.click('.picker input[type="checkbox"]');
+  await andi.page.click('.modal-card [data-create]');
+  await andi.page.waitForSelector('#modal[hidden]', { timeout: 5000 });
+  const opened = await andi.page.evaluate(() => ({
+    name: document.querySelector('#peer-name')?.textContent || '',
+    visible: document.querySelector('#chat-view')?.hidden === false,
+  }));
+  check(
+    'Andi sedang membuka percakapan lain saat pesannya datang',
+    opened.name === 'Rapat Tim' && opened.visible,
+    JSON.stringify(opened)
+  );
+
+  // Pastikan sisi Budi memang ada di percakapan DM-nya sebelum menulis.
+  await budi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('.chat-item')].find((node) => node.textContent.includes('andi'));
+    row?.click();
+  });
+  await budi.page.waitForSelector('#chat-view:not([hidden])', { timeout: 10000 });
+
+  const notifText = 'kabar buat notifikasi andi';
+  await budi.page.type('#composer-input', notifText);
+  await budi.page.click('.send');
+
+  const shown = await andi.page.evaluate(async (text) => {
+    const registration = await navigator.serviceWorker.ready;
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const notes = await registration.getNotifications();
+      const hit = notes.find((note) => String(note.body || '').includes(text));
+      if (hit) {
+        return {
+          title: hit.title,
+          body: hit.body,
+          tag: hit.tag,
+          roomId: hit.data?.roomId || null,
+          uid: hit.data?.uid || null,
+          actions: (hit.actions || []).map((action) => action.action),
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return null;
+  }, notifText);
+  check('Pesan masuk muncul sebagai notifikasi di luar jendela', Boolean(shown), JSON.stringify(shown));
+  check(
+    'Notifikasi menyebut pengirim dan isi pesannya',
+    shown?.title === 'budi' && /kabar buat notifikasi/.test(shown?.body || ''),
+    JSON.stringify(shown)
+  );
+  check('Notifikasi membawa id percakapan buat dibuka', shown?.roomId === roomId, JSON.stringify(shown));
+  check(
+    'Notifikasi ditandai milik akun Andi, bukan akun lain di browser yang sama',
+    shown?.uid === devUid('andi'),
+    JSON.stringify(shown?.uid)
+  );
+  check(
+    'Notifikasi menawarkan tombol balas, bukan cuma buka',
+    (shown?.actions || []).includes('reply'),
+    JSON.stringify(shown?.actions)
+  );
+
+  // Jalur balas yang sama seperti saat notifikasi benar-benar diklik: dipanggil
+  // di service worker yang sedang jalan, bukan tiruan di dalam halaman.
+  const swTarget = () =>
+    andi.context.targets().find((target) => target.type() === 'service_worker' && target.url().includes('/sw.js'));
+  let worker = null;
+  for (let i = 0; i < 20 && !worker; i++) {
+    const target = swTarget();
+    if (target) worker = await target.worker();
+    if (!worker) await sleep(250);
+  }
+  check('Service worker notifikasi bisa dipanggil dari luar', Boolean(worker));
+
+  const replyText = 'balasan langsung dari notifikasi';
+  const handled = await worker.evaluate(
+    (payload) => self.bychatNotificationClick(payload).then(() => 'ok'),
+    { action: 'reply', reply: replyText, roomId, uid: devUid('andi') }
+  );
+  check('Aksi balas diproses service worker', handled === 'ok', String(handled));
+
+  // Yang dikirim harus benar-benar balasan Andi (gelembung keluar di sisinya),
+  // bukan cuma "ada pesan dengan teks itu" di salah satu layar.
+  await andi.page.waitForFunction(
+    (text) => [...document.querySelectorAll('.msg.out')].some((node) => node.textContent.includes(text)),
+    { timeout: 20000 },
+    replyText
+  );
+  await budi.page.waitForFunction(
+    (text) => [...document.querySelectorAll('.msg:not(.out)')].some((node) => node.textContent.includes(text)),
+    { timeout: 20000 },
+    replyText
+  );
+  const sentByBudi = await budi.page.$$eval('.msg.out', (nodes) =>
+    nodes.some((node) => node.textContent.includes('balasan langsung dari notifikasi'))
+  );
+  check('Balasan dari notifikasi terkirim sebagai pesan Andi', sentByBudi === false);
+  check('Balasan itu sampai ke Budi sebagai pesan masuk di gelembung putih', true);
+
+  // Balasan tadi membuka DM-nya, jadi sekarang Andi memang sedang membaca
+  // percakapan itu: pesan berikutnya tidak boleh lagi jadi notifikasi.
+  const quietText = 'pesan yang lagi dibaca andi';
+  await budi.page.type('#composer-input', quietText);
+  await budi.page.click('.send');
+  await andi.page.waitForFunction(
+    (text) => [...document.querySelectorAll('.msg')].some((node) => node.textContent.includes(text)),
+    { timeout: 20000 },
+    quietText
+  );
+  await sleep(1200);
+  const quiet = await andi.page.evaluate(async (text) => {
+    const registration = await navigator.serviceWorker.ready;
+    const notes = await registration.getNotifications();
+    return notes.filter((note) => String(note.body || '').includes(text)).length;
+  }, quietText);
+  check('Tidak ada notifikasi untuk pesan yang sedang dibaca', quiet === 0, `${quiet} notifikasi`);
+}
+
+
+/**
+ * Shell-nya ala WhatsApp: menu utama memindahkan panel di kolom daftar, dan
+ * tiap perpindahan memang dianimasikan — bukan cuma ganti isi DOM.
+ */
+async function checkShell(andi) {
+  const start = await andi.page.evaluate(() => ({
+    view: document.querySelector('.panel:not([hidden])')?.dataset.panel,
+    panels: document.querySelectorAll('.panel[data-panel]').length,
+    railWidth: document.querySelector('#rail').getBoundingClientRect().width,
+    railTabs: [...document.querySelectorAll('#rail [data-view]')].map((node) => node.dataset.view),
+  }));
+  check(
+    'Aplikasi mulai di panel Chat, dengan rail lengkap di kolom kiri',
+    start.view === 'chats' &&
+      start.panels === 4 &&
+      start.railWidth > 0 &&
+      ['chats', 'status', 'calls', 'settings'].every((view) => start.railTabs.includes(view)),
+    JSON.stringify(start)
+  );
+
+  for (const view of ['status', 'calls', 'settings', 'chats']) {
+    await goView(andi.page, view);
+    const seen = await andi.page.evaluate((name) => {
+      const panel = document.querySelector(`.panel[data-panel="${name}"]`);
+      const active = [...document.querySelectorAll('[data-view]')].filter(
+        (node) => node.classList.contains('active') && node.getBoundingClientRect().width > 0
+      );
+      const others = [...document.querySelectorAll('.panel[data-panel]')].filter((node) => node.hidden === false);
+      return {
+        hidden: panel.hidden,
+        animation: getComputedStyle(panel).animationName,
+        activeViews: active.map((node) => node.dataset.view),
+        visiblePanels: others.map((node) => node.dataset.panel),
+      };
+    }, view);
+    check(
+      `Menu ${view}: panelnya terbuka, cuma dia yang tampil, aktif, dan pakai animasi masuk`,
+      seen.hidden === false &&
+        seen.animation === 'view-in' &&
+        seen.activeViews.includes(view) &&
+        seen.visiblePanels.length === 1 &&
+        seen.visiblePanels[0] === view,
+      JSON.stringify(seen)
+    );
+  }
+
+  const motion = await andi.page.evaluate(() => {
+    const button = document.querySelector('#rail [data-view="chats"]');
+    const style = getComputedStyle(button);
+    return { transition: style.transitionProperty, duration: style.transitionDuration };
+  });
+  check(
+    'Tombol menu punya transisi, jadi pergantiannya terasa halus',
+    /background|color|transform/.test(motion.transition) && parseFloat(motion.duration) > 0,
+    JSON.stringify(motion)
+  );
+}
+
+/** Berapa status yang benar-benar tampil di panel Status halaman ini. */
+const statusItemsIn = (page) => page.$$eval('.status-item', (nodes) => nodes.length);
+
+/**
+ * Sebelum pernah chat, status Andi cuma boleh ada di perangkatnya sendiri. Dua
+ * sisi diperiksa: daftar penerima yang benar-benar diteruskan server, dan
+ * panel Status Budi yang harus tetap kosong. Ditambah satu klien mentah yang sengaja
+ * mengirim status ke Budi dari akun asing — sisi penerima harus mengabaikannya
+ * juga, bukan cuma mengandalkan pengirimnya.
+ */
+async function checkStatusBeforeChat(andi, budi) {
+  const beforeChat = `status sebelum kenal ${Date.now()}`;
+  await goView(andi.page, 'status');
+  await andi.page.click('#status-me-add');
+  await andi.page.waitForSelector('#status-text', { timeout: 10000 });
+  await andi.page.type('#status-text', beforeChat);
+  await andi.page.click('.modal-card [data-publish]');
+  await andi.page.waitForFunction(
+    (text) => document.querySelector('#status-stage .status-text')?.textContent.includes(text),
+    { timeout: 15000 },
+    beforeChat
+  );
+  check('Status sendiri tetap bisa dilihat di perangkat sendiri', true);
+  await andi.page.click('#status-viewer-close');
+  await andi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
+  await goView(andi.page, 'chats');
+
+  const audience = [...statuses.values()].filter((entry) => entry.from === devUid('andi')).at(-1)?.members || [];
+  check(
+    'Daftar penerima status cuma berisi diri sendiri saat belum ada chat',
+    audience.includes(devUid('andi')) && !audience.includes(devUid('budi')),
+    JSON.stringify(audience)
+  );
+
+  await sleep(1000);
+  check(
+    'Panel Status Budi tetap kosong sebelum mereka pernah chat',
+    (await statusItemsIn(budi.page)) === 0,
+    `${await statusItemsIn(budi.page)} item`
+  );
+
+  const stranger = await publishStatusFromStranger('cici', [devUid('budi')]);
+  check(
+    'Klien asing tetap bisa mengirim status ke Budi (jadi tesnya bukan tes kosong)',
+    stranger.members.includes(devUid('budi')),
+    JSON.stringify(stranger)
+  );
+  await sleep(1200);
+  check(
+    'Status dari orang yang belum pernah chat diabaikan di sisi penerima',
+    (await statusItemsIn(budi.page)) === 0,
+    `${await statusItemsIn(budi.page)} item`
+  );
+}
+
+/**
+ * Klien mentah (tanpa UI) yang memakai token dev yang sama dengan browser:
+ * pembuktian bahwa sisi penerima memang menghadapi status dari orang asing, dan
+ * tetap nggak menampilkannya.
+ */
+async function publishStatusFromStranger(name, members) {
+  const uid = devUid(name);
+  const socket = ioClient(BASE_URL, {
+    transports: ['websocket'],
+    forceNew: true,
+    auth: {
+      token: makeDevToken({ uid, displayName: name }),
+      // Kunci publik dummy: yang diuji cuma siapa yang boleh menerima, dan isi
+      // statusnya memang nggak pernah dibuka di sini.
+      publicKey: { kty: 'EC', crv: 'P-256', x: 'x'.repeat(43), y: 'y'.repeat(43) },
+    },
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('connect_error', reject);
+      setTimeout(() => reject(new Error('timeout menyambung klien asing')), 5000);
+    });
+    const claimed = await new Promise((resolve) => socket.emit('username:claim', name, resolve));
+    if (!claimed?.ok) throw new Error(`klien asing gagal klaim username: ${claimed?.error}`);
+    const published = await new Promise((resolve) =>
+      socket.emit('status:publish', { payload: { ct: 'blob-palsu' }, members }, resolve)
+    );
+    if (!published?.ok) throw new Error(`klien asing gagal menerbitkan status: ${published?.error}`);
+    return { id: published.id, members: statuses.get(published.id)?.members || [] };
+  } finally {
+    socket.close();
+  }
+}
+
 function listFiles(dir) {
   if (!fs.existsSync(dir)) return [];
   return fs
@@ -140,13 +620,20 @@ const CONSOLE_LOG = [];
 
 async function login(browser, username) {
   const context = await browser.createBrowserContext();
+  // Notifikasi: dialog izin memang nggak bisa diklik otomatis, jadi izinnya
+  // diberikan di level browser — sakelarnya sendiri tetap dinyalakan dari
+  // panel Pengaturan seperti yang orang lakukan.
+  await context.overridePermissions(BASE_URL, ['notifications']);
   const page = await context.newPage();
   page.on('pageerror', (err) => {
     console.error(`[${username}] page error:`, err.message);
     CONSOLE_LOG.push(`${username} pageerror: ${err.message}`);
   });
   page.on('console', (msg) => {
+    // Peringatan ikut dicatat: jalur yang menelan error (mis. notifikasi yang
+    // ditolak platform) cuma meninggalkan jejak di sini.
     if (msg.type() === 'error') CONSOLE_LOG.push(`${username} console: ${msg.text()}`);
+    else if (msg.type() === 'warning') CONSOLE_LOG.push(`${username} warn: ${msg.text()}`);
   });
 
   // Opt-in WebRTC tracing inside the page (see public/call.js).
@@ -158,6 +645,50 @@ async function login(browser, username) {
   check(
     `${username}: opsi Google disembunyikan di mode dev`,
     (await display(page, '#login-firebase')) === 'none'
+  );
+
+  // Login nomor HP sudah dibuang seluruhnya — bukan cuma disembunyikan: elemen
+  // dan penanganannya nggak ada lagi di DOM, jadi nggak ada jalur yang bisa
+  // menghidupkannya kembali tanpa mengubah kode.
+  const loginPaths = await page.evaluate(() => ({
+    phone: document.querySelector('#phone-number') !== null,
+    otp: document.querySelector('#otp-code') !== null,
+    send: document.querySelector('#btn-send-code') !== null,
+    recaptcha: document.querySelector('#recaptcha-container') !== null,
+    google: document.querySelector('#btn-google') !== null,
+  }));
+  check(
+    `${username}: login cuma lewat Google, jalur nomor HP benar-benar hilang`,
+    !loginPaths.phone && !loginPaths.otp && !loginPaths.send && !loginPaths.recaptcha && loginPaths.google,
+    JSON.stringify(loginPaths)
+  );
+
+  // Halaman pertama yang dilihat orang juga ikut DESIGN.md baru: kartu putih di
+  // atas kanvas cloud, tanpa hiasan hero (strip gelap / chevron) dan tanpa
+  // label tombol kapital.
+  const loginDesign = await page.evaluate(() => {
+    const card = getComputedStyle(document.querySelector('.login-card'));
+    return {
+      cardBg: card.backgroundColor,
+      cardRadius: card.borderRadius,
+      cardShadow: card.boxShadow,
+      pageBg: getComputedStyle(document.querySelector('#login')).backgroundColor,
+      decorations: document.querySelectorAll('.site-strip, .chevrons').length,
+      buttonCase: getComputedStyle(document.querySelector('#login-submit')).textTransform,
+    };
+  });
+  check(
+    `${username}: kartu login putih 16px di atas kanvas {colors.cloud}`,
+    loginDesign.cardBg === 'rgb(255, 255, 255)' &&
+      loginDesign.cardRadius === '16px' &&
+      loginDesign.cardShadow !== 'none' &&
+      loginDesign.pageBg === 'rgb(247, 248, 250)',
+    JSON.stringify(loginDesign)
+  );
+  check(
+    `${username}: tanpa hiasan hero dan label tombol tidak kapital`,
+    loginDesign.decorations === 0 && loginDesign.buttonCase === 'none',
+    JSON.stringify(loginDesign)
   );
 
   check(`${username}: kartu login memakai logo baru`, (await page.$('.brand-mark')) !== null);
@@ -225,7 +756,37 @@ async function login(browser, username) {
     `${username}: overlay panggilan nggak muncul sendiri`,
     (await display(page, '#call-overlay')) === 'none'
   );
-  check(`${username}: tombol log keluar terlihat`, (await display(page, '#btn-logout')) !== 'none');
+  // Shell-nya sekarang seperti WhatsApp: menu utama di rail (desktop) dan
+  // navbar bawah (hp), sementara keluar + pengaturan pindah ke panelnya sendiri.
+  const nav = await page.evaluate(() => ({
+    railTabs: [...document.querySelectorAll('#rail [data-view]')].map((node) => node.dataset.view),
+    tabTabs: [...document.querySelectorAll('#tabbar [data-view]')].map((node) => node.dataset.view),
+    logoutPanel: document.querySelector('#btn-logout')?.closest('.panel')?.dataset.panel || null,
+    logoutInChatList: Boolean(document.querySelector('#panel-chats #btn-logout')),
+    settingsInHeader: Boolean(document.querySelector('#panel-chats [data-view="settings"]')),
+  }));
+  const views = ['chats', 'status', 'calls', 'settings'];
+  check(
+    `${username}: menu utamanya chat, status, panggilan, pengaturan`,
+    views.every((view) => nav.railTabs.includes(view)) && views.every((view) => nav.tabTabs.includes(view)),
+    JSON.stringify(nav)
+  );
+  check(
+    `${username}: pengaturan & keluar pindah dari header chat ke panel Pengaturan`,
+    nav.logoutPanel === 'settings' && nav.logoutInChatList === false && nav.settingsInHeader === false,
+    JSON.stringify(nav)
+  );
+  await goView(page, 'settings');
+  check(
+    `${username}: panel Pengaturan terbuka dengan tombol keluar di dalamnya`,
+    (await display(page, '#btn-logout')) !== 'none' &&
+      (await page.$eval('#panel-settings', (node) => node.hidden === false))
+  );
+  await goView(page, 'chats');
+  check(
+    `${username}: pindah balik ke chat menutup lagi panel Pengaturan`,
+    (await display(page, '#panel-settings')) === 'none' && (await display(page, '#chat-list')) !== 'none'
+  );
   check(`${username}: layar sambutan tampil sebelum ada chat`, (await display(page, '#empty-state')) !== 'none');
   check(
     `${username}: fitur utama dijelaskan di layar sambutan`,
@@ -243,22 +804,16 @@ async function login(browser, username) {
     };
     return {
       chatList: box('#chat-list'),
-      statusPanel: box('.status-panel'),
+      rail: box('#rail'),
       overflowX: document.documentElement.scrollWidth - window.innerWidth,
-      accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
     };
   });
   check(
-    `${username}: panel sidebar benar-benar punya ukuran`,
-    [layout.chatList, layout.statusPanel].every((rect) => rect && rect.w > 0 && rect.h > 0),
+    `${username}: rail dan daftar chat benar-benar punya ukuran`,
+    [layout.chatList, layout.rail].every((rect) => rect && rect.w > 0 && rect.h > 0),
     JSON.stringify(layout)
   );
   check(`${username}: halaman nggak meluber ke samping`, layout.overflowX <= 1, `overflow ${layout.overflowX}px`);
-  check(
-    `${username}: warna aksen mengikuti palet logo`,
-    layout.accent === '#38c6ff',
-    layout.accent
-  );
 
   return { context, page };
 }
@@ -340,6 +895,10 @@ async function findContact(page, query) {
  * Foto profil dan status lewat jalur yang berbeda dari pesan: foto profil
  * memang publik, status tetap terenkripsi. Keduanya diuji dari UI aslinya.
  *
+ * Dipanggil setelah Andi dan Budi pernah chat: status cuma sampai ke orang yang
+ * sudah pernah chat, jadi jalur ini memang baru masuk akal setelah ada
+ * percakapan. Aturan sebelum chat-nya diuji di checkStatusBeforeChat.
+ *
  * @returns {string} teks status yang tadi dikirim, buat dicek di memori server
  */
 async function checkPhotoAndStatus(andi, budi) {
@@ -353,23 +912,31 @@ async function checkPhotoAndStatus(andi, budi) {
   );
 
   /* ---- Foto profil ---- */
-  await andi.page.click('#btn-settings');
-  await andi.page.waitForSelector('#settings-avatar', { timeout: 10000 });
+  await goView(andi.page, 'settings');
+  await andi.page.waitForSelector('#me-avatar', { timeout: 10000 });
+
+  // Panel Pengaturan sengaja nggak lagi memampangkan uid, driver penyimpanan,
+  // relay panggilan, atau peringatan private key.
+  const settingsText = await andi.page.$eval('#panel-settings', (node) => node.textContent);
+  check(
+    'Pengaturan nggak lagi menampilkan info akun/penyimpanan/relay',
+    !/Akun:|Penyimpanan file|Relay panggilan|Private key kamu/i.test(settingsText),
+    settingsText.slice(0, 160).replace(/\s+/g, ' ')
+  );
   const avatarInput = await andi.page.$('#avatar-input');
   await avatarInput.uploadFile(png);
   await andi.page.waitForFunction(
-    () => (document.querySelector('#settings-avatar')?.style.backgroundImage || '').includes('/api/avatar/'),
+    () => (document.querySelector('#me-avatar')?.style.backgroundImage || '').includes('/api/avatar/'),
     { timeout: 15000 }
   );
-  check('Foto profil terpasang dari Pengaturan', true);
+  check('Foto profil terpasang dari panel Pengaturan', true);
 
-  await andi.page.click('[data-close]');
-  await andi.page.waitForSelector('#modal[hidden]', { timeout: 10000 });
+  await goView(andi.page, 'chats');
   await andi.page.waitForFunction(
-    () => (document.querySelector('#me-avatar')?.style.backgroundImage || '').includes('/api/avatar/'),
+    () => (document.querySelector('#rail-avatar')?.style.backgroundImage || '').includes('/api/avatar/'),
     { timeout: 10000 }
   );
-  check('Avatar di sidebar memakai foto yang baru diunggah', true);
+  check('Avatar di rail ikut memakai foto yang baru diunggah', true);
 
   // Kontak lain melihat foto yang sama saat mencari namanya, tanpa minta apa pun.
   const listed = await findContact(budi.page, 'andi');
@@ -383,6 +950,7 @@ async function checkPhotoAndStatus(andi, budi) {
 
   /* ---- Status ---- */
   const statusText = `status uji otomatis ${Date.now()}`;
+  await goView(andi.page, 'status');
   await andi.page.click('#status-me-add');
   await andi.page.waitForSelector('#status-text', { timeout: 10000 });
   await andi.page.type('#status-text', statusText);
@@ -396,6 +964,7 @@ async function checkPhotoAndStatus(andi, budi) {
   await andi.page.click('#status-viewer-close');
   await andi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
 
+  await goView(budi.page, 'status');
   await budi.page.waitForSelector('.status-item', { timeout: 15000 });
   const ringed = await budi.page.$eval('.status-item .avatar', (node) => node.classList.contains('ring'));
   check('Status yang belum dibuka ditandai cincin', ringed === true);
@@ -409,6 +978,7 @@ async function checkPhotoAndStatus(andi, budi) {
   check('Budi membaca isi status terenkripsi itu', true);
   await budi.page.click('#status-viewer-close');
   await budi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
+  await goView(budi.page, 'chats');
   await budi.page.waitForFunction(
     () => document.querySelector('.status-item')?.textContent.includes('Sudah dilihat'),
     { timeout: 10000 }
@@ -416,6 +986,7 @@ async function checkPhotoAndStatus(andi, budi) {
   check('Sesudah dibaca, status ditandai sudah dilihat', true);
 
   /* ---- Status foto: jalur lampiran terenkripsi lewat status ---- */
+  await goView(andi.page, 'status');
   await andi.page.click('#status-me-add');
   await andi.page.waitForSelector('#status-photo', { timeout: 10000 });
   const statusPhoto = await andi.page.$('#status-photo');
@@ -437,6 +1008,7 @@ async function checkPhotoAndStatus(andi, budi) {
       { timeout: 8000 }
     );
 
+  await goView(budi.page, 'status');
   await budi.page.waitForSelector('.status-item', { timeout: 15000 });
   await budi.page.click('.status-item');
   const straightToPhoto = await photoShown().then(
@@ -588,7 +1160,10 @@ try {
   const budi = await login(browser, 'budi');
   activeClients.budi = budi;
   await expectUsernameRefused(browser);
-  const statusText = await checkPhotoAndStatus(andi, budi);
+  // Shell-nya dulu: menu, panel, dan animasinya.
+  await checkShell(andi);
+  // Aturan status diuji dari dua sisi: sebelum ada chat, lalu sesudahnya.
+  await checkStatusBeforeChat(andi, budi);
 
   /* ---- 1. Mencari kontak sebelum bisa chat ---------------------- */
   await andi.page.click('#btn-new-chat');
@@ -600,8 +1175,8 @@ try {
     (await display(andi.page, '#modal')) === 'none'
   );
   check(
-    'Sidebar tetap punya ukuran selama halaman itu terbuka',
-    await andi.page.$eval('#chat-list, .sidebar', (node) => node.getBoundingClientRect().width > 0)
+    'Daftar chat tetap punya ukuran selama halaman itu terbuka',
+    await andi.page.$eval('#chat-list', (node) => node.getBoundingClientRect().width > 0)
   );
 
   // Kueri yang terlalu pendek ditahan sebelum menyentuh server.
@@ -653,7 +1228,7 @@ try {
     await andi.page.$eval('#btn-call-audio, .send, #btn-attach', (node) => node.querySelector('svg') !== null)
   );
 
-  /* ---- 2. Text message ------------------------------------------ */
+  /* ---- 2. Pesan teks ------------------------------------------- */
   const andiMessage = 'halo budi 👋 ini rahasia dari andi';
   await andi.page.type('#composer-input', andiMessage);
   await andi.page.click('.send');
@@ -795,34 +1370,52 @@ try {
   // Halaman yang tidak sedang tampil tidak menghasilkan frame canvas, jadi Andi
   // harus jadi tab aktif dulu sebelum merekam.
   await andi.page.bringToFront();
-  const videoBase64 = await andi.page.evaluate(async () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 160;
-    canvas.height = 120;
-    document.body.appendChild(canvas);
-    const ctx = canvas.getContext('2d');
-    // VP8 eksplisit + requestData(): tanpa keduanya, encoder di Chrome headless
-    // kadang cuma menghasilkan header kosong.
-    const recorder = new MediaRecorder(canvas.captureStream(25), { mimeType: 'video/webm;codecs=vp8' });
-    const chunks = [];
-    recorder.ondataavailable = (event) => chunks.push(event.data);
-    const stopped = new Promise((resolve) => (recorder.onstop = resolve));
-    recorder.start(1000);
-    for (let i = 0; i < 40; i++) {
-      ctx.fillStyle = i % 2 ? '#38c6ff' : '#1f4bff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 50)));
-    }
-    recorder.requestData();
-    recorder.stop();
-    await stopped;
-    canvas.remove();
-    const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
-    let binary = '';
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary);
-  });
-  check('Video contoh benar-benar terbentuk', videoBase64.length > 2000, `${videoBase64.length} byte base64`);
+  // Merekam ulang sampai tiga kali kalau hasilnya cuma header WebM. Ini murni
+  // keandalan alat rekamnya, bukan aplikasinya: `captureStream()` di Chrome
+  // headless kadang cuma mengirim satu frame saat mesin sedang sibuk, dan
+  // ukurannya beda jauh (ratusan vs ribuan byte). Syarat lulusnya tetap sama,
+  // dan kalau ketiga percobaan tetap kosong, cek ini gagal seperti biasa.
+  const videoAttempts = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    videoAttempts.push(
+      await andi.page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 160;
+        canvas.height = 120;
+        document.body.appendChild(canvas);
+        const ctx = canvas.getContext('2d');
+        // VP8 eksplisit + requestData(): tanpa keduanya, encoder di Chrome headless
+        // kadang cuma menghasilkan header kosong.
+        const recorder = new MediaRecorder(canvas.captureStream(25), { mimeType: 'video/webm;codecs=vp8' });
+        const chunks = [];
+        recorder.ondataavailable = (event) => chunks.push(event.data);
+        const stopped = new Promise((resolve) => (recorder.onstop = resolve));
+        recorder.start(1000);
+        for (let i = 0; i < 40; i++) {
+          ctx.fillStyle = i % 2 ? '#38c6ff' : '#1f4bff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 50)));
+        }
+        recorder.requestData();
+        recorder.stop();
+        await stopped;
+        canvas.remove();
+        const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
+        let binary = '';
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        const base64 = btoa(binary);
+        return { base64, chunks: chunks.length, bytes: bytes.byteLength };
+      })
+    );
+    if (videoAttempts.at(-1).base64.length > 2000) break;
+    await sleep(500);
+  }
+  const videoBase64 = videoAttempts.find((entry) => entry.base64.length > 2000)?.base64 || '';
+  check(
+    'Video contoh benar-benar terbentuk',
+    videoBase64.length > 2000,
+    JSON.stringify(videoAttempts.map((entry) => ({ chars: entry.base64.length, chunks: entry.chunks, bytes: entry.bytes })))
+  );
 
   await andi.page.evaluate((base64) => {
     const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
@@ -890,13 +1483,18 @@ try {
       others: others.length,
       othersBlurred: others.every((node) => getComputedStyle(node).filter !== 'none'),
       targetSharp: target ? getComputedStyle(target).filter === 'none' : false,
-      sidebarBlurred: getComputedStyle(document.querySelector('.sidebar')).filter !== 'none',
+      listBlurred: getComputedStyle(document.querySelector('#lists')).filter !== 'none',
+      railBlurred: getComputedStyle(document.querySelector('#rail')).filter !== 'none',
     };
   });
   check('Ada pesan lain yang ikut diblur', blurState.others > 0, JSON.stringify(blurState));
   check('Pesan lain diblur saat pilihan terbuka', blurState.othersBlurred, JSON.stringify(blurState));
   check('Pesan yang dipilih tetap tajam', blurState.targetSharp, JSON.stringify(blurState));
-  check('Sidebar dan kolom chat ikut diblur', blurState.sidebarBlurred, JSON.stringify(blurState));
+  check(
+    'Kolom daftar dan rail ikut diblur',
+    blurState.listBlurred && blurState.railBlurred,
+    JSON.stringify(blurState)
+  );
 
   const othersActions = await menuActions(budi.page);
   check(
@@ -1147,6 +1745,18 @@ try {
   await andi.page.waitForFunction(() => [...document.querySelectorAll('.msg.deleted')].length > 0, { timeout: 5000 });
   check('Di layar Andi pesan itu juga berubah jadi "sudah dihapus"', true);
 
+  /* ---- 3d. Tampilan mengikuti DESIGN.md -------------------------
+     Diukur dari gaya yang dihitung, bukan dari kode CSS-nya: yang diuji
+     adalah apa yang benar-benar tampil di layar. Dua halaman sekaligus,
+     supaya gelembung kirim dan gelembung terima dua-duanya kena. */
+  await verifyDesignSystem(andi.page, 'Andi', 'out');
+  await verifyDesignSystem(budi.page, 'Budi', 'in');
+
+  /* ---- 3e. Notifikasi pesan + balas dari notifikasi -------------
+     Diuji dengan Chrome asli: izin notifikasi, service worker, sampai balasan
+     yang diketik di notifikasi benar-benar terkirim ke lawan bicara. */
+  await checkNotifications(andi, budi);
+
   /* ---- 4. Real WebRTC call -------------------------------------- */
   await andi.page.click('#btn-call-audio');
   await budi.page.waitForSelector('#incoming:not([hidden])', { timeout: 15000 });
@@ -1293,6 +1903,30 @@ try {
   await budi.page.waitForFunction(() => document.querySelector('#call-overlay').hidden === true, { timeout: 15000 });
   check('Menutup panggilan mengembalikan kedua sisi ke chat', true);
 
+  // Riwayat panggilan ala WhatsApp: tercatat di perangkat pemanggilnya.
+  await goView(andi.page, 'calls');
+  const callRows = await andi.page.$$eval('#call-list .call-item', (nodes) =>
+    nodes.map((node) => node.textContent.replace(/\s+/g, ' ').trim())
+  );
+  check(
+    'Panggilan yang barusan tercatat di panel Panggilan',
+    callRows.length > 0 && /budi/i.test(callRows[0]),
+    JSON.stringify(callRows.slice(0, 2))
+  );
+  const callEntry = await andi.page.evaluate(() => {
+    const row = document.querySelector('#call-list .call-item');
+    return { text: row?.textContent.replace(/\s+/g, ' ').trim(), uid: row?.dataset.uid };
+  });
+  check(
+    'Entri panggilan menyebut arah dan durasinya',
+    /keluar/i.test(callEntry.text || '') && /dtk|mnt/i.test(callEntry.text || ''),
+    JSON.stringify(callEntry)
+  );
+  await goView(andi.page, 'chats');
+
+  // Baru sekarang mereka "pernah chat", jadi status harus bisa sampai ke Budi.
+  const statusText = await checkPhotoAndStatus(andi, budi);
+
   await checkReportAndAdmin(andi, budi);
 
   /* ---- 5. Nothing readable on the server ------------------------ */
@@ -1309,7 +1943,16 @@ try {
     reports: moderation.reports(),
   });
   check('Server tidak pernah memegang teks pesan', !serverMemory.includes('rahasia dari andi'));
-  check('Server tidak pernah memegang isi file', !serverMemory.includes('a884'));
+  // Jarumnya sengaja panjang (potongan asli dari SVG contoh): penanda pendek
+  // seperti "a884" bisa kebetulan muncul di ciphertext base64, dan itu bikin
+  // pemeriksaan ini gagal karena alasan yang salah.
+  const filePlaintext = '<rect x="0" y="0" width="1" height="1" fill="#a8840"/>';
+  const fileLeak = serverMemory.match(/.{0,40}a8840.{0,40}/);
+  check(
+    'Server tidak pernah memegang isi file',
+    !serverMemory.includes(filePlaintext) && !fileLeak,
+    fileLeak ? fileLeak[0] : ''
+  );
   check('Server tidak pernah memegang isi status', !serverMemory.includes(statusText));
 
   for (const [name, client] of [['andi', andi], ['budi', budi]]) {
@@ -1328,10 +1971,76 @@ try {
      touchend cepat = ketuk biasa, sentuhan yang ditahan = menu pilihan. */
   await budi.page.setViewport({ width: 390, height: 844, hasTouch: true, isMobile: true });
   await sleep(400);
+
+  /* ---- 6a. Navbar bawah di hp: oval, melayang, berkaca ---------------- */
+  const bar = await budi.page.evaluate(() => {
+    const node = document.querySelector('#tabbar');
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return {
+      display: style.display,
+      radius: style.borderRadius,
+      backdrop: style.backdropFilter || style.webkitBackdropFilter,
+      position: style.position,
+      shadow: style.boxShadow,
+      background: style.backgroundColor,
+      railHidden: getComputedStyle(document.querySelector('#rail')).display === 'none',
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      centered: Math.abs(rect.left + rect.width / 2 - window.innerWidth / 2) <= 2,
+      floats: rect.bottom <= window.innerHeight && window.innerHeight - rect.bottom >= 8,
+      innerWidth: window.innerWidth,
+    };
+  });
+  check(
+    'Di hp menu utamanya jadi navbar bawah, bukan rail',
+    bar.display === 'flex' && bar.railHidden && bar.width > 0 && bar.height > 0,
+    JSON.stringify(bar)
+  );
+  check(
+    'Navbar bawahnya oval, bukan kotak',
+    bar.radius === '9999px' || bar.radius === '999px',
+    bar.radius
+  );
+  check(
+    'Navbar bawahnya berkaca (blur di belakangnya, bukan putih mati)',
+    /blur\(/.test(bar.backdrop) && /rgba\(255, 255, 255, 0\.7/.test(bar.background),
+    JSON.stringify({ backdrop: bar.backdrop, background: bar.background })
+  );
+  check(
+    'Navbar bawahnya melayang: nempel di bawah tengah dengan jarak dari tepi',
+    bar.position === 'fixed' && bar.centered && bar.floats && bar.shadow !== 'none',
+    JSON.stringify(bar)
+  );
+
+  // Menekan menu di navbar memindahkan panel, dan percakapan yang terbuka ikut
+  // ditutup supaya kembali ke daftar (perilaku WhatsApp di hp).
+  await goView(budi.page, 'settings');
+  const afterTab = await budi.page.evaluate(() => ({
+    panel: document.querySelector('.panel:not([hidden])')?.dataset.panel,
+    tabActive: document.querySelector('#tabbar .tab-btn.active')?.dataset.view,
+    chatVisible: getComputedStyle(document.querySelector('.chat')).display !== 'none',
+  }));
+  check(
+    'Menekan menu di navbar membuka panelnya dan menutup percakapan',
+    afterTab.panel === 'settings' && afterTab.tabActive === 'settings' && afterTab.chatVisible === false,
+    JSON.stringify(afterTab)
+  );
+  await goView(budi.page, 'chats');
+
   if (await budi.page.$eval('#chat-view', (node) => node.hidden)) {
     await budi.page.click('.chat-item');
     await budi.page.waitForSelector('#chat-view:not([hidden])', { timeout: 10000 });
   }
+  const chatDocked = await budi.page.evaluate(() => ({
+    tabbar: getComputedStyle(document.querySelector('#tabbar')).display,
+    chatVisible: getComputedStyle(document.querySelector('.chat')).display !== 'none',
+  }));
+  check(
+    'Di dalam percakapan, navbar bawah menghilang dan chatnya penuh layar',
+    chatDocked.tabbar === 'none' && chatDocked.chatVisible,
+    JSON.stringify(chatDocked)
+  );
 
   // Pesan terakhir yang masih punya isi, dibawa ke tengah layar dulu: titik
   // sentuh harus benar-benar mengenai gelembungnya, bukan area kosong.

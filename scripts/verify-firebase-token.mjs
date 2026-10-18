@@ -3,7 +3,7 @@
  * login manual di browser.
  *
  * Caranya: minta Firebase bikin ID token yang ditandatangani Google (jenis token
- * yang persis dikirim browser setelah login Google/OTP), lalu sambung ke server
+ * yang persis dikirim browser setelah login Google), lalu sambung ke server
  * dengan token itu. Sekaligus memastikan token palsu ditolak.
  *
  *   npm run verify-token                     # cek server lokal (localhost:3000)

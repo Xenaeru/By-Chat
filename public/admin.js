@@ -26,15 +26,6 @@ const el = {
   loginSubmit: $('#login-submit'),
   loginError: $('#login-error'),
   btnGoogle: $('#btn-google'),
-  phoneStep1: $('#phone-step-1'),
-  phoneStep2: $('#phone-step-2'),
-  phoneNumber: $('#phone-number'),
-  phoneShown: $('#phone-shown'),
-  btnSendCode: $('#btn-send-code'),
-  btnVerifyCode: $('#btn-verify-code'),
-  btnChangePhone: $('#btn-change-phone'),
-  otpCode: $('#otp-code'),
-  recaptcha: $('#recaptcha-container'),
 
   denied: $('#denied'),
   deniedDetail: $('#denied-detail'),
@@ -524,49 +515,6 @@ el.btnGoogle.addEventListener('click', async () => {
   } finally {
     el.btnGoogle.disabled = false;
   }
-});
-
-el.btnSendCode.addEventListener('click', async () => {
-  el.loginError.hidden = true;
-  const phone = el.phoneNumber.value.trim();
-  if (!phone) return showToast('Isi nomor HP dulu (format internasional, misal +62812…).');
-
-  el.btnSendCode.disabled = true;
-  el.btnSendCode.textContent = 'Mengirim…';
-  try {
-    state.phoneHandle = await state.auth.startPhoneSignIn(phone, el.recaptcha);
-    el.phoneShown.textContent = phone;
-    el.phoneStep1.hidden = true;
-    el.phoneStep2.hidden = false;
-    el.otpCode.focus();
-  } catch (err) {
-    el.loginError.textContent = err.message || 'Gagal kirim OTP.';
-    el.loginError.hidden = false;
-  } finally {
-    el.btnSendCode.disabled = false;
-    el.btnSendCode.textContent = 'Kirim kode OTP';
-  }
-});
-
-el.btnVerifyCode.addEventListener('click', async () => {
-  const code = el.otpCode.value.trim();
-  if (!code) return;
-  el.loginError.hidden = true;
-  el.btnVerifyCode.disabled = true;
-  try {
-    await state.phoneHandle.confirm(code);
-  } catch (err) {
-    el.loginError.textContent = err.message || 'Kode salah.';
-    el.loginError.hidden = false;
-  } finally {
-    el.btnVerifyCode.disabled = false;
-  }
-});
-
-el.btnChangePhone.addEventListener('click', () => {
-  el.phoneStep1.hidden = false;
-  el.phoneStep2.hidden = true;
-  el.otpCode.value = '';
 });
 
 el.loginDev.addEventListener('submit', async (event) => {

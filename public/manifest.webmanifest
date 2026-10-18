@@ -1,0 +1,20 @@
+{
+  "name": "By Chat",
+  "short_name": "By Chat",
+  "description": "Pesan, file, panggilan, dan status yang terenkripsi end-to-end.",
+  "lang": "id",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8fa",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

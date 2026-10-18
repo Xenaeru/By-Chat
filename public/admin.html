@@ -3,8 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="theme-color" content="#04070f" />
+<meta name="theme-color" content="#f7f8fa" />
 <title>Admin · By Chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
 <link rel="stylesheet" href="style.css" />
 <link rel="icon" href="/logo.svg" type="image/svg+xml" />
 </head>
@@ -25,8 +28,6 @@
 
 <!-- ── Masuk ───────────────────────────────────────────────────────── -->
 <div id="login" class="login" hidden>
-  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-
   <div class="login-card">
     <div class="brand">
       <img class="brand-mark" src="/logo.svg" alt="By Chat" width="54" height="54" />
@@ -36,28 +37,11 @@
       </div>
     </div>
 
+    <!-- Cuma Google: login nomor HP sudah dibuang (fitur berbayar Firebase). -->
     <div id="login-firebase" hidden>
       <button id="btn-google" class="oauth">
         <span class="g-icon">G</span> Masuk dengan Google
       </button>
-
-      <div class="divider"><span>atau pakai nomor HP</span></div>
-
-      <div id="phone-step-1">
-        <label for="phone-number">Nomor HP</label>
-        <input id="phone-number" type="tel" inputmode="tel" placeholder="+62 812 3456 7890" />
-        <button id="btn-send-code" class="primary">Kirim kode OTP</button>
-      </div>
-
-      <div id="phone-step-2" hidden>
-        <p class="muted small">Kode dikirim ke <strong id="phone-shown">—</strong></p>
-        <label for="otp-code">Kode 6 angka</label>
-        <input id="otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" />
-        <button id="btn-verify-code" class="primary">Verifikasi</button>
-        <button id="btn-change-phone" class="link">Ganti nomor</button>
-      </div>
-
-      <div id="recaptcha-container"></div>
     </div>
 
     <form id="login-dev" autocomplete="off" hidden>
@@ -72,12 +56,14 @@
 
     <p id="login-error" class="error" hidden></p>
   </div>
+
+  <footer class="site-foot">
+    <p>Halaman ini cuma menampilkan laporan yang diketik pelapornya — isi chat nggak bisa dibaca di sini.</p>
+  </footer>
 </div>
 
 <!-- ── Bukan admin ─────────────────────────────────────────────────── -->
 <div id="denied" class="onboarding" hidden>
-  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-
   <div class="onboarding-card">
     <img class="onboarding-mark" src="/logo.svg" alt="By Chat" width="48" height="48" />
     <span class="step-pill danger"><svg class="ico"><use href="#i-ban" /></svg> Bukan admin</span>

@@ -55,7 +55,11 @@ check(
 check(
   'FIREBASE_API_KEY',
   !!apiKey && apiKey.startsWith('AIza'),
-  !apiKey ? 'KOSONG — tombol Google/OTP nggak akan muncul' : apiKey.startsWith('AIza') ? 'ok' : 'bukan API key Firebase (biasanya mulai "AIza")'
+  !apiKey
+    ? 'KOSONG — tombol Google nggak akan muncul'
+    : apiKey.startsWith('AIza')
+      ? 'ok'
+      : 'bukan API key Firebase (biasanya mulai "AIza")'
 );
 check('FIREBASE_APP_ID', !!appId && appId.includes(':web:'), !appId ? 'KOSONG' : appId.includes(':web:') ? 'ok' : 'biasanya berformat "1:123:web:abc"');
 check('FIREBASE_MESSAGING_SENDER_ID', !!senderId && /^\d{8,}$/.test(senderId), !senderId ? 'KOSONG' : /^\d{8,}$/.test(senderId) ? 'ok' : 'harus angka');
@@ -144,7 +148,7 @@ const firebaseReady = !blocking.some((r) => r.key.startsWith('FIREBASE') || r.ke
 const storageReady = !blocking.some((r) => r.key.startsWith('SUPABASE'));
 
 console.log('');
-console.log('Login Google / nomor HP :', firebaseReady ? 'SIAP' : 'BELUM SIAP (jalan di mode dev)');
+console.log('Login Google :', firebaseReady ? 'SIAP' : 'BELUM SIAP (jalan di mode dev)');
 console.log('Kirim file              :', storageReady ? 'SIAP (driver supabase)' : 'BELUM SIAP (masih driver local)');
 
 if (live && storageReady) {

@@ -60,6 +60,36 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 fs.mkdirSync(OUT, { recursive: true });
 const shot = (page, name) => page.screenshot({ path: path.join(OUT, name) });
 
+/** Pindah panel lewat menu yang terlihat (rail di desktop, navbar di hp). */
+async function goView(page, view) {
+  const clicked = await page.evaluate((name) => {
+    const button = [...document.querySelectorAll(`[data-view="${name}"]`)].find(
+      (node) => node.getBoundingClientRect().width > 0
+    );
+    button?.click();
+    return Boolean(button);
+  }, view);
+  if (!clicked) {
+    const dump = await page.evaluate(() => ({
+      innerWidth: window.innerWidth,
+      showChat: document.querySelector('#app')?.className,
+      app: document.querySelector('#app')?.hidden,
+      modal: document.querySelector('#modal')?.hidden,
+      buttons: [...document.querySelectorAll('[data-view]')].map((node) => [
+        node.dataset.view,
+        Math.round(node.getBoundingClientRect().width),
+        getComputedStyle(node).display,
+      ]),
+    }));
+    throw new Error(`menu ${view} nggak ketemu — ${JSON.stringify(dump)}`);
+  }
+  await page.waitForFunction(
+    (name) => document.querySelector(`.panel[data-panel="${name}"]`)?.hidden === false,
+    { timeout: 5000 },
+    view
+  );
+}
+
 const browser = await puppeteer.launch({ executablePath: chromePath, headless: true, args: ['--no-sandbox'] });
 
 /** Masuk lewat form dev + gerbang username, persis seperti pengguna baru. */
@@ -111,7 +141,8 @@ try {
   const andi = await login('andi');
   const budi = await login('budi');
 
-  /* 3. Percakapan + sidebar (status & daftar chat) */
+  /* 3. Percakapan + panel status */
+  await goView(budi.page, 'status');
   await budi.page.click('#status-me-add');
   await budi.page.waitForSelector('#status-text');
   await budi.page.type('#status-text', 'Lagi ngerjain project baru 🚀');
@@ -121,14 +152,7 @@ try {
   await sleep(600);
   await shot(budi.page, '04-lihat-status.png');
   await budi.page.click('#status-viewer-close');
-
-  // Andi juga bikin status, supaya di sidebar Budi kelihatan cincin "belum dilihat".
-  await andi.page.click('#status-me-add');
-  await andi.page.waitForSelector('#status-text');
-  await andi.page.type('#status-text', 'Ngopi dulu ☕');
-  await andi.page.click('.modal-card [data-publish]');
-  await sleep(600);
-  await andi.page.click('#status-viewer-close');
+  await goView(budi.page, 'chats');
 
   /* Cari kontak dulu: tanpa ini nggak ada percakapan yang bisa dibuka. */
   await andi.page.click('#btn-new-chat');
@@ -149,18 +173,33 @@ try {
   await sleep(900);
   await shot(andi.page, '06-chat.png');
 
-  /* 4. Pengaturan + foto profil */
-  await andi.page.click('#btn-settings');
-  await andi.page.waitForSelector('#settings-avatar');
-  await sleep(400);
+  /* 4. Panel Pengaturan (profil, notifikasi, keluar) */
+  await goView(andi.page, 'settings');
+  await andi.page.waitForSelector('#me-avatar');
+  await sleep(450);
   await shot(andi.page, '07-pengaturan.png');
-  await andi.page.click('.modal-card [data-close]');
+  await goView(andi.page, 'chats');
 
-  /* 5. Sisi penerima: cincin status + badge belum dibaca */
+  /* 5. Sisi penerima: cincin status + badge belum dibaca
+     Status Andi dipasang di sini, bukan di awal: status cuma sampai ke orang
+     yang sudah pernah chat, dan percakapannya baru saja dibuat di atas. */
+  await goView(andi.page, 'status');
+  await andi.page.click('#status-me-add');
+  await andi.page.waitForSelector('#status-text');
+  await andi.page.type('#status-text', 'Ngopi dulu ☕');
+  await andi.page.click('.modal-card [data-publish]');
+  await sleep(400);
+  await andi.page.click('#status-viewer-close');
+  await goView(andi.page, 'chats');
+
   await budi.page.waitForSelector('.chat-item', { timeout: 15000 });
+  await sleep(400);
+  await shot(budi.page, '08-daftar-chat.png');
+  await goView(budi.page, 'status');
   await budi.page.waitForSelector('.status-item', { timeout: 15000 });
   await sleep(400);
-  await shot(budi.page, '08-sidebar.png');
+  await shot(budi.page, '08b-panel-status.png');
+  await goView(budi.page, 'chats');
 
   /* 6. Balasan di sisi Budi */
   await budi.page.click('.chat-item');
@@ -176,10 +215,11 @@ try {
   const samplePath = path.join(TMP, 'contoh-foto.svg');
   fs.writeFileSync(
     samplePath,
+    // Warnanya dari palet DESIGN.md, biar contoh lampirannya sewarna UI-nya.
     '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320">' +
-      '<rect width="480" height="320" fill="#0b2144"/>' +
-      '<circle cx="150" cy="150" r="90" fill="#38c6ff"/>' +
-      '<rect x="240" y="70" width="180" height="180" rx="28" fill="#1f4bff"/>' +
+      '<rect width="480" height="320" fill="#f7f8fa"/>' +
+      '<circle cx="150" cy="150" r="90" fill="#e8f0ff"/>' +
+      '<rect x="240" y="70" width="180" height="180" rx="16" fill="#2563eb"/>' +
       '</svg>'
   );
 
@@ -227,6 +267,16 @@ try {
   await sleep(900);
   await shot(adminPage, '11-halaman-admin.png');
   await adminPage.close();
+
+  /* 9. Navbar bawah di layar hp: oval, melayang, berkaca. */
+  await goView(andi.page, 'chats');
+  await budi.page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
+  // Ukuran barunya kadang belum sempat dihitung saat goView jalan, jadi beri
+  // satu putaran layout dulu (bukan memperlambat tanpa alasan).
+  await sleep(350);
+  await goView(budi.page, 'chats');
+  await sleep(600);
+  await shot(budi.page, '15-navbar-hp.png');
 
   console.log(`\n${fs.readdirSync(OUT).length} gambar tersimpan di ${OUT}\n`);
 } finally {

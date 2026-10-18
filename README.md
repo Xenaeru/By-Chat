@@ -35,14 +35,18 @@ disk lokal, dan panggilan pakai STUN publik. Cukup buat nyoba semuanya di lokal.
 | **Chat** | 1:1 dan grup, semua terenkripsi. Status online, indikator menulis, badge belum dibaca, ✓/✓✓, antrian pesan offline, pembatas hari. |
 | **Pilihan pesan** | Klik kanan (mouse) atau tahan pesan (hp): yang lain diblur, yang dipilih tetap tajam, lalu muncul reaksi cepat + **Balas, Teruskan, Salin, Beri bintang, Laporkan, Hapus untuk saya, Hapus untuk semua orang**. |
 | **File** | Enkripsi di browser sebelum dikirim, chunked AES-GCM, progress bar. Foto/video dibuka **selayar penuh** di dalam aplikasi (bukan diunduh, bukan tab blob: baru); dokumen lain baru diunduh. Nama file dan kuncinya cuma ada di dalam pesan terenkripsi. |
-| **Panggilan** | Suara, video, dan bagikan layar 1:1 lewat WebRTC. Nyalakan kamera di tengah panggilan suara tanpa renegosiasi. |
-| **Status** | Teks atau foto, hilang sendiri setelah 24 jam. Isinya tetap terenkripsi end-to-end, dan yang sudah dilihat ditandai cincin ala WhatsApp. |
+| **Menu ala WhatsApp** | Rail ikon di desktop (Chat, Status, Panggilan, Pengaturan) dan **navbar bawah oval yang melayang + berkaca di hp**. Perpindahan panelnya dianimasikan halus, dan di hp percakapan dibuka sebagai halaman penuh (navbar ikut menghilang). |
+| **Panggilan** | Suara, video, dan bagikan layar 1:1 lewat WebRTC. Nyalakan kamera di tengah panggilan suara tanpa renegosiasi. Riwayat panggilan (masuk/keluar, video, durasi) tersimpan di panel **Panggilan** — di perangkat sendiri, bukan di server. |
+| **Status** | Teks atau foto, hilang sendiri setelah 24 jam. Isinya tetap terenkripsi end-to-end, dan yang sudah dilihat ditandai cincin. **Status cuma bisa dilihat orang yang sudah pernah chat** — kuncinya nggak pernah dibungkus buat orang lain, dan sisi penerimanya juga menyaring. |
+| **Pengaturan** | Satu panel berisi profil (foto + username), sakelar notifikasi, dan tombol **Keluar** — bukan lagi modal terpisah atau tombol di header chat. |
 | **Profil** | Username unik + foto profil yang bisa diganti dari Pengaturan. Foto profil **nggak** dienkripsi (memang buat dilihat orang) — lihat catatan di bawah. |
 | **Kontak** | Chat cuma bisa dibuka setelah kontaknya dicari lewat email, nomor HP, atau @username. Pencocokan dikerjakan server, dan hasilnya tetap ketemu walau orangnya offline. Nomor HP **nggak** lagi disiarkan ke semua klien. |
 | **Laporan** | Dari header chat: pilih alasan (spam, pelecehan, penipuan, akun palsu, lainnya) + catatan. Yang terkirim cuma yang kamu tulis — isi chat nggak ikut. |
 | **Halaman admin** | `/admin.html`: baca laporan, tandai selesai/abaikan, cari pengguna, **blokir** dan **buka blokir**. Blokir ditegakkan server: sesi yang sedang jalan langsung ditendang. |
-| **Login** | Google atau nomor HP (OTP SMS) lewat Firebase Authentication. |
+| **Login** | Google lewat Firebase Authentication. (Login nomor HP/OTP SMS dibuang: itu paket berbayar Firebase, jadi nggak pernah jalan di project free.) |
 | **Verifikasi** | Safety number ala WhatsApp buat mastiin nggak ada kunci yang disisipin. |
+| **Notifikasi** | Pesan baru muncul sebagai notifikasi sistem plus **balas langsung dari notifikasi** (kolom balas di notifikasi didukung Chrome Android; di desktop klik notifikasi membuka chatnya dan langsung fokus ke kolom ketik). Dinyalakan dari **Pengaturan → Notifikasi pesan**, dan cuma muncul kalau percakapannya memang nggak sedang dibaca. |
+| **Tampilan** | Mengikuti **`DESIGN.md`** (sistem desain By Chat): permukaan putih `#ffffff` di atas kanvas `#f7f8fa`, satu warna aksi By Chat Blue `#2563eb`, tombol & input 8px, kartu dan gelembung 16px, huruf Inter. Lihat bagian [Tampilan](#tampilan-mengikuti-designmd). |
 
 ## Setup buat server beneran
 
@@ -58,7 +62,9 @@ kode 1 selama masih ada kunci wajib yang belum benar.
 ### 1. Login — Firebase Authentication
 
 1. Bikin project di <https://console.firebase.google.com>.
-2. **Authentication → Sign-in method**: aktifkan **Google** dan **Phone**.
+2. **Authentication → Sign-in method**: aktifkan **Google**. Login nomor HP/OTP SMS nggak dipakai —
+   itu fitur berbayar Firebase (butuh upgrade plan + reCAPTCHA), jadi jalurnya sudah dibuang dari
+   UI maupun klien dan yang tersisa cuma Google (atau mode dev untuk lokal).
 3. **Project settings → Your apps** → daftarkan Web app, salin config-nya ke
    `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID`,
    `FIREBASE_MESSAGING_SENDER_ID`.
@@ -168,7 +174,7 @@ Kalau lebih suka mengisi satu per satu, ini asal tiap nilainya:
 | `FIREBASE_SERVICE_ACCOUNT` | nilai satu baris di `.env` (lihat langkah 1 di atas) |
 | `SUPABASE_URL` | Supabase → Project settings → API |
 | `SUPABASE_SERVICE_ROLE_KEY` | Secret key Supabase (bukan publishable) |
-| `ADMIN_EMAILS` | Email kamu (akun Google buat buka `/admin.html`). Boleh beberapa, pisahkan dengan koma. Login pakai nomor HP? Isi `ADMIN_UIDS` di dashboard Render dengan uid dari aplikasi → Pengaturan. |
+| `ADMIN_EMAILS` | Email kamu (akun Google buat buka `/admin.html`). Boleh beberapa, pisahkan dengan koma. `ADMIN_UIDS` tetap ada kalau mau menunjuk admin lewat uid (mis. akun mode dev). |
 
 Sesudah jalan, server ini menyimpan beberapa hal di luar memori: **blob lampiran** terenkripsi
 (lewat Supabase), **daftar username**, **foto profil**, **daftar blokir + laporan**, dan
@@ -267,19 +273,81 @@ moderation.js      Laporan pengguna + daftar blokir, disimpan permanen.
 accounts.js        Indeks email/nomor HP buat mencari kontak yang belum pernah online.
 server.js          Relay + direktori kunci + endpoint lampiran + signaling + endpoint admin.
 public/crypto.js   Semua primitif E2EE. Pakai WebCrypto, jalan di browser dan Node.
-public/auth-client.js  Login Google / OTP nomor HP / dev.
+public/auth-client.js  Login Google / dev.
 public/files.js    Enkripsi, upload, unduh, dekripsi lampiran.
 public/call.js     WebRTC 1:1: suara, video, layar.
 public/app.js      UI + orkestrasi.
+public/index.html  Kerangka halaman chat.
+public/style.css   Seluruh tampilan; nilainya diambil dari DESIGN.md.
+public/notifications.js  Izin + tampilan notifikasi, dan pengambilan balasan yang dititipkan.
+public/sw.js       Service worker: menampilkan notifikasi, meneruskan aksi balas/buka.
+public/manifest.webmanifest  Identitas aplikasi (nama, ikon, warna) buat notifikasi & pemasangan.
 public/admin.html  Halaman admin (laporan + blokir).
 public/admin.js    Ambil data admin lewat REST dan render; nggak buka socket.
+DESIGN.md          Sistem desain yang dipakai UI (warna, huruf, bentuk).
 ```
+
+## Tampilan (mengikuti `DESIGN.md`)
+
+UI-nya sengaja nggak punya bahasa desain sendiri: semua warna, bentuk, dan hurufnya diambil dari
+`DESIGN.md`, dan token itu dipasang sebagai CSS custom property di `public/style.css` supaya
+cuma ada satu sumber nilai.
+
+| Token `DESIGN.md` | Nilai | Dipakai untuk |
+|---|---|---|
+| `{colors.primary}` | `#2563eb` | satu-satunya tombol biru, tautan, indikator aktif, baris terpilih |
+| `{colors.primary-soft}` | `#e8f0ff` | gelembung pesan sendiri (biru pucat, teks tetap ink) |
+| `{colors.primary-tint}` | `#eff6ff` | baris chat terpilih, latar kutipan balasan, strip balas |
+| `{colors.ink}` / `{colors.text-muted}` | `#17202a` / `#687385` | teks utama, lalu jam dan label sekunder |
+| `{colors.canvas}` / `{colors.paper}` | `#ffffff` | sidebar, header chat, area percakapan, kartu |
+| `{colors.cloud}` / `{colors.fog}` | `#f7f8fa` / `#eef1f5` | latar aplikasi, halaman login, hover netral |
+| `{colors.border}` | `#e4e8ef` | garis rambut 1px: pembatas panel, kolom isian, kolom ketik |
+| `{colors.danger}` / `{colors.success}` / `{colors.warning}` | `#dc2626` / `#15803d` / `#b45309` | hapus–laporkan–tolak, online/berhasil, laporan menunggu |
+| `{rounded.md}` / `{rounded.lg}` / `{rounded.xl}` | `8px` / `12px` / `16px` | tombol & input, panel & menu, kartu & gelembung pesan |
+
+Hurufnya **Inter** dari Google Fonts. Kalau fontnya gagal dimuat, rangkaian fallback di
+`style.css` tetap menampilkan halaman dengan benar; nggak ada tata letak yang bergantung pada
+font itu.
+
+Yang dipakai sebagai satu-satunya permukaan gelap cuma `{colors.ink-surface}` — layar panggilan,
+penampil media, dan status selayar penuh. Sidebar, header chat, halaman admin, dan kartu login
+semuanya permukaan putih dengan garis rambut, sesuai `DESIGN.md` yang bilang biru dan ink itu
+warna aksi/aksen, bukan latar besar.
+
+Satu penyimpangan yang disengaja dari `DESIGN.md`: **avatar bulat penuh**. Bentuk bulat memang yang
+diminta produk, jadi itulah yang dipakai (dan itulah yang diperiksa tes browser). Sisa tokennya —
+warna, huruf, ukuran sudut tombol/kartu, cincin status — tetap ikut `DESIGN.md`.
+
+Yang **sengaja nggak ada**, karena `DESIGN.md` melarangnya: gradasi dekoratif, glow, blob latar
+beranimasi, bayangan di setiap panel, dan warna saturasi kedua di layar. Chevron biru yang
+sebelumnya mengapit kartu login sudah dibuang: `DESIGN.md` bilang aplikasi chat nggak butuh
+grafik hero dekoratif.
+
+### Menu & perpindahan panel
+
+Bagian **App Shell** di `DESIGN.md` yang mengatur rail dan navbar bawah ini; nilainya tetap dari
+token yang sama. Susunannya mengikuti pola aplikasi pesan yang sudah dikenal orang:
+
+| Bagian | Desktop (>=761px) | HP (<=760px) |
+|---|---|---|
+| Menu utama | **rail** 76px di kolom paling kiri: logo, Chat, Status, Panggilan, Pengaturan, lalu avatar | **navbar bawah oval** yang melayang di atas isi |
+| Kolom daftar | satu kolom untuk panel yang aktif, dipisahkan garis rambut 1px | panelnya penuh layar, satu panel per layar |
+| Percakapan | kolom paling kanan, selalu terlihat | halaman penuh; navbar ikut menghilang dan tombol kembali mengembalikan ke daftar |
+| Keluar & pengaturan | panel Pengaturan | panel Pengaturan |
+
+Yang aktif ditandai permukaan putih (rail) atau `{colors.primary-tint}` (navbar), dan tiap
+perpindahan panel memakai animasi masuk yang singkat (`view-in`, 240ms) plus transisi warna di
+tombol menu. Navbar bawahnya satu-satunya tempat yang memakai efek kaca —
+`backdrop-filter: blur(20px)`, latar putih transparan, sudut `{rounded.pill}`, dan bayangan
+melayang: itu yang bikin kelihatan seperti navbar WhatsApp di iPhone. Kalau browsernya nggak
+mendukung `backdrop-filter`, yang terlihat cuma latar putih semi-transparan — tetap terbaca,
+cuma tanpa efek buram.
 
 ## Testing
 
 ```
-npm test              # 94 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling, tooling
-npm run test:browser  # 174 cek: UI asli di Chrome, termasuk panggilan WebRTC beneran
+npm test              # 95 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling, aset notifikasi, tooling
+npm run test:browser  # 243 cek: UI asli di Chrome, termasuk panggilan WebRTC, notifikasi, dan navbar hp
 CALL_DEBUG=1 npm run test:browser   # nyalain jejak negosiasi WebRTC di console
 ```
 
@@ -319,6 +387,10 @@ tanpa pindah tab (dimensi + byte hasil dekripsi dicek di dalam penampilnya).
 Video ikut diuji dengan file asli: browser di jalur tes ini merekam sendiri video WebM dari
 canvas, lalu memastikan penerimanya bisa membukanya di pemutar selayar penuh — dengan kontrol,
 ter-dekode (`videoWidth > 0`), dan tanpa berpindah halaman atau membuka tab baru.
+Rekamannya diulang sampai tiga kali kalau hasilnya cuma header WebM: `captureStream()` di Chrome
+headless kadang hanya mengirim satu frame ketika mesin sedang sibuk (ukurannya lompat antara
+~2.000 dan ~11.000 karakter base64). Syarat lulusnya tetap `> 2000`; yang diulang alat rekamnya,
+bukan pemeriksaannya.
 
 Soal panggilan, yang diperiksa bukan cuma "track-nya ada": energinya diukur pakai `AnalyserNode`
 — mikrofon sendiri dan suara lawan bicara — plus elemen pemutarnya harus benar-benar berjalan
@@ -326,67 +398,73 @@ Soal panggilan, yang diperiksa bukan cuma "track-nya ada": energinya diukur paka
 "panggilan tersambung tapi senyap": elemen audionya berhenti di keadaan paused, jadi tidak ada
 suara yang keluar walau semua track hidup.
 
-## Batasan — baca ini
+Yang juga diperiksa di jalur yang sama: jalur login nomor HP benar-benar hilang dari DOM (nggak
+cuma disembunyikan) sementara tombol Google tetap ada, dan panel **Pengaturan** nggak lagi
+memampangkan uid, driver penyimpanan, relay panggilan, atau peringatan private key.
 
-Kriptonya beneran, tapi ini masih belum siap buat data yang beneran sensitif:
+Aturan status juga diuji dari dua sisi dalam satu jalur: sebelum Andi dan Budi pernah chat, daftar
+penerima statusnya harus cuma berisi dirinya sendiri, sidebar Budi harus tetap kosong, dan satu
+klien mentah (socket.io tanpa UI) sengaja mengirim status ke Budi dari akun asing — sisi penerima
+harus tetap mengabaikannya. Sesudah mereka bertukar pesan, status yang baru harus sampai dan bisa
+dibuka Budi. Jadi "status cuma buat yang sudah pernah chat" bukan cuma niat di kode.
 
-- **Belum ada forward secrecy.** Kunci identitas statis. Kalau private key bocor, pesan
-  lama yang ciphertext-nya sempat direkam bisa dibuka. Butuh Double Ratchet.
-- **Private key disimpan polos di `localStorage`.** Belum dienkripsi pakai password.
-- **Server tetap otoritas kunci.** Kalau server jahat, dia bisa nukar public key (MITM).
-  Mitigasinya cuma safety number manual; belum ada peringatan otomatis (TOFU).
-- **Belum ada proteksi replay** dan nggak ada nomor urut pesan, jadi relay bisa mengirim
-  ulang envelope lama.
-- **Metadata bocor**: siapa ngobrol sama siapa, kapan, panjang pesan (nggak di-padding),
-  dan siapa menelepon siapa.
-- **Grup tanpa kontrol akses.** Daftar anggota dikirim dari client dan dipercaya; nggak ada
-  admin, nggak bisa nambah/hapus anggota setelah grup dibikin.
-- **Panggilan cuma 1:1.** Panggilan grup butuh SFU, itu pekerjaan terpisah. Pemutaran suara
-  panggilan dimulai eksplisit (`play()`), dan kalau browser menolaknya karena kebijakan autoplay,
-  pengguna diminta mengetuk layar panggilan sekali — ketukan itu memicu percobaan ulang. Diverifikasi
-  di Chrome; Safari/iOS belum.
-- **TURN belum dikonfigurasi secara default.** Tanpa TURN, sebagian panggilan di jaringan
-  ketat/CGNAT bisa gagal tersambung (bukan senyap — memang tidak tersambung).
-- **Nggak ada multi-device.** Satu akun aktif di satu jendela; login di tempat lain bikin
-  sesi lama berhenti. Belum ada panggilan dengan lampiran gambar besar; belum ada voice
-  note, edit pesan, atau pencarian dalam chat.
-- **"Hapus untuk semua orang" diperiksa server, tapi cuma sampai restart.** Server menyimpan
-  siapa pengirim sebuah id pesan (bukan isinya), jadi orang lain memang nggak bisa menghapus
-  pesanmu. Catatan itu hidup di memori, jadi setelah server restart penghapusan untuk semua
-  orang ditolak dan yang tersisa cuma "hapus untuk saya". Penerima yang **sedang offline** tetap
-  dapat kabarnya, karena kabar itu ikut mengantre seperti pesan biasa.
-- **Reaksi, bintang, dan "hapus untuk saya" disimpan di perangkat masing-masing.** Reaksi
-  dikirim sebagai pesan terenkripsi (jadi server tetap nggak tahu emoji-nya) dan berlaku untuk
-  satu akun satu pesan; bintang cuma ada di hp/PC kamu sendiri.
-- **Balasan mengutip potongan teks, bukan menyalin riwayat.** Kutipannya ikut di dalam pesan
-  terenkripsi (nama pengirimnya dihitung ulang di tiap perangkat), jadi wajar saja kalau
-  kutipan bilang "Pesan ini sudah dihapus" ketika aslinya sudah dihapus.
-- **Status cuma hidup di memori server.** Dia hilang kalau server restart (jatah 24 jamnya juga
-  ikut hilang). Username dan foto profil tidak, karena keduanya disimpan permanen.
-- **Status dibagikan ke semua kontak.** Audience-nya seluruh isi direktori, sama seperti
-  "kontak saya" di aplikasi lain — belum ada pilihan per orang.
-- **Nggak ada daftar "siapa yang sudah melihat statusku".** Yang tersimpan cuma status
-  *kamu* sudah membuka yang mana, dan itu di perangkatmu sendiri, bukan di server.
-- **Foto profil nggak dienkripsi** dan siapa pun yang tahu URL-nya bisa membukanya.
-- **Rate limiting masih tipis.** Pencarian kontak dibatasi 30 kali per menit per koneksi dan
-  laporan 10 per jam per akun; relay pesan dan endpoint lampiran belum dibatasi sama sekali.
-- **Mencari kontak cuma menemukan orang yang pernah login.** Server cuma mengenal akun yang
-  pernah menyapa — email harus sama persis, dan nomor HP dicocokkan pada 9 angka terakhir (jadi
-  `+62 812…` dan `0812…` menemukan orang yang sama). Di mode dev nggak ada email/nomor dari
-  penyedia login, jadi yang bisa dipakai cuma `@username`.
-- **Laporan cuma bisa soal akun, bukan potongan percakapan.** Tombol Laporkan ada di chat pribadi,
-  dan yang terkirim ke admin adalah alasan + tulisan pelapornya. Admin tetap nggak bisa membuka
-  chat yang dilaporkan.
-- **Halaman admin menyegarkan sendiri tiap 15 detik, bukan langsung.** Halaman itu sengaja nggak
-  membuka socket: server cuma mengizinkan satu sesi hidup per akun, jadi kalau menyambung, tab
-  chat milik admin sendiri yang tertendang.
-- **Admin ditentukan env, bukan aplikasi.** `ADMIN_EMAILS` (email) atau `ADMIN_UIDS` (uid). Akun
-  yang ada di daftar itu nggak bisa diblokir dari halaman admin — harus dihapus dulu dari env.
-- **Blokir berlaku per akun**, bukan perangkat atau per IP: orangnya cukup bikin akun baru buat
-  kembali masuk.
-- **State server in-memory** (direktori kunci + antrian offline); restart = antrian hilang.
-  token dev yang berisi email/nomor. Email yang datang dari Google/Firebase baru akan terlihat
-  setelah `.env` terisi — login Google, lalu coba cari akun itu dari akun lain.
-- **Halaman admin di jalur Firebase.** Yang diuji di sini jalur dev, yang mengenali admin dari
-  uid. Di produksi admin dikenali dari email di ID token; setelah `ADMIN_EMAILS` diisi, buka
-  `/admin.html` dan pastikan dasbornya muncul, bukan layar "bukan admin".
+Notifikasi diuji sebagai alur yang utuh, bukan cuma keberadaan tombolnya: tesnya menyalakan
+sakelarnya dari **Pengaturan** (izinnya diberikan di level browser, karena dialog izin nggak bisa
+diklik otomatis), memastikan service workernya terpasang di scope `/`, lalu membuat Andi pindah ke
+percakapan lain supaya pesan Budi yang masuk benar-benar **muncul sebagai notifikasi** —
+dicek langsung di daftar notifikasi Chrome (`registration.getNotifications()`), lengkap dengan
+nama pengirim, isi pesan, id percakapan yang harus dibuka, pemilik notifikasinya, dan tombol balas.
+Aksi balas itu lalu dipanggil pada **service worker yang sedang jalan**
+(`self.bychatNotificationClick`, jalur yang sama dengan klik notifikasi di OS), dan hasilnya harus
+sampai ke Budi lewat jalur enkripsi biasa — dicek dari sisi yang benar: gelembung keluar di layar
+Andi, gelembung masuk di layar Budi.
+Terakhir, pesan berikutnya dikirim saat Andi **sedang membaca** percakapan itu — di situ nggak
+boleh ada notifikasi baru.
+
+Menunya juga diuji sebagai perilaku, bukan cuma keberadaan tombolnya: `checkShell` menekan tiap
+menu lewat jalur yang benar-benar dipakai orang (rail di desktop, navbar di hp), lalu memastikan
+panelnya terbuka, cuma panel itu yang tampil, tombolnya bertanda aktif, dan animasi masuknya
+benar-benar terpasang. Di layar hp, navbar bawahnya diperiksa dengan angka dari browser:
+`border-radius: 9999px`, `position: fixed`, `backdrop-filter: blur(...)` dengan latar putih
+transparan, masih di dalam layar, dan menyisakan jarak dari tepi bawah (jadi memang melayang,
+bukan menempel). Riwayat panggilan juga diperiksa setelah panggilan sungguhan: entrinya muncul di
+panel Panggilan dengan arah dan durasinya.
+
+Tampilannya juga ikut diuji, bukan cuma dijelaskan di dokumen: `verifyDesignSystem` di
+`browser-check.mjs` membaca **gaya yang benar-benar dihitung browser** di dua halaman sekaligus
+(pengirim dan penerima) dan mencocokkannya dengan `DESIGN.md` — token warna, latar aplikasi
+`#f7f8fa` yang permukaannya rata tanpa gradasi, huruf Inter, CTA `#2563eb` bersudut 8px dengan label huruf
+biasa (bukan kapital), input 8px setinggi 44px, sidebar & kakinya permukaan putih dengan garis
+rambut (bukan slab gelap), permukaan percakapan putih, baris terpilih `#eff6ff`, kartu 16px dengan
+bayangan melayang, avatar bulat penuh, dan gelembung pesan sendiri yang biru pucat `#e8f0ff`
+dengan teks ink sementara gelembung lawan tetap putih — dua-duanya dengan ekor 4px. Halaman login
+juga ikut diperiksa: kartu putih 16px di atas kanvas `#f7f8fa`, tanpa strip gelap atau chevron, dan
+label tombolnya bukan kapital lagi. Jadi kalau ada
+yang mengembalikan tema gelap bergradasi atau label kapital, jalur tes ini yang gagal lebih dulu.
+
+## Notifikasi
+
+Notifikasi dinyalakan dari **Pengaturan → Notifikasi pesan**. Izinnya diminta ke browser saat kamu
+menekan tombolnya, dan pilihannya disimpan per perangkat, jadi sehabis muat ulang halaman tinggal
+jalan lagi (tanpa nanya dua kali). Tidak perlu konfigurasi server sama sekali.
+
+Cara kerjanya:
+
+1. Pesan yang sudah **didekripsi di halaman** dicek: kalau percakapannya sedang kamu buka dan
+   jendelanya aktif, nggak ada notifikasi sama sekali.
+2. Kalau nggak, halaman mengirim judul + cuplikan ke service worker (`public/sw.js`), dan service
+   worker yang menampilkannya. **Kuncinya nggak pernah masuk ke service worker** — dia cuma
+   memegang teks yang sudah jadi.
+3. Klik notifikasi → service worker mengirim pesan ke jendela aplikasi (atau membukanya di
+   `/?chat=<id>` kalau aplikasinya belum jalan), lalu chatnya terbuka.
+4. Balasan: kalau browsernya mendukung kolom balas di notifikasi (Chrome Android, lewat
+   `actions` bertipe `text`), teks yang kamu ketik diteruskan ke halaman, dienkripsi di sana, dan
+   dikirim seperti pesan biasa. Kalau jendela aplikasinya sedang tertutup, teks itu dititipkan
+   dulu di Cache Storage (maksimal 10 menit) dan dikirim begitu aplikasinya tersambung — jadi
+   balasan nggak hilang. Di **Chrome desktop** kolom balas di notifikasi belum didukung browser,
+   jadi klik notifikasinya yang membuka chat dan langsung memfokuskan kolom ketik.
+
+Catatan: notifikasi butuh *secure context*, jadi jalan di `localhost` atau di domain HTTPS (lihat
+bagian [HTTPS](#4-https)). Kalau izinnya pernah kamu blokir, tombol di Pengaturan berubah jadi
+"Diblokir browser" — izinnya harus dibuka lagi dari pengaturan situs di browser, bukan dari
+aplikasi ini.
