@@ -5,7 +5,8 @@ Aplikasi chat dengan **end-to-end encryption** yang beneran — pesan, **file**,
 private key siapa pun, nggak bisa baca isi pesan, nggak bisa buka isi file, dan nggak pernah
 menyentuh audio/video.
 
-Setiap akun harus **mengklaim satu username** setelah login. Nama itu unik dan dijaga server:
+Setiap akun harus **mengklaim satu username** setelah login. Huruf besar/kecil didukung dan
+tampil apa adanya (`XenaboutYou` tetap `XenaboutYou`), tapi nama itu unik dan dijaga server:
 `Andi` dan `andi` dianggap sama, dan begitu juga `a.n.d.i` — supaya nggak ada yang bisa nyamar
 mirip orang lain.
 

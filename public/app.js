@@ -259,11 +259,14 @@ const peerByUid = (uid) => state.directory.find((u) => u.uid === uid);
 
 /*
  * Avatar colour is derived from the name, so the same person is always the same
- * colour — you recognise a contact before you finish reading the name.
+ * colour — you recognise a contact before you finish reading the name. Casing is
+ * folded away: fixing the capitals shouldn't repaint someone's avatar.
  */
 function nameHue(name) {
   let hue = 0;
-  for (const char of String(name)) hue = (hue * 31 + char.codePointAt(0)) % 360;
+  for (const char of String(name).toLowerCase()) {
+    hue = (hue * 31 + char.codePointAt(0)) % 360;
+  }
   return hue;
 }
 

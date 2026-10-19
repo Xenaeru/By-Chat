@@ -409,6 +409,40 @@ test('a taken username is refused, even with different case or with dots', async
   other.close();
 });
 
+test('capitals are shown as typed, while the name stays unique and searchable', async () => {
+  const owner = await new Client('owner', { claimUsername: false }).init();
+  const claimed = await owner.claim('XenaboutYou');
+  assert.equal(claimed.ok, true, claimed.error);
+  assert.equal(claimed.username, 'XenaboutYou', 'server menyimpan ejaan yang diketik');
+
+  const finder = await new Client('finder').init();
+  await sleep(80);
+
+  // Orang lain melihat ejaan aslinya di direktori...
+  const seen = finder.directory.find((u) => u.uid === owner.uid);
+  assert.equal(seen?.displayName, 'XenaboutYou', JSON.stringify(finder.directory));
+
+  // ...dan bisa menemukannya walau mengetik besar/kecil seenaknya.
+  const found = await finder.lookup('@xenABOUTyou');
+  assert.equal(found.ok, true, found.error);
+  assert.equal(found.results[0]?.uid, owner.uid, JSON.stringify(found.results));
+  assert.equal(found.results[0]?.username, 'XenaboutYou');
+
+  // Pemiliknya boleh membetulkan ejaannya dari Pengaturan, dan yang lain tetap
+  // tidak bisa memakai nama yang sama dengan ejaan apa pun.
+  const renamed = await owner.rename('Xenaboutyou');
+  assert.equal(renamed.ok, true, renamed.error);
+  assert.equal(renamed.username, 'Xenaboutyou');
+  assert.equal((await finder.claim('xenaboutyou')).ok, false);
+
+  await sleep(80);
+  const afterRename = await finder.lookup('@XENABOUTYOU');
+  assert.equal(afterRename.results[0]?.username, 'Xenaboutyou');
+
+  owner.close();
+  finder.close();
+});
+
 test('renaming runs through the same namespace, so it cannot steal a name', async () => {
   const one = await new Client('candra', { claimUsername: false }).init();
   const two = await new Client('dewi', { claimUsername: false }).init();

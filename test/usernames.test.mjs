@@ -29,9 +29,43 @@ async function registryIn(dir) {
   return registry;
 }
 
-test('a username is normalised to lowercase and trimmed', () => {
-  assert.equal(normalizeUsername('  Andi  '), 'andi');
+test('a username is trimmed but keeps its capitals, while the key folds them', () => {
+  assert.equal(normalizeUsername('  Andi  '), 'Andi');
+  assert.equal(normalizeUsername('ANDI'), 'ANDI');
   assert.equal(usernameKey('A.n_d-i'), 'andi');
+});
+
+test('capitals are kept as typed and still do not create a second name', async () => {
+  const dir = tempDir();
+  const registry = await registryIn(dir);
+
+  assert.equal((await registry.claim('  Andi  ', 'u-1')).username, 'Andi');
+  assert.equal(registry.get('u-1'), 'Andi', 'yang dilihat orang lain tetap "Andi"');
+  assert.equal(registry.ownerOf('ANDI'), 'u-1', 'pencarian tetap nggak peduli besar/kecil');
+  assert.equal(registry.takenBy('aNdI', 'u-2'), 'Andi');
+  assert.equal((await registry.claim('andi', 'u-2')).ok, false, 'nama yang sama cuma beda besar/kecil');
+
+  const check = registry.check('ANDI', 'u-1');
+  assert.equal(check.ok, true, 'pemiliknya boleh memakai nama itu');
+  assert.equal(check.username, 'ANDI');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('an owner can change only the capitals, and the new spelling is saved', async () => {
+  const dir = tempDir();
+  const registry = await registryIn(dir);
+
+  await registry.claim('xenaboutyou', 'u-1');
+  const fixed = await registry.claim('XenaboutYou', 'u-1');
+  assert.equal(fixed.ok, true);
+  assert.equal(fixed.unchanged, undefined, 'ejaan baru itu perubahan, bukan klaim ulang');
+  assert.equal(registry.get('u-1'), 'XenaboutYou');
+  assert.equal((await registry.claim('xenaboutyou', 'u-2')).ok, false, 'klaim tetap dipegang');
+
+  const restarted = await registryIn(dir);
+  assert.equal(restarted.get('u-1'), 'XenaboutYou', 'ejaan baru bertahan setelah restart');
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('the shape rules are enforced with a message a person can act on', () => {
@@ -70,12 +104,12 @@ test('a name that only differs by separators or case cannot shadow another', asy
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('claiming the same name again by its owner is allowed and changes nothing', async () => {
+test('claiming the exact same name again by its owner changes nothing', async () => {
   const dir = tempDir();
   const registry = await registryIn(dir);
 
   await registry.claim('sinta', 'u-1');
-  const again = await registry.claim('SINTA', 'u-1');
+  const again = await registry.claim('sinta', 'u-1');
   assert.equal(again.ok, true);
   assert.equal(again.unchanged, true, 'klaim ulang oleh pemiliknya bukan perubahan');
   assert.equal(again.username, 'sinta');

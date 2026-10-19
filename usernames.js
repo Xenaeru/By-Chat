@@ -9,7 +9,8 @@
  *
  * Two rules matter more than they look:
  *
- *   - Comparison is case-insensitive, so "Andi" cannot shadow "andi".
+ *   - Comparison is case-insensitive, so "Andi" cannot shadow "andi". Casing
+ *     itself is kept, though: someone who writes "Andi" is shown as "Andi".
  *   - Names that differ only by separators are the same name, so "a.n.d.i"
  *     cannot shadow "andi". Without this, impersonation is trivial.
  *
@@ -33,16 +34,19 @@ const RESERVED = new Set([
   'security', 'verify', 'verified', 'announcement', 'broadcast',
 ]);
 
-export const normalizeUsername = (raw) => String(raw ?? '').trim().toLowerCase();
+/** Trimmed, still with the casing the person typed — that is what others see. */
+export const normalizeUsername = (raw) => String(raw ?? '').trim();
 
 /**
- * The comparison key. Keeps only characters that carry meaning in a name, so
- * separators can never be used to smuggle a lookalike name in next to a
- * real one.
+ * The comparison key. Case-folded, and only characters that carry meaning in a
+ * name are kept, so neither capitals nor separators can smuggle a lookalike
+ * name in next to a real one.
  */
-export const usernameKey = (raw) => normalizeUsername(raw).replace(/[._-]/g, '');
+export const usernameKey = (raw) =>
+  normalizeUsername(raw).toLowerCase().replace(/[._-]/g, '');
 
-const PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])$/;
+// Uppercase is allowed *and kept*; only the comparison folds it away.
+const PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])$/;
 
 /**
  * Returns { ok: true, name } or { ok: false, error }. The error is written to
@@ -56,7 +60,7 @@ export function validateUsername(raw) {
   if (!PATTERN.test(name)) {
     return {
       ok: false,
-      error: 'Pakai huruf kecil, angka, titik, garis bawah, atau strip. Harus mulai dan berakhir dengan huruf/angka.',
+      error: 'Pakai huruf besar/kecil, angka, titik, garis bawah, atau strip. Harus mulai dan berakhir dengan huruf/angka.',
     };
   }
   if (RESERVED.has(usernameKey(name))) return { ok: false, error: 'Username ini dipakai sistem.' };
@@ -69,7 +73,10 @@ export function validateUsername(raw) {
  * lookalike of a name somebody else holds.
  */
 export function suggestUsername(raw, isTaken) {
+  // Saran ditulis huruf kecil biar rapi; keunikan tetap dicek tanpa peduli
+  // besar/kecil lewat pemanggil `isTaken`.
   const base = normalizeUsername(raw)
+    .toLowerCase()
     .replace(/[^a-z0-9]+/g, '')
     .slice(0, MAX_LENGTH);
 
@@ -243,7 +250,13 @@ export async function createUsernameRegistry({ store = null } = {}) {
 
       const current = byUid.get(uid);
       if (current && usernameKey(current) === usernameKey(check.name)) {
-        return { ok: true, username: current, unchanged: true };
+        // Nama yang sama, cuma beda ejaan besar/kecil: pemiliknya boleh
+        // membetulkan tampilannya tanpa kehilangan klaimnya.
+        if (current === check.name) return { ok: true, username: current, unchanged: true };
+        byKey.set(usernameKey(check.name), check.name);
+        byUid.set(uid, check.name);
+        await persist();
+        return { ok: true, username: check.name };
       }
       if (this.takenBy(check.name, uid)) {
         return {

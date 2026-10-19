@@ -923,6 +923,39 @@ async function checkPhotoAndStatus(andi, budi) {
     !/Akun:|Penyimpanan file|Relay panggilan|Private key kamu/i.test(settingsText),
     settingsText.slice(0, 160).replace(/\s+/g, ' ')
   );
+  /* ---- Huruf besar di username ---- */
+  // Jalur yang dipakai orang: ketik di Pengaturan → Simpan. Server harus
+  // menyimpan ejaannya, bukan menurunkannya jadi huruf kecil.
+  const saveName = async (value, expected) => {
+    await andi.page.$eval('#display-name', (field, next) => {
+      field.value = next;
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    }, value);
+    await andi.page.click('#panel-settings [data-save]');
+    await andi.page.waitForFunction(
+      (name) => document.querySelector('#me-name')?.textContent === name,
+      { timeout: 10000 },
+      expected
+    );
+    return andi.page.evaluate(() => ({
+      name: document.querySelector('#me-name').textContent,
+      tag: document.querySelector('[data-name-tag]')?.textContent || '',
+      field: document.querySelector('#display-name').value,
+    }));
+  };
+
+  const capitalised = await saveName('Andi', 'Andi');
+  check(
+    'Username dengan huruf besar tampil apa adanya setelah Simpan',
+    capitalised.name === 'Andi' && capitalised.field === 'Andi' && capitalised.tag === '@Andi',
+    JSON.stringify(capitalised)
+  );
+
+  // Balikkan ke huruf kecil, supaya pemeriksaan lain tetap memakai nama yang
+  // sama dengan yang dipakai login.
+  const restored = await saveName('andi', 'andi');
+  check('Ejaan username bisa dibetulkan lagi tanpa kehilangan nama', restored.tag === '@andi');
+
   const avatarInput = await andi.page.$('#avatar-input');
   await avatarInput.uploadFile(png);
   await andi.page.waitForFunction(
