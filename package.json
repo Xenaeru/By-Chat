@@ -22,7 +22,8 @@
     "@supabase/supabase-js": "^2.117.3",
     "express": "^4.19.2",
     "firebase-admin": "^14.5.0",
-    "socket.io": "^4.7.5"
+    "socket.io": "^4.7.5",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "puppeteer-core": "^25.13.0",

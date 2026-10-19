@@ -1766,25 +1766,39 @@ try {
   await budi.page.click('#btn-accept');
 
   await Promise.all([
-    andi.page.waitForFunction(() => document.querySelector('#call-placeholder')?.hidden === true, {
-      timeout: 30000,
-    }),
-    budi.page.waitForFunction(() => document.querySelector('#call-placeholder')?.hidden === true, {
-      timeout: 30000,
-    }),
+    andi.page.waitForFunction(
+      () =>
+        document.querySelector('#call-placeholder')?.hidden === true &&
+        window.__bychatCallState?.localStream?.getAudioTracks().length > 0,
+      { timeout: 30000 }
+    ),
+    budi.page.waitForFunction(
+      () =>
+        document.querySelector('#call-placeholder')?.hidden === true &&
+        window.__bychatCallState?.localStream?.getAudioTracks().length > 0,
+      { timeout: 30000 }
+    ),
   ]);
+  // Media baru benar-benar mengalir setelah negosiasi SDP/ICE selesai; tunggu
+  // sampai track lawan bicara muncul, bukan cuma sampai overlay terbuka.
+  const waitRemote = (page) =>
+    page.waitForFunction(
+      () => (window.__bychatCallState?.participants?.[0]?.stream?.getTracks().length || 0) >= 2,
+      { timeout: 30000 }
+    );
+  await Promise.all([waitRemote(andi.page), waitRemote(budi.page)]);
   check('Panggilan tersambung dan media mengalir kedua arah', true);
 
   const readCall = (page) =>
     page.evaluate(() => {
-      const remote = document.querySelector('#remote-video').srcObject;
+      const remote = document.querySelector('#call-grid video')?.srcObject;
       const local = document.querySelector('#local-video').srcObject;
       return {
         remoteTracks: remote ? remote.getTracks().map((t) => t.kind) : [],
         localTracks: local ? local.getTracks().map((t) => t.kind) : [],
         overlayVisible: getComputedStyle(document.querySelector('#call-overlay')).display !== 'none',
         peerLabel: document.querySelector('#call-name').textContent,
-        remoteVideoWidth: document.querySelector('#remote-video').videoWidth,
+        remoteVideoWidth: document.querySelector('#call-grid video')?.videoWidth || 0,
         remoteLive: remote ? remote.getTracks().some((t) => t.readyState === 'live') : false,
       };
     });
@@ -1827,7 +1841,7 @@ try {
         return Math.round(peak * 10000) / 10000;
       };
 
-      const remote = document.querySelector('#remote-video');
+      const remote = document.querySelector('#call-grid video');
       const local = document.querySelector('#local-video');
       return {
         paused: remote.paused,
@@ -1864,10 +1878,10 @@ try {
   // Panggilan suara tadi belum mengirim gambar. Nyalakan kamera Andi di tengah
   // panggilan: ini latihan langsung dari jalur 'ganti track tanpa renegosiasi'.
   await andi.page.click('#ctl-camera');
-  await budi.page.waitForFunction(() => document.querySelector('#remote-video').videoWidth > 0, {
+  await budi.page.waitForFunction(() => (document.querySelector('#call-grid video')?.videoWidth || 0) > 0, {
     timeout: 20000,
   });
-  const budiSeesVideo = await budi.page.evaluate(() => document.querySelector('#remote-video').videoWidth);
+  const budiSeesVideo = await budi.page.evaluate(() => document.querySelector('#call-grid video')?.videoWidth || 0);
   check('Kamera yang dinyalakan belakangan langsung terlihat lawan bicara', budiSeesVideo > 0, `lebar ${budiSeesVideo}`);
 
   // Toggling is asynchronous, so always wait for the UI to catch up instead of
@@ -1898,6 +1912,56 @@ try {
   await waitForCtl(andi.page, '#ctl-screen', false);
 
   await andi.page.click('#ctl-camera');
+
+  /* ---- 4b. Tambah orang ke panggilan yang sedang berjalan --------
+     Dua peserta sudah tersambung; orang ketiga diundang dari tombol +, dan
+     setiap pasangan harus punya koneksi sendiri (mesh). */
+  const carol = await login(browser, 'carol');
+  activeClients.carol = carol;
+  await sleep(600);
+
+  await andi.page.bringToFront();
+  await andi.page.click('#ctl-add');
+  await andi.page.waitForSelector('.add-person-row', { timeout: 15000 });
+  const offered = await andi.page.$$eval('.add-person-row', (nodes) =>
+    nodes.map((node) => node.textContent.replace(/\s+/g, ' ').trim())
+  );
+  const pickedCarol = await andi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('.add-person-row')].find((node) => /carol/i.test(node.textContent));
+    row?.click();
+    return Boolean(row);
+  });
+  check('Tombol tambah orang menawarkan kontak lain', pickedCarol === true, JSON.stringify(offered.slice(0, 4)));
+
+  await carol.page.waitForSelector('#incoming:not([hidden])', { timeout: 15000 });
+  check('Orang yang ditambahkan menerima undangan panggilan', true);
+  await carol.page.click('#btn-accept');
+
+  const rosterIsThree = (page) =>
+    page.waitForFunction(() => window.__bychatCallState?.participants?.length === 2, { timeout: 30000 });
+  await Promise.all([rosterIsThree(andi.page), rosterIsThree(budi.page), rosterIsThree(carol.page)]);
+
+  // Media harus sampai di semua pasangan, bukan cuma ke pemanggil pertama.
+  const meshMedia = (page) =>
+    page.waitForFunction(
+      () =>
+        (window.__bychatCallState?.participants || []).every(
+          (person) => (person.stream?.getTracks().length || 0) >= 2
+        ),
+      { timeout: 30000 }
+    );
+  await Promise.all([meshMedia(andi.page), meshMedia(budi.page), meshMedia(carol.page)]);
+  check('Panggilan grup: tiga orang saling terhubung dengan media', true);
+
+  // Keluar dari grup tidak boleh memutus panggilan dua orang yang tersisa.
+  await carol.page.click('#ctl-hangup');
+  await andi.page.waitForFunction(() => window.__bychatCallState?.participants?.length === 1, {
+    timeout: 15000,
+  });
+  check('Peserta bisa keluar tanpa memutus panggilan yang lain', true);
+  await carol.context.close();
+  await andi.page.bringToFront();
+
   await andi.page.click('#ctl-hangup');
   await andi.page.waitForFunction(() => document.querySelector('#call-overlay').hidden === true, { timeout: 15000 });
   await budi.page.waitForFunction(() => document.querySelector('#call-overlay').hidden === true, { timeout: 15000 });
@@ -1910,7 +1974,7 @@ try {
   );
   check(
     'Panggilan yang barusan tercatat di panel Panggilan',
-    callRows.length > 0 && /budi/i.test(callRows[0]),
+    callRows.length > 0 && /budi|grup/i.test(callRows[0]),
     JSON.stringify(callRows.slice(0, 2))
   );
   const callEntry = await andi.page.evaluate(() => {
@@ -1922,7 +1986,20 @@ try {
     /keluar/i.test(callEntry.text || '') && /dtk|mnt/i.test(callEntry.text || ''),
     JSON.stringify(callEntry)
   );
+
+  // Catatan panggilan juga harus ada di dalam percakapan, bukan cuma di panel.
   await goView(andi.page, 'chats');
+  await andi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('.chat-item')].find((node) => /budi/i.test(node.textContent));
+    row?.click();
+  });
+  await andi.page.waitForSelector('.msg-call', { timeout: 10000 });
+  const callBubble = await andi.page.$eval('.msg-call', (node) => node.textContent.replace(/\s+/g, ' ').trim());
+  check(
+    'Chat mencatat panggilan terjawab beserta durasinya',
+    /panggilan terjawab/i.test(callBubble) && /dtk|mnt/i.test(callBubble),
+    callBubble
+  );
 
   // Baru sekarang mereka "pernah chat", jadi status harus bisa sampai ke Budi.
   const statusText = await checkPhotoAndStatus(andi, budi);
@@ -2119,7 +2196,7 @@ try {
         status: document.querySelector('#call-status')?.textContent,
         overlay: document.querySelector('#call-overlay')?.hidden === false,
         incoming: document.querySelector('#incoming')?.hidden === false,
-        remoteTracks: document.querySelector('#remote-video')?.srcObject?.getTracks().length ?? 0,
+        remoteTracks: document.querySelector('#call-grid video')?.srcObject?.getTracks().length ?? 0,
         localTracks: document.querySelector('#local-video')?.srcObject?.getTracks().length ?? 0,
       }))
       .catch(() => null);

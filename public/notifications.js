@@ -30,6 +30,8 @@ const supported = () =>
 export function createNotifier({ onAction, onAccountUid } = {}) {
   let registration = null;
   let registering = null;
+  /** Token terakhir yang dipakai mendaftarkan push (dipakai saat mematikan). */
+  let pushToken = null;
 
   const readPrefs = () => {
     try {
@@ -72,7 +74,7 @@ export function createNotifier({ onAction, onAccountUid } = {}) {
       // Notifikasi punya pemiliknya sendiri: kalau jendela ini memakai akun
       // lain (dua akun dibuka berbarengan di satu browser), aksinya diabaikan.
       if (data.uid && onAccountUid && data.uid !== onAccountUid()) return;
-      deliver({ action: data.action || 'open', roomId: data.roomId, reply: data.reply || '' });
+      deliver({ action: data.action || 'open', roomId: data.roomId, reply: data.reply || '', callId: data.callId || null });
     });
   }
 
@@ -122,7 +124,70 @@ export function createNotifier({ onAction, onAccountUid } = {}) {
 
   function disable() {
     writePrefs({ ...readPrefs(), enabled: false });
+    // Lepas langganan push juga: kalau tidak, panggilan tetap berdering di
+    // perangkat ini walau notifikasinya sudah dimatikan.
+    unsubscribePush().catch(() => {});
     return { ok: true };
+  }
+
+  /* ---- Web Push: panggilan masuk saat halaman belum terbuka ---- */
+
+  /** VAPID public key datang dari server dalam bentuk base64url. */
+  function urlBase64ToUint8Array(base64) {
+    const padding = '='.repeat((4 - (String(base64).length % 4)) % 4);
+    const raw = atob((String(base64) + padding).replace(/-/g, '+').replace(/_/g, '/'));
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return bytes;
+  }
+
+  /**
+   * Daftarkan endpoint push browser ini ke server. Hanya berjalan kalau
+   * notifikasi memang sudah diizinkan dan service worker terpasang; tanpa itu
+   * tidak ada tempat untuk menerima notifikasi panggilan.
+   */
+  async function syncPush(publicKey, token) {
+    if (!supported() || !enabled() || !publicKey || !token) return false;
+    if (!('PushManager' in window)) return false;
+
+    const reg = await ensureRegistration();
+    if (!reg?.pushManager) return false;
+
+    try {
+      let subscription = await reg.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        });
+      }
+      pushToken = token;
+      const response = await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ subscription }),
+      });
+      return response.ok;
+    } catch (err) {
+      console.warn('Langganan push gagal:', err.message);
+      return false;
+    }
+  }
+
+  async function unsubscribePush() {
+    if (!supported()) return;
+    const reg = await ensureRegistration();
+    const subscription = await reg?.pushManager?.getSubscription();
+    if (!subscription) return;
+
+    if (pushToken) {
+      await fetch('/api/push/unsubscribe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${pushToken}` },
+        body: JSON.stringify({ endpoint: subscription.endpoint }),
+      }).catch(() => {});
+    }
+    await subscription.unsubscribe().catch(() => {});
   }
 
   /** Dipanggil saat aplikasi dibuka: pasang ulang SW kalau notifikasi pernah dinyalakan. */
@@ -208,5 +273,5 @@ export function createNotifier({ onAction, onAccountUid } = {}) {
     }
   }
 
-  return { supported, state, enable, disable, resume, notify, takePendingReply };
+  return { supported, state, enable, disable, resume, notify, takePendingReply, syncPush };
 }

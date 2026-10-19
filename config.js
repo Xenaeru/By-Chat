@@ -118,6 +118,21 @@ const accountStore = registeredStore(
 );
 
 /* ------------------------------------------------------------------ *
+ * Web Push (dering walau aplikasinya belum dibuka)
+ * ------------------------------------------------------------------ */
+
+// Kunci VAPID boleh datang dari env; kalau kosong, server membuatnya sekali
+// dan menyimpannya lewat store di bawah. Mengganti kunci = semua langganan
+// push lama tidak sah lagi, jadi env hanya perlu diisi kalau kuncinya memang
+// mau dipakai bersama instance lain.
+const pushStore = registeredStore(
+  'PUSH_STORE',
+  'PUSH_STORE_OBJECT',
+  'push.json',
+  'registry/push.json'
+);
+
+/* ------------------------------------------------------------------ *
  * TURN (needed for calls on real networks, not just LAN)
  * ------------------------------------------------------------------ */
 
@@ -165,6 +180,12 @@ export const config = {
   usernames: usernameStore,
   moderation: moderationStore,
   accounts: accountStore,
+  push: {
+    ...pushStore,
+    subject: env.VAPID_SUBJECT || 'mailto:admin@bychat.app',
+    publicKey: env.VAPID_PUBLIC_KEY || '',
+    privateKey: env.VAPID_PRIVATE_KEY || '',
+  },
 
   admins: {
     uids: adminUids,
@@ -178,7 +199,7 @@ export const config = {
 };
 
 /** The subset of the config that is safe to hand to the browser. */
-export function publicConfig() {
+export function publicConfig(pushPublicKey = '') {
   return {
     auth: {
       mode: config.auth.mode,
@@ -202,6 +223,9 @@ export function publicConfig() {
       enabled: bool(env.CALLS_ENABLED ?? 'true'),
       hasTurn: turnUrls.length > 0,
       iceServers: config.iceServers,
+      // Boleh dilihat siapa saja: ini kunci publik. Kunci privatnya tetap di
+      // server dan tidak pernah ikut terkirim.
+      pushPublicKey: pushPublicKey || null,
     },
     // Alasan laporan datang dari server supaya daftarnya cuma ada di satu
     // tempat (moderation.js). `adminMode` dipakai halaman admin buat bilang

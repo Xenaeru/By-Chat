@@ -20,6 +20,8 @@ process.env.USERNAME_STORE = path.join(TMP, 'usernames.json');
 // Laporan, daftar blokir, dan indeks kontak juga punya file sendiri.
 process.env.MODERATION_STORE = path.join(TMP, 'moderation.json');
 process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
+// Kunci VAPID + langganan push juga tidak boleh menumpuk di data/ developer.
+process.env.PUSH_STORE = path.join(TMP, 'push.json');
 // Satu akun di sini yang jadi admin, supaya endpoint /api/admin/* bisa diuji.
 process.env.ADMIN_UIDS = 'u-petugas';
 process.env.PORT = process.env.TEST_PORT || '4399';
@@ -34,7 +36,7 @@ const {
   decryptFile,
 } = await import('../public/crypto.js');
 const { makeDevToken } = await import('../auth.js');
-const { server, directory, inbox, calls, statuses, moderation, accounts } = await import('../server.js');
+const { server, directory, inbox, calls, statuses, moderation, accounts, push } = await import('../server.js');
 const { resolveLocalPath } = await import('../storage.js');
 
 const BASE_URL = `http://127.0.0.1:${process.env.PORT}`;
@@ -85,7 +87,17 @@ class Client {
     this.socket.on('status:new', (status) => this.statusFeed.push(status));
     this.socket.on('status:removed', (status) => this.removedStatuses.push(status));
     this.socket.on('session:banned', (data) => this.bannedNotices.push(data));
-    for (const event of ['call:incoming', 'call:accepted', 'call:rejected', 'call:ended', 'call:signal']) {
+    for (const event of [
+      'call:incoming',
+      'call:accepted',
+      'call:joined',
+      'call:member-joined',
+      'call:member-left',
+      'call:rejected',
+      'call:ended',
+      'call:signal',
+      'call:log',
+    ]) {
       this.socket.on(event, (data) => this.signals.push({ event, data }));
     }
 
@@ -768,11 +780,182 @@ test('call signaling relays between the two parties only', async () => {
   eve.close();
 });
 
-test('inviting someone offline fails instead of ringing forever', async () => {
+test('an account the server has never seen cannot be called', async () => {
   const alice = await new Client('alice9').init();
   const invite = await alice.signal('call:invite', { toUid: 'u-ghost', video: false });
   assert.equal(invite.ok, false);
-  assert.match(invite.error, /offline|tidak ditemukan/i);
+  assert.match(invite.error, /tidak ditemukan/i);
+  alice.close();
+});
+
+test('a call to someone offline still rings, and reaches them when they reconnect', async () => {
+  const alice = await new Client('alice11').init();
+  // Bob pernah masuk, jadi server mengenal akunnya walau sekarang offline.
+  const bob = await new Client('bob11').init();
+  bob.close();
+  await sleep(120);
+
+  const invite = await alice.signal('call:invite', { toUid: bob.uid, video: false });
+  assert.equal(invite.ok, true, 'offline bukan alasan untuk menolak panggilan');
+
+  const back = await new Client('bob11').init();
+  await sleep(150);
+  const incoming = back.received('call:incoming');
+  assert.equal(incoming.length, 1);
+  assert.equal(incoming[0].callId, invite.callId);
+  assert.equal(incoming[0].from.uid, alice.uid);
+
+  await back.signal('call:accept', { callId: invite.callId });
+  await sleep(80);
+  assert.equal(alice.received('call:member-joined').length, 1);
+
+  await alice.signal('call:end', { callId: invite.callId });
+  await sleep(80);
+  back.close();
+  alice.close();
+});
+
+test('a third person can be added to a running call', async () => {
+  const alice = await new Client('alice12').init();
+  const bob = await new Client('bob12').init();
+  const carol = await new Client('carol12').init();
+  await sleep(50);
+
+  const invite = await alice.signal('call:invite', { toUid: bob.uid, video: false });
+  await bob.signal('call:accept', { callId: invite.callId });
+  await sleep(80);
+
+  const added = await alice.signal('call:invite', {
+    callId: invite.callId,
+    toUid: carol.uid,
+    video: false,
+  });
+  assert.equal(added.ok, true);
+  await sleep(80);
+  assert.equal(carol.received('call:incoming').length, 1);
+
+  await carol.signal('call:accept', { callId: invite.callId });
+  await sleep(100);
+
+  assert.equal(alice.received('call:member-joined').at(-1).member.uid, carol.uid);
+  assert.equal(bob.received('call:member-joined').at(-1).member.uid, carol.uid);
+  const roster = carol.received('call:joined')[0];
+  assert.equal(roster.members.length, 3, 'yang baru masuk harus melihat semua anggota');
+
+  // Carol keluar, panggilan Alice–Bob tetap berjalan.
+  await carol.signal('call:leave', { callId: invite.callId });
+  await sleep(80);
+  assert.equal(alice.received('call:member-left').length, 1);
+  assert.equal(calls.size, 1, 'sisa anggota masih di panggilan');
+
+  await alice.signal('call:end', { callId: invite.callId });
+  await sleep(80);
+  carol.close();
+  bob.close();
+  alice.close();
+});
+
+test('a second call to someone already on a call is refused as busy', async () => {
+  const alice = await new Client('alice13').init();
+  const bob = await new Client('bob13').init();
+  const carol = await new Client('carol13').init();
+  await sleep(50);
+
+  const invite = await alice.signal('call:invite', { toUid: bob.uid, video: false });
+  await bob.signal('call:accept', { callId: invite.callId });
+  await sleep(80);
+
+  const busy = await carol.signal('call:invite', { toUid: bob.uid, video: false });
+  assert.equal(busy.ok, false);
+  assert.equal(busy.busy, true);
+  assert.match(busy.error, /panggilan yang sedang berlangsung/i);
+
+  const logs = carol.received('call:log');
+  assert.equal(logs.at(-1).kind, 'busy', 'pemanggil dapat catatan chat bahwa lawannya sedang menelepon');
+
+  await alice.signal('call:end', { callId: invite.callId });
+  await sleep(80);
+  carol.close();
+  bob.close();
+  alice.close();
+});
+
+test('a rejected call leaves a missed-call log for both sides', async () => {
+  const alice = await new Client('alice14').init();
+  const bob = await new Client('bob14').init();
+  await sleep(50);
+
+  const invite = await alice.signal('call:invite', { toUid: bob.uid, video: true });
+  await bob.signal('call:reject', { callId: invite.callId });
+  await sleep(100);
+
+  const aliceLog = alice.received('call:log').at(-1);
+  const bobLog = bob.received('call:log').at(-1);
+  assert.equal(aliceLog.kind, 'missed');
+  assert.equal(aliceLog.video, true);
+  assert.equal(bobLog.kind, 'missed');
+  assert.equal(bobLog.from.uid, bob.uid, 'arah masuk/keluar dihitung dari pengirim catatan');
+  assert.equal(calls.size, 0);
+
+  bob.close();
+  alice.close();
+});
+
+test('a browser can register and drop its call push subscription', async () => {
+  const alice = await new Client('alice16').init();
+  const token = makeDevToken({ uid: alice.uid, displayName: alice.name });
+  const subscription = {
+    endpoint: 'https://push.example.com/call/alice16',
+    keys: { p256dh: 'p'.repeat(64), auth: 'a'.repeat(16) },
+  };
+
+  const config = await fetch(`${BASE_URL}/config.json`).then((res) => res.json());
+  assert.equal(typeof config.calls.pushPublicKey, 'string', 'kunci publik VAPID harus dibagikan');
+
+  const subscribe = await fetch(`${BASE_URL}/api/push/subscribe`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ subscription }),
+  });
+  assert.equal(subscribe.status, 200);
+  assert.equal(push.has(alice.uid), true, 'langganan harus tersimpan per akun');
+
+  const invalid = await fetch(`${BASE_URL}/api/push/subscribe`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ subscription: { endpoint: 'http://bukan-https', keys: {} } }),
+  });
+  assert.equal(invalid.status, 400, 'endpoint yang tidak masuk akal ditolak');
+
+  const drop = await fetch(`${BASE_URL}/api/push/unsubscribe`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
+  });
+  assert.equal(drop.status, 200);
+  assert.equal(push.has(alice.uid), false);
+
+  alice.close();
+});
+
+test('a finished call records how long it lasted', async () => {
+  const alice = await new Client('alice15').init();
+  const bob = await new Client('bob15').init();
+  await sleep(50);
+
+  const invite = await alice.signal('call:invite', { toUid: bob.uid, video: false });
+  await bob.signal('call:accept', { callId: invite.callId });
+  await sleep(1100);
+  await alice.signal('call:end', { callId: invite.callId });
+  await sleep(100);
+
+  for (const client of [alice, bob]) {
+    const log = client.received('call:log').at(-1);
+    assert.equal(log.kind, 'answered');
+    assert.ok(log.duration >= 1, `durasi harus tercatat, dapat ${log.duration}`);
+  }
+
+  bob.close();
   alice.close();
 });
 

@@ -36,7 +36,7 @@ disk lokal, dan panggilan pakai STUN publik. Cukup buat nyoba semuanya di lokal.
 | **Pilihan pesan** | Klik kanan (mouse) atau tahan pesan (hp): yang lain diblur, yang dipilih tetap tajam, lalu muncul reaksi cepat + **Balas, Teruskan, Salin, Beri bintang, Laporkan, Hapus untuk saya, Hapus untuk semua orang**. |
 | **File** | Enkripsi di browser sebelum dikirim, chunked AES-GCM, progress bar. Foto/video dibuka **selayar penuh** di dalam aplikasi (bukan diunduh, bukan tab blob: baru); dokumen lain baru diunduh. Nama file dan kuncinya cuma ada di dalam pesan terenkripsi. |
 | **Menu ala WhatsApp** | Rail ikon di desktop (Chat, Status, Panggilan, Pengaturan) dan **navbar bawah oval yang melayang + berkaca di hp**. Perpindahan panelnya dianimasikan halus, dan di hp percakapan dibuka sebagai halaman penuh (navbar ikut menghilang). |
-| **Panggilan** | Suara, video, dan bagikan layar 1:1 lewat WebRTC. Nyalakan kamera di tengah panggilan suara tanpa renegosiasi. Riwayat panggilan (masuk/keluar, video, durasi) tersimpan di panel **Panggilan** — di perangkat sendiri, bukan di server. |
+| **Panggilan** | Suara, video, dan bagikan layar lewat WebRTC — **1:1 maupun grup sampai 8 orang**, dan peserta lain bisa **ditambahkan di tengah panggilan**. Nyalakan kamera di tengah panggilan suara tanpa renegosiasi. Hasilnya tercatat di **chat** dan panel Panggilan: **panggilan tidak terjawab**, **panggilan terjawab + durasinya**, atau **panggilan sedang berlangsung** dengan detik berjalan. Kalau orang yang ditelepon sedang di panggilan lain, pemanggilnya diberi tahu **ada panggilan yang sedang berlangsung**. |
 | **Status** | Teks atau foto, hilang sendiri setelah 24 jam. Isinya tetap terenkripsi end-to-end, dan yang sudah dilihat ditandai cincin. **Status cuma bisa dilihat orang yang sudah pernah chat** — kuncinya nggak pernah dibungkus buat orang lain, dan sisi penerimanya juga menyaring. |
 | **Pengaturan** | Satu panel berisi profil (foto + username), sakelar notifikasi, dan tombol **Keluar** — bukan lagi modal terpisah atau tombol di header chat. |
 | **Profil** | Username unik + foto profil yang bisa diganti dari Pengaturan. Foto profil **nggak** dienkripsi (memang buat dilihat orang) — lihat catatan di bawah. |
@@ -45,7 +45,7 @@ disk lokal, dan panggilan pakai STUN publik. Cukup buat nyoba semuanya di lokal.
 | **Halaman admin** | `/admin.html`: baca laporan, tandai selesai/abaikan, cari pengguna, **blokir** dan **buka blokir**. Blokir ditegakkan server: sesi yang sedang jalan langsung ditendang. |
 | **Login** | Google lewat Firebase Authentication. (Login nomor HP/OTP SMS dibuang: itu paket berbayar Firebase, jadi nggak pernah jalan di project free.) |
 | **Verifikasi** | Safety number ala WhatsApp buat mastiin nggak ada kunci yang disisipin. |
-| **Notifikasi** | Pesan baru muncul sebagai notifikasi sistem plus **balas langsung dari notifikasi** (kolom balas di notifikasi didukung Chrome Android; di desktop klik notifikasi membuka chatnya dan langsung fokus ke kolom ketik). Dinyalakan dari **Pengaturan → Notifikasi pesan**, dan cuma muncul kalau percakapannya memang nggak sedang dibaca. |
+| **Notifikasi** | Pesan baru muncul sebagai notifikasi sistem plus **balas langsung dari notifikasi** (kolom balas di notifikasi didukung Chrome Android; di desktop klik notifikasi membuka chatnya dan langsung fokus ke kolom ketik). Dinyalakan dari **Pengaturan → Notifikasi pesan**, dan cuma muncul kalau percakapannya memang nggak sedang dibaca. **Panggilan masuk juga dikirim lewat Web Push** walau tab-nya sudah ditutup, lengkap dengan tombol Terima/Tolak. |
 | **Tampilan** | Mengikuti **`DESIGN.md`** (sistem desain By Chat): permukaan putih `#ffffff` di atas kanvas `#f7f8fa`, satu warna aksi By Chat Blue `#2563eb`, tombol & input 8px, kartu dan gelembung 16px, huruf Inter. Lihat bagian [Tampilan](#tampilan-mengikuti-designmd). |
 
 ## Setup buat server beneran
@@ -129,14 +129,29 @@ TURN_CREDENTIAL=...
 Sumbernya bisa [Twilio Network Traversal](https://console.twilio.com), Vonage, atau
 [coturn](https://github.com/coturn/coturn) yang di-host sendiri.
 
-### 4. HTTPS
+### 4. Panggilan saat aplikasi tertutup — Web Push
+
+Dering nggak menunggu aplikasinya dibuka. Browser yang sudah memberi izin notifikasi
+mendaftarkan endpoint push-nya ke server, dan server mengirim notifikasi panggilan lewat
+endpoint itu (Web Push). Kunci VAPID **dibuat sendiri sekali** lalu disimpan seperti
+registry lain — `registry/push.json` di bucket Supabase, atau `data/push.json` di driver
+local — jadi nggak ada env yang wajib diisi. Kalau mau memakai kunci tetap (misalnya
+beberapa instance berbagi langganan yang sama), isi `VAPID_PUBLIC_KEY`,
+`VAPID_PRIVATE_KEY`, dan `VAPID_SUBJECT`.
+
+Ini batas jujur web: notifikasi panggilan **muncul dan berbunyi saat aplikasi tertutup**,
+tapi yang berbunyi adalah nada notifikasi sistem — bukan dering berulang seperti WhatsApp,
+karena browser nggak mengizinkan service worker memutar audio sendiri. Menekan **Terima**
+membuka aplikasi dan langsung menjawab panggilannya.
+
+### 6. HTTPS
 
 **Wajib kalau diakses lewat domain atau IP LAN.** `crypto.subtle` (dipakai semua enkripsi)
 dan `getUserMedia` (kamera/mikrofon) cuma jalan di *secure context*. `localhost` sudah
 dianggap aman; selain itu kamu perlu TLS — taruh di belakang nginx/Caddy, atau pakai
 Cloudflare Tunnel.
 
-### 5. Deploy ke Render (gratis)
+### 7. Deploy ke Render (gratis)
 
 Butuh host yang bisa jalanin proses Node terus-menerus **dan** mendukung WebSocket — Render
 masuk kriteria itu (Vercel, Netlify, dan Cloudflare Workers **tidak**, karena servernya nggak
@@ -234,9 +249,11 @@ dua-duanya nggak pernah lihat kuncinya. Nomor chunk dan jumlah totalnya masuk se
 *additional authenticated data*, jadi blob yang diacak urutannya atau dipotong bakal
 ketahuan, bukan diterima diam-diam.
 
-**Panggilan** pakai WebRTC, jadi medianya dienkripsi **DTLS-SRTP** langsung antar dua
-browser. Server cuma meneruskan SDP dan ICE. Kalau pakai TURN, relay-nya juga cuma
-meneruskan paket yang sudah terenkripsi — TURN lihat ciphertext, sama kayak server chat.
+**Panggilan** pakai WebRTC, jadi medianya dienkripsi **DTLS-SRTP** langsung antar
+browser — di grup pun setiap pasangan punya koneksinya sendiri (mesh). Server cuma
+meneruskan SDP dan ICE. Kalau pakai TURN, relay-nya juga cuma meneruskan paket yang sudah
+terenkripsi — TURN lihat ciphertext, sama kayak server chat. Notifikasi panggilan (Web
+Push) cuma membawa nama pemanggil dan id panggilan; tidak ada media yang lewat situ.
 
 ## Apa yang bisa dan nggak bisa dilihat server
 
@@ -275,12 +292,13 @@ server.js          Relay + direktori kunci + endpoint lampiran + signaling + end
 public/crypto.js   Semua primitif E2EE. Pakai WebCrypto, jalan di browser dan Node.
 public/auth-client.js  Login Google / dev.
 public/files.js    Enkripsi, upload, unduh, dekripsi lampiran.
-public/call.js     WebRTC 1:1: suara, video, layar.
+public/call.js     WebRTC mesh (1:1 & grup): suara, video, layar, tambah peserta.
 public/app.js      UI + orkestrasi.
 public/index.html  Kerangka halaman chat.
 public/style.css   Seluruh tampilan; nilainya diambil dari DESIGN.md.
 public/notifications.js  Izin + tampilan notifikasi, dan pengambilan balasan yang dititipkan.
-public/sw.js       Service worker: menampilkan notifikasi, meneruskan aksi balas/buka.
+public/sw.js       Service worker: notifikasi pesan, notifikasi panggilan dari Web Push, aksi balas/buka/terima/tolak.
+push.js           Web Push server: kunci VAPID, langganan per akun, pengiriman notifikasi.
 public/manifest.webmanifest  Identitas aplikasi (nama, ikon, warna) buat notifikasi & pemasangan.
 public/admin.html  Halaman admin (laporan + blokir).
 public/admin.js    Ambil data admin lewat REST dan render; nggak buka socket.
@@ -346,8 +364,8 @@ cuma tanpa efek buram.
 ## Testing
 
 ```
-npm test              # 95 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling, aset notifikasi, tooling
-npm run test:browser  # 243 cek: UI asli di Chrome, termasuk panggilan WebRTC, notifikasi, dan navbar hp
+npm test              # 101 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling (termasuk grup & sibuk), aset notifikasi, tooling
+npm run test:browser  # 272 cek: UI asli di Chrome, termasuk panggilan WebRTC, notifikasi, dan navbar hp
 CALL_DEBUG=1 npm run test:browser   # nyalain jejak negosiasi WebRTC di console
 ```
 

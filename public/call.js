@@ -1,24 +1,22 @@
 /**
- * call.js — 1:1 audio, video and screen-share calls.
+ * call.js — panggilan suara, video, dan layar bersama; 1:1 maupun grup.
  *
- * The media path is pure peer-to-peer WebRTC, so it is encrypted with
- * DTLS-SRTP between the two browsers. Our server only relays SDP and ICE
- * candidates; it never carries audio or video. If a TURN relay is configured
- * it still only forwards those already-encrypted packets — TURN sees
- * ciphertext, exactly like the chat server does.
+ * Media tetap peer-to-peer: setiap pasangan anggota punya RTCPeerConnection
+ * sendiri (mesh), jadi server hanya meneruskan SDP/ICE dan tidak pernah
+ * menyentuh audio/video. Untuk grup kecil (sampai 8 orang) ini cara yang
+ * paling sederhana dan tetap terenkripsi DTLS-SRTP antar browser.
  *
- * Negotiation is deliberately one-directional: whoever answers is the only
- * one who reacts to an offer, and both sides add their transceivers up front.
- * That means toggling the camera or starting a screen share only ever needs
- * `replaceTrack`, never a renegotiation.
+ * Supaya tidak ada dua pihak menawarkan koneksi pada saat yang sama, aturannya
+ * ditentukan oleh siapa yang bergabung belakangan: anggota yang baru masuk
+ * yang mengirim offer ke semua anggota yang sudah ada; anggota lama menunggu
+ * dan menjawab. Jadi tidak perlu negosiasi dua arah (glare).
  */
 
-const RING_TIMEOUT_MS = 45_000;
+const RING_TIMEOUT_MS = 50_000;
 const CONNECT_TIMEOUT_MS = 30_000;
 
 /**
- * WebRTC failures are almost impossible to read off the UI, so the state
- * machine can be traced. Turn it on before the page loads:
+ * Kegagalan WebRTC hampir tidak terbaca dari UI, jadi mesinnya bisa dilacak:
  *   window.__SECURECHAT_CALL_DEBUG = true
  */
 let DEBUG = false;
@@ -29,40 +27,63 @@ try {
 }
 const log = (...args) => DEBUG && console.log('[call]', ...args);
 
-export function createCallManager({ socket, iceServers, onState, onError }) {
-  let pc = null;
-  let localStream = null;
-  let remoteStream = null;
+export function createCallManager({ socket, iceServers, onState, onError, selfUid }) {
   let callId = null;
-  let peer = null; // { uid, displayName, photoURL }
   let role = null; // 'caller' | 'callee'
-  let wantsVideo = false;
-  let videoSender = null;
+  let videoWanted = false;
+  let localStream = null;
   let cameraTrack = null;
   let screenTrack = null;
-  let pendingIce = [];
-  let pendingSignals = [];
+  let startedAt = 0;
+  let answeredAt = 0;
+  /** Kapan kita bergabung — penentu siapa yang mengirim offer. */
+  let selfJoinedAt = 0;
+  /** Anggota lain: uid -> { uid, displayName, photoURL, pc, stream, connection, ... } */
+  const members = new Map();
   let timers = [];
+  let connectTimer = null;
 
-  const emit = (patch) => onState?.({ ...snapshot(), ...patch });
+  const me = () => selfUid?.() || null;
+  const others = () => [...members.values()].filter((member) => member.uid !== me());
+  const connectedCount = () =>
+    others().filter((member) => member.connection === 'connected' || member.stream?.getTracks().length).length;
+
+  function phase() {
+    if (!callId) return 'idle';
+    if (role === 'callee' && !localStream) return 'incoming';
+    if (role === 'caller' && !localStream) return 'outgoing';
+    return connectedCount() ? 'active' : 'connecting';
+  }
 
   const snapshot = () => ({
-    status: callId ? (remoteStream?.getTracks().length ? 'active' : role === 'caller' ? 'outgoing' : 'connecting') : 'idle',
+    status: phase(),
     callId,
     role,
-    peer,
+    video: videoWanted,
+    peer: others()[0] || null,
+    participants: others().map((member) => ({
+      uid: member.uid,
+      displayName: member.displayName,
+      photoURL: member.photoURL,
+      stream: member.stream,
+      connection: member.connection || 'new',
+    })),
     localStream,
-    remoteStream,
-    video: wantsVideo,
-    micOn: localStream ? localStream.getAudioTracks().every((t) => t.enabled) : false,
+    micOn: localStream ? localStream.getAudioTracks().every((track) => track.enabled) : false,
     cameraOn: Boolean(cameraTrack?.enabled),
     screenSharing: Boolean(screenTrack),
+    startedAt,
+    answeredAt,
   });
 
-  const clearTimers = () => {
+  const emit = (extra = {}) => onState?.({ ...snapshot(), ...extra });
+
+  function clearTimers() {
     timers.forEach(clearTimeout);
     timers = [];
-  };
+    clearTimeout(connectTimer);
+    connectTimer = null;
+  }
 
   const after = (ms, fn) => timers.push(setTimeout(fn, ms));
 
@@ -70,118 +91,114 @@ export function createCallManager({ socket, iceServers, onState, onError }) {
    * Media
    * ---------------------------------------------------------------- */
 
-  async function acquireLocalStream(withVideo) {
+  async function acquireLocalStream() {
     if (localStream) return localStream;
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: true,
-      video: withVideo ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+      video: videoWanted ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
     });
     cameraTrack = localStream.getVideoTracks()[0] || null;
     return localStream;
   }
 
-  function buildPeerConnection() {
-    pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
-    remoteStream = new MediaStream();
+  function syncVideoSender(member) {
+    if (!member.pc) return null;
+    const videoTxs = member.pc.getTransceivers().filter((tx) => tx.receiver.track.kind === 'video');
+    const negotiated = videoTxs.find((tx) => tx.mid !== null);
+    member.videoSender = (negotiated || videoTxs[0])?.sender || null;
+    return member.videoSender;
+  }
 
-    // Real tracks go in with addTrack: the transceivers are then created
-    // together with their track, which is what makes the answerer's m-lines
-    // line up as sendrecv. (Building the transceivers by hand with
-    // addTransceiver + replaceTrack looks equivalent, but the answer comes
-    // back as a=recvonly and the caller silently receives no media at all.)
+  function ensurePeer(member) {
+    if (member.pc) return member.pc;
+
+    const pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
+    member.pc = pc;
+    member.stream = new MediaStream();
+
+    // Track asli dimasukkan dengan addTrack supaya arah m-line hasil negosiasi
+    // benar-benar sendrecv; transceiver video cadangan dipasang supaya menyalakan
+    // kamera di tengah panggilan cuma perlu replaceTrack, bukan negosiasi ulang.
     for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
-
-    videoSender = pc.getSenders().find((s) => s.track?.kind === 'video') || null;
-
-    // An audio-only call still reserves a video m-line, so turning the camera
-    // on later is just a track swap rather than a renegotiation.
-    if (!videoSender) {
-      videoSender = pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
+    if (!pc.getSenders().some((sender) => sender.track?.kind === 'video')) {
+      pc.addTransceiver('video', { direction: 'sendrecv' });
     }
-
-    syncVideoSender();
+    syncVideoSender(member);
 
     pc.onicecandidate = (event) => {
-      if (!event.candidate) log('ice gathering complete');
-      else send({ type: 'ice', candidate: event.candidate.toJSON() });
+      if (event.candidate) send(member, { type: 'ice', candidate: event.candidate.toJSON() });
+      else log('ice gathering complete', member.uid);
     };
 
     pc.ontrack = (event) => {
-      log('ontrack', event.track.kind, 'streams:', event.streams.length, 'total:', remoteStream.getTracks().length);
-      if (!remoteStream.getTracks().includes(event.track)) {
-        remoteStream.addTrack(event.track);
-        remoteStream = new MediaStream(remoteStream.getTracks());
+      log('ontrack', member.uid, event.track.kind, 'total:', member.stream.getTracks().length);
+      if (!member.stream.getTracks().includes(event.track)) {
+        member.stream.addTrack(event.track);
+        member.stream = new MediaStream(member.stream.getTracks());
       }
-      emit({});
+      emit();
     };
 
     pc.onconnectionstatechange = () => {
-      log('connectionState', pc.connectionState, 'ice', pc.iceConnectionState);
-      if (pc.state === 'connected') clearTimers();
-      if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-        if (pc.connectionState !== 'closed') end('koneksi terputus');
+      member.connection = pc.connectionState;
+      log('connectionState', member.uid, pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        answeredAt = answeredAt || Date.now();
+        clearTimeout(connectTimer);
       }
-      emit({ connection: pc.connectionState });
+      if (pc.connectionState === 'failed') {
+        onError?.(new Error(`Koneksi ke ${member.displayName || 'anggota'} gagal.`));
+      }
+      emit();
     };
+
+    // Sinyal yang datang sebelum peer connection siap (mis. offer balapan
+    // dengan izin mikrofon) dijalankan sekarang, berurutan.
+    const queued = member.pending;
+    member.pending = [];
+    for (const item of queued) applySignal(member, item).catch((err) => log('queued signal failed', err.message));
 
     return pc;
   }
 
-  const send = (data) => {
-    if (callId && peer) socket.emit('call:signal', { callId, toUid: peer.uid, data });
+  const send = (member, data) => {
+    if (!callId || !member?.uid) return;
+    socket.emit('call:signal', { callId, toUid: member.uid, data });
   };
-
-  /**
-   * Point `videoSender` at the video transceiver that actually owns the
-   * negotiated m-line. Plain `getSenders()[kind==='video']` is not enough on
-   * the answering side: reserving an m-line for a later camera can leave an
-   * extra, unassociated video transceiver behind, and sending on that one goes
-   * nowhere.
-   */
-  function syncVideoSender() {
-    if (!pc) return;
-    const videoTxs = pc.getTransceivers().filter((t) => t.receiver.track.kind === 'video');
-    const negotiated = videoTxs.find((t) => t.mid !== null);
-    videoSender = (negotiated || videoTxs[0])?.sender || null;
-  }
 
   /* ---------------------------------------------------------------- *
    * Signaling
    * ---------------------------------------------------------------- */
 
-  async function applySignal(data) {
-    log('applySignal', data.type, data.description?.type || '', 'state:', pc?.signalingState);
+  async function applySignal(member, data) {
+    if (!data) return;
     try {
       if (data.type === 'ice') {
-        if (pc.remoteDescription) await pc.addIceCandidate(data.candidate);
-        else pendingIce.push(data.candidate);
+        if (member.pc?.remoteDescription) await member.pc.addIceCandidate(data.candidate);
+        else member.pendingIce.push(data.candidate);
       } else if (data.type === 'description') {
-        await pc.setRemoteDescription(data.description);
-        log(
-          'remote m-lines:',
-          (pc.remoteDescription?.sdp || '')
-            .split('\r\n')
-            .filter((l) => /^(m=|a=sendrecv|a=sendonly|a=recvonly|a=inactive)/.test(l))
-            .join(' | ')
-        );
-        syncVideoSender();
-        if (pendingIce.length) {
-          for (const candidate of pendingIce) await pc.addIceCandidate(candidate).catch(() => {});
-          pendingIce = [];
+        if (!localStream) {
+          member.pending.push(data);
+          return;
         }
+        ensurePeer(member);
+        await member.pc.setRemoteDescription(data.description);
+
+        if (member.pendingIce.length) {
+          for (const candidate of member.pendingIce) await member.pc.addIceCandidate(candidate).catch(() => {});
+          member.pendingIce = [];
+        }
+
         if (data.description.type === 'offer') {
-          // Negotiate the video m-line as sendrecv even when neither side has a
-          // camera yet, so starting video later needs no renegotiation.
-          const videoTx = pc
+          const videoTx = member.pc
             .getTransceivers()
-            .find((t) => t.receiver.track.kind === 'video' && t.mid !== null);
+            .find((tx) => tx.receiver.track.kind === 'video' && tx.mid !== null);
           if (videoTx) videoTx.direction = 'sendrecv';
 
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          syncVideoSender();
-          log('sending answer');
-          send({ type: 'description', description: pc.localDescription.toJSON() });
+          const answer = await member.pc.createAnswer();
+          await member.pc.setLocalDescription(answer);
+          syncVideoSender(member);
+          send(member, { type: 'description', description: member.pc.localDescription.toJSON() });
         }
       }
     } catch (err) {
@@ -190,82 +207,131 @@ export function createCallManager({ socket, iceServers, onState, onError }) {
     }
   }
 
-  /**
-   * The peer connection only exists once the camera/mic permission has been
-   * granted, but the caller starts sending its offer as soon as the other side
-   * accepts. Anything that lands before `pc` exists is queued here instead of
-   * being dropped — otherwise a slow permission prompt silently kills the call.
-   */
-  function onSignal(payload) {
-    if (!payload?.data) return;
-    if (!pc) {
-      log('signal buffered until the peer connection exists', payload.data.type);
-      pendingSignals.push(payload.data);
+  function onSignal({ from, data }) {
+    if (!from || !callId) return;
+    const member = members.get(from) || upsertMember({ uid: from, displayName: from.slice(0, 8) });
+    if (!localStream) {
+      member.pending.push(data);
       return;
     }
-    return applySignal(payload.data);
+    applySignal(member, data);
   }
 
   /* ---------------------------------------------------------------- *
-   * Public API
+   * Anggota
    * ---------------------------------------------------------------- */
 
-  async function startCall(peerUid, peerInfo, { video } = {}) {
-    if (callId) throw new Error('Masih ada panggilan berjalan');
-    peer = { uid: peerUid, ...peerInfo };
-    wantsVideo = Boolean(video);
-    role = 'caller';
-    emit({});
-
-    const ack = await new Promise((resolve) => {
-      socket.emit('call:invite', { toUid: peerUid, video: wantsVideo }, resolve);
-    });
-    if (!ack?.ok) {
-      peer = null;
-      role = null;
-      emit({});
-      throw new Error(ack?.error || 'Panggilan gagal dimulai');
+  function upsertMember(info) {
+    const uid = String(info?.uid || '');
+    if (!uid) return null;
+    let member = members.get(uid);
+    if (!member) {
+      member = {
+        uid,
+        displayName: info.displayName || uid.slice(0, 8),
+        photoURL: info.photoURL || null,
+        pc: null,
+        stream: null,
+        connection: null,
+        videoSender: null,
+        pending: [],
+        pendingIce: [],
+        offered: false,
+      };
+      members.set(uid, member);
+    } else {
+      if (info.displayName) member.displayName = info.displayName;
+      if (info.photoURL !== undefined) member.photoURL = info.photoURL;
     }
-    callId = ack.callId;
-    emit({ status: 'outgoing' });
-
-    after(RING_TIMEOUT_MS, () => {
-      if (role === 'caller') end('tidak dijawab');
-    });
+    return member;
   }
 
-  async function acceptCall() {
-    if (!callId || role !== 'callee') return;
-    socket.emit('call:accept', { callId, toUid: peer.uid });
-    await beginMedia();
+  /**
+   * Daftar anggota dari server. Yang bergabung belakangan (role callee, atau
+   * anggota yang baru ditambahkan) mengirim offer; anggota lama menunggu.
+   */
+  /**
+   * Aturan offer: yang bergabung belakangan menawarkan koneksi ke yang sudah
+   * ada. Membandingkan `joinedAt` (bukan sekadar peran callee) penting di grup:
+   * anggota lama yang dulu masuk sebagai callee tidak boleh ikut menawarkan
+   * koneksi ke anggota yang baru ditambahkan, atau dua offer bertabrakan.
+   */
+  function shouldOffer(info) {
+    const theirJoin = Number(info?.joinedAt) || 0;
+    if (!theirJoin || !selfJoinedAt) return role === 'callee';
+    if (theirJoin !== selfJoinedAt) return selfJoinedAt > theirJoin;
+    return String(me() || '') > String(info.uid || '');
   }
 
-  function rejectCall() {
-    if (!callId) return;
-    socket.emit('call:reject', { callId, toUid: peer.uid });
-    teardown();
-    emit({ status: 'idle' });
+  function noteSelfJoin(list = []) {
+    const mine = list.find((info) => info?.uid === me());
+    if (mine?.joinedAt) selfJoinedAt = Number(mine.joinedAt) || selfJoinedAt;
   }
 
-  async function beginMedia() {
-    try {
-      await acquireLocalStream(wantsVideo);
-      buildPeerConnection();
-
-      const queued = pendingSignals;
-      pendingSignals = [];
-      for (const data of queued) await applySignal(data);
-
-      emit({ status: 'connecting' });
-      after(CONNECT_TIMEOUT_MS, () => {
-        if (pc && pc.connectionState !== 'connected') end('gagal tersambung');
-      });
-      if (role === 'caller') {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        log('sending offer');
-        send({ type: 'description', description: pc.localDescription.toJSON() });
+  function syncRoster(list = []) {
+    noteSelfJoin(list);
+    for (const info of list) {
+      if (!info?.uid || info.uid === me()) continue;
+      const member = upsertMember(info);
+      if (localStream && !member.pc) ensurePeer(member);
+      if (localStream && !member.offered && shouldOffer(info)) {
+        member.offered = true;
+        offerTo(member).catch((err) => {
+          log('offer failed', err.message);
+          onError?.(err);
+        });
       }
+    }
+    emit();
+  }
+
+  async function offerTo(member) {
+    ensurePeer(member);
+    const offer = await member.pc.createOffer();
+    await member.pc.setLocalDescription(offer);
+    send(member, { type: 'description', description: member.pc.localDescription.toJSON() });
+  }
+
+  function dropMember(uid, { silent = false } = {}) {
+    const member = members.get(uid);
+    if (!member) return;
+    try {
+      member.pc?.close();
+    } catch {
+      /* already closed */
+    }
+    members.delete(uid);
+    if (!silent) emit();
+  }
+
+  /**
+   * Server mengirim `call:member-joined` dan `call:accepted` untuk peristiwa yang
+   * sama (yang kedua demi klien lama), jadi beginMedia bisa terpanggil dua kali
+   * dalam satu tick. Satu promise dipakai bersama supaya mikrofon cuma diminta
+   * sekali dan peer connection tidak dibangun dua kali.
+   */
+  let beginning = null;
+
+  function beginMedia() {
+    if (beginning) return beginning;
+    beginning = doBeginMedia().finally(() => {
+      beginning = null;
+    });
+    return beginning;
+  }
+
+  async function doBeginMedia() {
+    try {
+      await acquireLocalStream();
+      emit();
+      syncRoster(pendingRoster);
+      pendingRoster = [];
+
+      clearTimeout(connectTimer);
+      connectTimer = setTimeout(() => {
+        if (callId && !connectedCount()) end('gagal tersambung');
+      }, CONNECT_TIMEOUT_MS);
+      timers.push(connectTimer);
     } catch (err) {
       log('beginMedia failed', err);
       onError?.(err);
@@ -273,72 +339,160 @@ export function createCallManager({ socket, iceServers, onState, onError }) {
     }
   }
 
-  function teardown() {
-    clearTimers();
-    localStream?.getTracks().forEach((t) => t.stop());
-    screenTrack?.stop();
-    try {
-      pc?.close();
-    } catch {
-      /* already closed */
+  let pendingRoster = [];
+
+  /* ---------------------------------------------------------------- *
+   * Public API
+   * ---------------------------------------------------------------- */
+
+  const emitAck = (event, payload) =>
+    new Promise((resolve) => {
+      if (!socket?.connected) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
+      const timer = setTimeout(() => resolve({ ok: false, error: 'Server nggak menjawab.' }), 10_000);
+      socket.emit(event, payload, (answer) => {
+        clearTimeout(timer);
+        resolve(answer || { ok: false, error: 'Jawaban server tidak terbaca.' });
+      });
+    });
+
+  async function startCall(peerUid, peerInfo, { video } = {}) {
+    if (callId) throw new Error('Masih ada panggilan berjalan');
+    callId = 'pending';
+    role = 'caller';
+    videoWanted = Boolean(video);
+    upsertMember({ uid: peerUid, ...peerInfo });
+    emit({ status: 'outgoing' });
+
+    const ack = await emitAck('call:invite', { toUid: peerUid, video: videoWanted });
+    if (!ack?.ok) {
+      reset();
+      const error = new Error(ack?.error || 'Panggilan gagal dimulai');
+      error.busy = Boolean(ack?.busy);
+      throw error;
     }
-    pc = null;
+
+    callId = ack.callId;
+    startedAt = ack.startedAt || Date.now();
+    answeredAt = ack.answeredAt || 0;
+    noteSelfJoin(ack.members || []);
+    emit({ status: 'outgoing' });
+
+    // Server juga punya batas waktu sendiri; ini cuma jaring pengaman kalau
+    // kabar berakhirnya tidak pernah sampai.
+    after(RING_TIMEOUT_MS, () => {
+      if (role === 'caller' && !localStream && callId) end('tidak dijawab');
+    });
+  }
+
+  async function acceptCall() {
+    if (!callId || role !== 'callee' || callId === 'pending') return;
+    emit({ status: 'connecting' });
+    await beginMedia();
+
+    const ack = await emitAck('call:accept', { callId });
+    if (!ack?.ok) {
+      end('panggilan sudah selesai');
+      return;
+    }
+    if (ack.members) syncRoster(ack.members);
+  }
+
+  function rejectCall(reason = 'ditolak') {
+    if (!callId) return;
+    const id = callId;
+    const peerUid = others()[0]?.uid;
+    reset();
+    emit({ status: 'idle', endedReason: reason, endedPeer: '' });
+    socket.emit('call:reject', { callId: id, toUid: peerUid });
+  }
+
+  /** Tambah satu orang ke panggilan yang sedang berjalan. */
+  async function addParticipant(uid, info = {}) {
+    if (!callId || callId === 'pending') throw new Error('Belum ada panggilan berjalan.');
+    const target = String(uid || '');
+    if (!target || target === me()) return;
+    if (members.has(target)) throw new Error('Dia sudah ada di panggilan ini.');
+
+    const ack = await emitAck('call:invite', { callId, toUid: target, video: videoWanted });
+    if (!ack?.ok) throw new Error(ack?.error || 'Gagal mengundang.');
+    upsertMember({ uid: target, ...info });
+    emit();
+  }
+
+  function reset() {
+    clearTimers();
+    for (const member of members.values()) {
+      try {
+        member.pc?.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    members.clear();
+    localStream?.getTracks().forEach((track) => track.stop());
+    screenTrack?.stop();
     localStream = null;
-    remoteStream = null;
-    videoSender = null;
     cameraTrack = null;
     screenTrack = null;
-    pendingIce = [];
-    pendingSignals = [];
+    pendingRoster = [];
     callId = null;
-    peer = null;
     role = null;
-    wantsVideo = false;
+    videoWanted = false;
+    startedAt = 0;
+    answeredAt = 0;
+    selfJoinedAt = 0;
   }
 
   function end(reason) {
-    const had = callId;
-    if (had && peer) socket.emit('call:end', { callId: had, toUid: peer.uid });
-    const peerName = peer?.displayName;
-    teardown();
-    onState?.({ status: 'idle', endedReason: reason || '', endedPeer: peerName || '' });
+    const had = callId && callId !== 'pending' ? callId : null;
+    const peerName = others()[0]?.displayName || '';
+    if (had) socket.emit('call:end', { callId: had });
+    reset();
+    onState?.({ status: 'idle', endedReason: reason || '', endedPeer: peerName });
   }
 
-  /* ---- in-call controls ---- */
+  /* ---- kontrol saat panggilan berjalan ---- */
 
   const toggleMic = () => {
     if (!localStream) return false;
-    const next = !localStream.getAudioTracks().every((t) => t.enabled);
-    localStream.getAudioTracks().forEach((t) => (t.enabled = next));
-    emit({});
+    const next = !localStream.getAudioTracks().every((track) => track.enabled);
+    localStream.getAudioTracks().forEach((track) => (track.enabled = next));
+    emit();
     return next;
   };
 
+  async function applyVideoTrack(track) {
+    for (const member of members.values()) {
+      const sender = member.videoSender || syncVideoSender(member);
+      if (sender) await sender.replaceTrack(track).catch(() => {});
+    }
+  }
+
   async function toggleCamera() {
-    if (!videoSender) return false;
+    if (!localStream) return false;
     if (cameraTrack) {
       const next = !cameraTrack.enabled;
       cameraTrack.enabled = next;
-      if (next) await videoSender.replaceTrack(screenTrack || cameraTrack);
-      else if (!screenTrack) await videoSender.replaceTrack(null);
-      emit({});
+      if (next) await applyVideoTrack(screenTrack || cameraTrack);
+      else if (!screenTrack) await applyVideoTrack(null);
+      emit();
       return next;
     }
     const fresh = await navigator.mediaDevices.getUserMedia({ video: true });
     cameraTrack = fresh.getVideoTracks()[0];
     localStream.addTrack(cameraTrack);
-    await videoSender.replaceTrack(cameraTrack);
-    emit({});
+    await applyVideoTrack(cameraTrack);
+    emit();
     return true;
   }
 
   async function toggleScreenShare() {
-    if (!videoSender) return false;
+    if (!localStream) return false;
     if (screenTrack) {
       screenTrack.stop();
       screenTrack = null;
-      await videoSender.replaceTrack(cameraTrack && cameraTrack.enabled ? cameraTrack : null);
-      emit({});
+      await applyVideoTrack(cameraTrack && cameraTrack.enabled ? cameraTrack : null);
+      emit();
       return false;
     }
     const display = await navigator.mediaDevices.getDisplayMedia({ video: true });
@@ -346,42 +500,78 @@ export function createCallManager({ socket, iceServers, onState, onError }) {
     screenTrack.onended = () => {
       if (screenTrack) toggleScreenShare();
     };
-    await videoSender.replaceTrack(screenTrack);
-    emit({});
+    await applyVideoTrack(screenTrack);
+    emit();
     return true;
   }
 
   /* ---- socket wiring ---- */
 
   const handlers = {
+    'call:incoming': (data) => handleIncoming(data),
+    'call:joined': (data) => {
+      if (!callId || data.callId !== callId) return;
+      answeredAt = data.answeredAt || Date.now();
+      noteSelfJoin(data.members || []);
+      pendingRoster = data.members || [];
+      syncRoster(pendingRoster);
+      localStream && emit();
+    },
+    'call:member-joined': (data) => {
+      if (!callId || data.callId !== callId) return;
+      if (data.member) upsertMember(data.member);
+      if (!localStream) {
+        // Penelepon baru mulai menangkap media saat lawannya menjawab.
+        pendingRoster = data.members || [];
+        if (role === 'caller') beginMedia();
+        return;
+      }
+      syncRoster(data.members);
+    },
+    'call:member-left': ({ callId: id, uid }) => {
+      if (id !== callId) return;
+      const name = members.get(uid)?.displayName || '';
+      dropMember(uid, { silent: true });
+      onState?.({ ...snapshot(), notice: name ? `${name} keluar dari panggilan.` : '' });
+    },
     'call:accepted': () => {
-      if (role === 'caller') beginMedia();
+      // Kompatibilitas: server versi baru juga mengirim call:member-joined.
+      if (role === 'caller' && !localStream) beginMedia();
     },
-    'call:rejected': () => {
-      const name = peer?.displayName;
-      teardown();
-      onState?.({ status: 'idle', endedReason: 'ditolak', endedPeer: name || '' });
+    'call:rejected': ({ by } = {}) => {
+      const name = members.get(by)?.displayName;
+      if (name) onError?.(new Error(`${name} menolak panggilan.`));
     },
-    'call:ended': ({ reason }) => {
-      const name = peer?.displayName;
-      const wasActive = Boolean(remoteStream?.getTracks().length) || pc;
-      teardown();
-      onState?.({ status: 'idle', endedReason: reason || (wasActive ? '' : 'dibatalkan'), endedPeer: name || '' });
+    'call:ended': ({ reason, duration, answered }) => {
+      if (!callId) return;
+      const name = others()[0]?.displayName || '';
+      reset();
+      onState?.({
+        status: 'idle',
+        endedReason: reason || '',
+        endedPeer: name,
+        endedDuration: Number(duration) || 0,
+        endedAnswered: Boolean(answered),
+      });
     },
     'call:signal': (data) => onSignal(data),
   };
 
   for (const [event, handler] of Object.entries(handlers)) socket.on(event, handler);
 
-  function handleIncoming({ callId: id, from, video }) {
+  function handleIncoming({ callId: id, from, video, members: roster = [], answeredAt: answered }) {
     if (callId) {
-      socket.emit('call:reject', { callId: id, toUid: from.uid });
+      socket.emit('call:reject', { callId: id, toUid: from?.uid });
       return;
     }
+    if (!id || !from) return;
     callId = id;
-    peer = from;
     role = 'callee';
-    wantsVideo = Boolean(video);
+    videoWanted = Boolean(video);
+    startedAt = Date.now();
+    answeredAt = answered || 0;
+    upsertMember(from);
+    for (const info of roster) upsertMember(info);
     emit({ status: 'incoming' });
   }
 
@@ -390,6 +580,7 @@ export function createCallManager({ socket, iceServers, onState, onError }) {
     acceptCall,
     rejectCall,
     end,
+    addParticipant,
     toggleMic,
     toggleCamera,
     toggleScreenShare,

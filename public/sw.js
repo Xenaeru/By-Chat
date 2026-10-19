@@ -46,6 +46,76 @@ function openUrl(roomId) {
   return url.href;
 }
 
+/** Halaman yang membuka panggilan dari notifikasi push. */
+function callUrl(callId, action) {
+  const url = new URL('/', self.location.origin);
+  url.searchParams.set('call', callId);
+  url.searchParams.set(action, '1');
+  return url.href;
+}
+
+/**
+ * Notifikasi panggilan. Browserlah yang membunyikan nada notifikasinya (web
+ * tidak mengizinkan service worker memutar audio sendiri), tapi notifikasinya
+ * tetap muncul walau tab aplikasi sudah ditutup — itu inti fiturnya.
+ */
+async function showPush(data) {
+  if (data?.type === 'call') {
+    const from = data.from || {};
+    await self.registration.showNotification(
+      `Panggilan ${data.video ? 'video' : 'suara'} dari ${from.displayName || 'seseorang'}`,
+      {
+        body: 'Ketuk Terima untuk menjawab, atau Tolak.',
+        tag: `call:${data.callId}`,
+        renotify: true,
+        requireInteraction: true,
+        vibrate: [700, 250, 700, 250, 900],
+        icon: '/logo.svg',
+        badge: '/logo.svg',
+        data: { type: 'call', callId: data.callId, uid: null, roomId: null },
+        actions: [
+          { action: 'answer', title: 'Terima' },
+          { action: 'decline', title: 'Tolak' },
+        ],
+      }
+    );
+    return;
+  }
+
+  await self.registration.showNotification(data?.title || 'Pesan baru', {
+    body: data?.body || '',
+    tag: data?.tag || 'bychat:push',
+    icon: '/logo.svg',
+    badge: '/logo.svg',
+    data: { roomId: data?.roomId || null, uid: null },
+  });
+}
+
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data?.json() || {};
+  } catch {
+    data = { title: event.data?.text() || 'Pesan baru' };
+  }
+  event.waitUntil(showPush(data));
+});
+
+/** Klik Terima/Tolak pada notifikasi panggilan. */
+async function handleCallAction(callId, action) {
+  const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const target = windows.find(
+    (client) => client.url.startsWith(self.location.origin) && client.focused
+  ) || windows[0];
+
+  if (target) {
+    target.postMessage({ type: 'bychat:notification', action: `call-${action}`, callId });
+    await target.focus().catch(() => {});
+    return;
+  }
+  return self.clients.openWindow(callUrl(callId, action));
+}
+
 /**
  * Jalur yang sama dipakai `notificationclick` dan tes browser (lewat
  * `self.bychatNotificationClick`), supaya yang diuji benar-benar yang jalan
@@ -78,6 +148,13 @@ self.bychatNotificationClick = handleNotificationClick;
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data || {};
+
+  if (data.type === 'call') {
+    const action = event.action === 'decline' ? 'decline' : 'answer';
+    event.waitUntil(handleCallAction(data.callId, action));
+    return;
+  }
+
   event.waitUntil(
     handleNotificationClick({ action: event.action, reply: event.reply, roomId: data.roomId })
   );

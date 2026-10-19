@@ -419,18 +419,21 @@
 
 <!-- ── Call overlay ────────────────────────────────────────────────── -->
 <div id="call-overlay" class="call-overlay" hidden>
-  <video id="remote-video" autoplay playsinline></video>
+  <div class="call-grid" id="call-grid" hidden></div>
   <div class="call-placeholder" id="call-placeholder">
     <div class="avatar big" id="call-avatar">?</div>
     <h3 id="call-name">—</h3>
     <p id="call-status" class="muted">memanggil…</p>
+    <p id="call-duration" class="call-duration" hidden>00:00</p>
   </div>
-  <video id="local-video" class="local-video" autoplay playsinline muted></video>
+  <div class="call-participants" id="call-participants" hidden></div>
+  <video id="local-video" class="local-video" autoplay playsinline muted hidden></video>
 
   <div class="call-controls">
     <button id="ctl-mic" class="ctl" title="Mikrofon" aria-label="Mikrofon"><svg class="ico"><use href="#i-mic" /></svg></button>
     <button id="ctl-camera" class="ctl" title="Kamera" aria-label="Kamera"><svg class="ico"><use href="#i-video" /></svg></button>
     <button id="ctl-screen" class="ctl" title="Bagikan layar" aria-label="Bagikan layar"><svg class="ico"><use href="#i-screen" /></svg></button>
+    <button id="ctl-add" class="ctl" title="Tambah orang" aria-label="Tambah orang ke panggilan"><svg class="ico"><use href="#i-user-plus" /></svg></button>
     <button id="ctl-hangup" class="ctl hangup" title="Akhiri" aria-label="Akhiri"><svg class="ico"><use href="#i-phone" /></svg></button>
   </div>
 </div>

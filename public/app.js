@@ -83,9 +83,9 @@ const state = {
   notifier: null,
   /** Panel yang sedang terbuka di kolom daftar: chats | status | calls | settings. */
   view: 'chats',
-  /** Riwayat panggilan lokal + panggilan yang sedang berjalan. */
+  /** Riwayat panggilan lokal + keadaan panggilan yang sedang berjalan. */
   callLog: [],
-  callEntry: null,
+  callState: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -173,7 +173,9 @@ const el = {
   viewerLoadingLabel: $('#viewer-loading-label'),
 
   callOverlay: $('#call-overlay'),
-  remoteVideo: $('#remote-video'),
+  callGrid: $('#call-grid'),
+  callParticipants: $('#call-participants'),
+  callDuration: $('#call-duration'),
   localVideo: $('#local-video'),
   callPlaceholder: $('#call-placeholder'),
   callAvatar: $('#call-avatar'),
@@ -182,6 +184,7 @@ const el = {
   ctlMic: $('#ctl-mic'),
   ctlCamera: $('#ctl-camera'),
   ctlScreen: $('#ctl-screen'),
+  ctlAdd: $('#ctl-add'),
   ctlHangup: $('#ctl-hangup'),
 
   incoming: $('#incoming'),
@@ -329,6 +332,7 @@ const KIND_LABEL = { image: 'Foto', video: 'Video', audio: 'Audio', file: 'Lampi
 
 /** Satu baris ringkas: dipakai di daftar chat dan di kutipan balasan. */
 function messagePreview(message) {
+  if (message.call) return callLabel(message.call);
   if (message.deleted) return 'Pesan ini sudah dihapus';
   if (message.error) return 'Pesan nggak bisa dibuka';
   const attachment = message.attachment;
@@ -509,7 +513,7 @@ async function enterApp(profile) {
   state.rooms.clear();
   state.unread.clear();
   loadRooms(profile.uid);
-  state.callEntry = null;
+  state.callState = null;
   loadCallLog(profile.uid);
 
   el.login.hidden = true;
@@ -594,8 +598,9 @@ function addCallEntry(entry) {
 
 const CALL_STATUS_LABEL = {
   answered: null,
-  missed: 'Tak terjawab',
-  unanswered: 'Tidak diangkat',
+  missed: 'Tidak terjawab',
+  unanswered: 'Tidak terjawab',
+  busy: 'Sedang ada panggilan',
 };
 
 function callDuration(seconds) {
@@ -642,40 +647,79 @@ function openCallPeer(uid) {
   selectRoom(room.id);
 }
 
-/**
- * Satu panggilan dicatat dari perubahan keadaan call manager: mulai, terjawab
- * (ada media), lalu selesai — lengkap dengan durasinya.
- */
-function logCallState(call) {
-  const active = state.calls?.active;
-
-  if (active) {
-    if (!state.callEntry) {
-      const peer = call.peer || state.incoming?.from || null;
-      state.callEntry = {
-        id: `call:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-        uid: peer?.uid || '',
-        name: peer?.displayName || '—',
-        photoURL: peer?.photoURL || null,
-        video: Boolean(call.video),
-        at: Date.now(),
-        direction: call.role === 'callee' ? 'in' : 'out',
-        answeredAt: null,
-      };
-    }
-    if (!state.callEntry.answeredAt && (call.status === 'active' || (call.remoteStream?.getTracks().length || 0) > 0)) {
-      state.callEntry.answeredAt = Date.now();
-    }
-    return;
+/** Room DM dengan seseorang, kalau percakapannya memang ada di perangkat ini. */
+function dmRoomWith(uid) {
+  if (!uid || !state.me) return null;
+  for (const room of state.rooms.values()) {
+    if (room.type === 'dm' && room.members.includes(uid)) return room;
   }
+  return null;
+}
 
-  if (!state.callEntry) return;
-  const entry = state.callEntry;
-  state.callEntry = null;
-  entry.duration = entry.answeredAt ? Math.max(1, Math.round((Date.now() - entry.answeredAt) / 1000)) : 0;
-  entry.status = entry.answeredAt ? 'answered' : entry.direction === 'in' ? 'missed' : 'unanswered';
-  delete entry.answeredAt;
-  addCallEntry(entry);
+/** Detik → "2 mnt 5 dtk". */
+function callDurationText(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return minutes ? `${minutes} mnt ${rest} dtk` : `${rest} dtk`;
+}
+
+/** Detik berjalan → "01:07", atau "1:02:03" untuk panggilan panjang. */
+function callClock(ms) {
+  const total = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (value) => String(value).padStart(2, '0');
+  return hours ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+}
+
+/**
+ * Hasil panggilan dari server: satu baris di panel Panggilan, satu bubble di
+ * chat. Server yang mengirimnya ke kedua pihak, jadi panggilan yang tidak
+ * terjawab tetap muncul di chat orang yang sedang offline.
+ */
+function applyCallLog(entry) {
+  if (!entry || !state.me) return;
+  const mineUid = state.me.uid;
+  const direction = entry.from?.uid === mineUid ? 'out' : 'in';
+  const peerUid = direction === 'out' ? entry.to?.uid : entry.from?.uid;
+  const peer = peerByUid(peerUid);
+  const name = entry.group ? 'Panggilan grup' : peer?.displayName || (direction === 'out' ? entry.to?.displayName : entry.from?.displayName) || 'Tidak dikenal';
+
+  addCallEntry({
+    id: entry.id,
+    uid: peerUid || '',
+    name,
+    photoURL: peer?.photoURL || null,
+    video: Boolean(entry.video),
+    at: entry.at || Date.now(),
+    direction,
+    status: entry.kind === 'busy' ? 'busy' : entry.kind === 'answered' ? 'answered' : 'missed',
+    duration: Number(entry.duration) || 0,
+  });
+
+  const room = dmRoomWith(peerUid);
+  if (!room) return;
+  const id = `call:${entry.id}`;
+  if (room.messages.some((message) => message.id === id)) return;
+
+  room.messages.push({
+    id,
+    from: direction === 'out' ? mineUid : peerUid,
+    at: entry.at || Date.now(),
+    call: {
+      kind: entry.kind === 'busy' ? 'busy' : entry.kind === 'answered' ? 'answered' : 'missed',
+      video: Boolean(entry.video),
+      direction,
+      duration: Number(entry.duration) || 0,
+      group: Boolean(entry.group),
+    },
+  });
+
+  saveRooms();
+  if (state.activeRoomId === room.id) renderMessages();
+  renderChatList();
 }
 
 /* ------------------------------------------------------------------ *
@@ -853,9 +897,12 @@ function connect(token) {
     }
     renderChatList();
     for (const envelope of payload.inbox || []) receiveMessage(envelope);
+    // Catatan panggilan yang terjadi saat perangkat ini tertutup.
+    for (const entry of payload.callLogs || []) applyCallLog(entry);
     if (!state.activeRoomId) renderEmptyState();
     openRoomFromQuery();
     flushNotificationReply();
+    syncPushSubscription(token);
     if (!payload.server?.calls?.hasTurn) {
       console.info('TURN belum dikonfigurasi — panggilan bisa gagal di NAT ketat/CGNAT.');
     }
@@ -895,22 +942,53 @@ function connect(token) {
   setupCalls();
 }
 
+/** Daftarkan endpoint Web Push supaya panggilan tetap berdering saat tab ditutup. */
+function syncPushSubscription(token) {
+  const publicKey = state.config?.calls?.pushPublicKey;
+  if (!publicKey || !token) return;
+  state.notifier?.syncPush?.(publicKey, token);
+}
+
 function setupCalls() {
+  // Hasil panggilan (terjawab/tidak terjawab/sibuk) ditulis ke chat kedua pihak.
+  socket.on('call:log', (entry) => applyCallLog(entry));
+
   socket.on('call:incoming', (data) => {
     state.incoming = data;
-    el.incomingName.textContent = data.from.displayName;
-    el.incomingAvatar.textContent = initials(data.from.displayName);
-    el.incomingAvatar.dataset.uid = data.from.uid;
-    el.incomingKind.textContent = data.video ? 'Panggilan video masuk' : 'Panggilan suara masuk';
+    const from = data.from || { uid: '', displayName: '—' };
+    el.incomingName.textContent = from.displayName;
+    el.incomingAvatar.textContent = initials(from.displayName);
+    el.incomingAvatar.dataset.uid = from.uid;
+    const extra = (data.members || []).filter((member) => member.uid !== from.uid).length;
+    el.incomingKind.textContent = [
+      data.video ? 'Panggilan video masuk' : 'Panggilan suara masuk',
+      extra ? `${extra + 1} orang` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
     el.incoming.hidden = false;
     paintAvatars();
-    state.calls?.handleIncoming(data);
-    renderCall(state.calls ? {} : {});
-    showToast(`${data.from.displayName} menelepon…`, 5000);
+    // Call manager sudah menerima event yang sama dari socket dan menyiapkan
+    // state-nya; memanggil handleIncoming lagi di sini akan dianggap panggilan
+    // kedua dan langsung ditolak.
+    startRingtone();
+    showToast(`${from.displayName} menelepon…`, 5000);
+
+    // Notifikasi push punya tombol Terima/Tolak; keduanya membuka halaman ini
+    // dengan callId yang sama, jadi keputusannya diteruskan ke sini.
+    const params = new URLSearchParams(location.search);
+    if (params.get('answer') === data.callId) {
+      history.replaceState(null, '', location.pathname);
+      setTimeout(() => state.calls?.acceptCall(), 350);
+    } else if (params.get('decline') === data.callId) {
+      history.replaceState(null, '', location.pathname);
+      setTimeout(() => state.calls?.rejectCall(), 250);
+    }
   });
 
   state.calls = createCallManager({
     socket,
+    selfUid: () => state.me?.uid || null,
     iceServers: state.config.calls.iceServers,
     onState: (call) => renderCall(call),
     onError: (err) => showToast(`Panggilan: ${err.message}`),
@@ -1072,7 +1150,22 @@ function notifyIncoming(room, envelope, parsed, error) {
  * Aksi dari notifikasi: buka chat-nya, dan kalau platformnya mendukung balasan
  * langsung (Chrome Android), kirim teks yang sudah diketik di sana.
  */
-async function handleNotificationAction({ action = 'open', roomId, reply } = {}) {
+async function handleNotificationAction({ action = 'open', roomId, reply, callId } = {}) {
+  // Tombol Terima/Tolak di notifikasi panggilan.
+  if (action === 'call-answer' || action === 'call-decline') {
+    if (!state.calls?.active) return;
+    if (action === 'call-answer') {
+      el.incoming.hidden = true;
+      stopRingtone();
+      state.calls.acceptCall();
+    } else {
+      el.incoming.hidden = true;
+      stopRingtone();
+      state.calls.rejectCall();
+    }
+    return;
+  }
+
   if (!roomId) return;
   const room = state.rooms.get(roomId);
   if (!room) return;
@@ -1901,6 +1994,7 @@ function paintNavBadges(unreadTotal = [...state.unread.values()].reduce((sum, co
 function preview(message) {
   if (!message) return 'Belum ada pesan';
   if (message.system) return message.text;
+  if (message.call) return messagePreview(message);
   const body = messagePreview(message);
   return message.from === state.me?.uid ? `Kamu: ${body}` : body;
 }
@@ -2022,6 +2116,63 @@ function reactionsNode(message) {
   return wrap;
 }
 
+function callLabel(info = {}) {
+  if (info.kind === 'busy') return 'Ada panggilan yang sedang berlangsung';
+  if (info.kind === 'answered') return 'Panggilan terjawab';
+  return 'Panggilan tidak terjawab';
+}
+
+/** Satu panggilan yang sudah selesai, ditulis di dalam percakapan. */
+function callBubbleNode(message) {
+  const info = message.call || {};
+  const node = document.createElement('div');
+  node.className = `msg-call${info.kind === 'missed' ? ' missed' : ''}${info.direction === 'out' ? ' out' : ''}`;
+  const detail = [
+    info.video ? 'Video' : 'Suara',
+    info.direction === 'out' ? 'keluar' : 'masuk',
+    info.kind === 'answered' && info.duration ? callDurationText(info.duration) : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  node.innerHTML = `
+    <span class="msg-call-icon"><svg class="ico"><use href="#${info.video ? 'i-video' : 'i-phone'}" /></svg></span>
+    <span class="msg-call-body">
+      <strong>${esc(callLabel(info))}</strong>
+      <span class="muted">${esc(detail)}</span>
+    </span>
+    <span class="msg-call-time muted">${formatTime(message.at)}</span>
+  `;
+  return node;
+}
+
+/** Panggilan yang berlangsung dengan lawan bicara room ini, kalau ada. */
+function ongoingCallFor(room) {
+  const call = state.callState;
+  if (!call || !state.calls?.active || call.status === 'incoming') return null;
+  const uids = (call.participants || []).map((person) => person.uid);
+  if (room.type === 'dm') return uids.includes(otherUid(room)) ? call : null;
+  return null;
+}
+
+function ongoingCallBubble(call) {
+  const ringing = call.status === 'outgoing';
+  const started = Number(call.answeredAt) || Date.now();
+  const node = document.createElement('div');
+  node.className = 'msg-call live';
+  node.innerHTML = `
+    <span class="msg-call-icon"><svg class="ico"><use href="#i-phone" /></svg></span>
+    <span class="msg-call-body">
+      <strong>${ringing ? 'Memanggil…' : 'Panggilan sedang berlangsung'}</strong>
+      <span class="muted">
+        <span class="call-dot"></span>
+        ${ringing ? 'menunggu dijawab' : `<span data-live-call="${started}">${callClock(Date.now() - started)}</span>`}
+        · ${call.video ? 'video' : 'suara'}
+      </span>
+    </span>
+  `;
+  return node;
+}
+
 function renderMessages() {
   const room = state.rooms.get(state.activeRoomId);
   el.messages.innerHTML = '';
@@ -2029,6 +2180,10 @@ function renderMessages() {
 
   let lastDay = null;
   for (const message of room.messages) {
+    if (message.call) {
+      el.messages.appendChild(callBubbleNode(message));
+      continue;
+    }
     if (message.system) {
       const note = document.createElement('div');
       note.className = 'system-note';
@@ -2087,6 +2242,11 @@ function renderMessages() {
     el.messages.appendChild(div);
   }
 
+  // Panggilan yang sedang berjalan tampil sebagai bubble hidup paling bawah,
+  // lengkap dengan detik yang terus berjalan.
+  const ongoing = ongoingCallFor(room);
+  if (ongoing) el.messages.appendChild(ongoingCallBubble(ongoing));
+
   el.messages.scrollTop = el.messages.scrollHeight;
   renderTyping();
 }
@@ -2131,45 +2291,204 @@ function attachCallMedia(node, stream) {
   });
 }
 
+/* ---- Dering ---- *
+ * Nada dering dibuat dengan Web Audio, bukan file audio: tidak ada aset yang
+ * perlu diunduh dan tidak ada permintaan jaringan saat telepon masuk.
+ */
+let ringtone = null;
+
+function startRingtone() {
+  if (ringtone) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    // Browser bisa menahan audio sampai ada interaksi; kalau sudah pernah
+    // mengetuk apa pun (login, chat), konteksnya langsung jalan.
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 660;
+    gain.gain.value = 0;
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+
+    const pulse = () => {
+      if (!ringtone) return;
+      const now = ctx.currentTime + 0.02;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.22, now + 0.06);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.55);
+      gain.gain.setValueAtTime(0.0001, now + 0.7);
+      gain.gain.exponentialRampToValueAtTime(0.22, now + 0.76);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.25);
+      ringtone.timer = setTimeout(pulse, 2400);
+    };
+
+    ringtone = { ctx, osc, timer: null };
+    pulse();
+    navigator.vibrate?.([400, 180, 400, 180, 700]);
+  } catch (err) {
+    console.warn('Dering panggilan gagal diputar:', err.message);
+  }
+}
+
+function stopRingtone() {
+  if (!ringtone) return;
+  clearTimeout(ringtone.timer);
+  try {
+    ringtone.osc.stop();
+    ringtone.ctx.close();
+  } catch {
+    /* sudah berhenti */
+  }
+  ringtone = null;
+  navigator.vibrate?.(0);
+}
+
+/* ---- Tampilan panggilan ---- */
+
+function clearCallGrid() {
+  el.callGrid.innerHTML = '';
+  el.callGrid.hidden = true;
+}
+
+/**
+ * Satu petak per peserta — <video> selalu ada, karena elemen itulah yang
+ * memutar suara lawan bicara. Kalau kameranya mati, petaknya menampilkan
+ * avatar, bukan kotak hitam.
+ */
+function syncCallGrid(participants) {
+  el.callGrid.hidden = participants.length === 0;
+  el.callPlaceholder.hidden = participants.length > 0;
+
+  const keep = new Set();
+  for (const person of participants) {
+    keep.add(person.uid);
+    let tile = el.callGrid.querySelector(`[data-uid="${person.uid}"]`);
+    if (!tile) {
+      tile = document.createElement('div');
+      tile.className = 'call-tile';
+      tile.dataset.uid = person.uid;
+      const media = document.createElement('video');
+      media.autoplay = true;
+      media.playsInline = true;
+      const avatar = document.createElement('span');
+      avatar.className = 'avatar call-tile-avatar';
+      const name = document.createElement('span');
+      name.className = 'call-tile-name';
+      tile.append(media, avatar, name);
+      el.callGrid.appendChild(tile);
+    }
+
+    const hasVideo = Boolean(person.stream?.getVideoTracks().length);
+    const media = tile.querySelector('video');
+    media.hidden = !hasVideo;
+    tile.classList.toggle('no-video', !hasVideo);
+    tile.querySelector('.call-tile-name').textContent = person.displayName || '—';
+    const avatar = tile.querySelector('.call-tile-avatar');
+    avatar.textContent = initials(person.displayName);
+    avatar.dataset.uid = person.uid;
+    if (person.stream) attachCallMedia(media, person.stream);
+  }
+
+  for (const tile of [...el.callGrid.children]) if (!keep.has(tile.dataset.uid)) tile.remove();
+  el.callGrid.classList.toggle('multi', participants.length > 1);
+  paintAvatars(el.callGrid);
+}
+
+function renderCallParticipants(participants) {
+  el.callParticipants.innerHTML = '';
+  el.callParticipants.hidden = participants.length < 2;
+  for (const person of participants) {
+    const chip = document.createElement('span');
+    chip.className = 'call-chip';
+    chip.classList.toggle('live', person.connection === 'connected' || Boolean(person.stream?.getTracks().length));
+    chip.innerHTML = `<span class="avatar">${esc(initials(person.displayName))}</span><span>${esc(person.displayName || '—')}</span>`;
+    chip.querySelector('.avatar').dataset.uid = person.uid;
+    el.callParticipants.appendChild(chip);
+  }
+  paintAvatars(el.callParticipants);
+}
+
 function renderCall(call = {}) {
   const active = state.calls?.active;
-  logCallState(call);
+  state.callState = active ? call : null;
+  // Dipakai skrip browser-check untuk membaca keadaan panggilan yang sebenarnya.
+  window.__bychatCallState = state.callState;
   el.callOverlay.hidden = !active;
+  if (call.notice) showToast(call.notice, 3000);
 
   if (!active) {
+    stopRingtone();
     el.incoming.hidden = true;
     state.incoming = null;
-    el.remoteVideo.srcObject = null;
     el.localVideo.srcObject = null;
+    el.localVideo.hidden = true;
+    clearCallGrid();
+    el.callParticipants.hidden = true;
+    el.callDuration.hidden = true;
+    // Bubble "panggilan sedang berlangsung" harus hilang dari chat.
+    if (state.activeRoomId) renderMessages();
     if (call.endedPeer) {
+      const duration =
+        call.endedAnswered && call.endedDuration ? ` (${callDurationText(call.endedDuration)})` : '';
       showToast(
         call.endedReason
           ? `Panggilan dengan ${call.endedPeer} berakhir: ${call.endedReason}.`
-          : `Panggilan dengan ${call.endedPeer} berakhir.`
+          : `Panggilan dengan ${call.endedPeer} berakhir${duration}.`
       );
     }
     return;
   }
 
-  if (call.localStream) attachCallMedia(el.localVideo, call.localStream);
-
-  if (call.remoteStream && call.remoteStream.getTracks().length) {
-    attachCallMedia(el.remoteVideo, call.remoteStream);
-    el.callPlaceholder.hidden = true;
+  if (call.status === 'incoming') {
+    startRingtone();
   } else {
-    el.callPlaceholder.hidden = false;
+    stopRingtone();
+    el.incoming.hidden = true;
   }
 
-  const peerName = call.peer?.displayName || '—';
-  el.callName.textContent = peerName;
-  el.callAvatar.textContent = initials(peerName);
+  if (call.localStream) {
+    attachCallMedia(el.localVideo, call.localStream);
+    el.localVideo.hidden = !(call.cameraOn || call.screenSharing);
+  }
+
+  const participants = call.participants || [];
+  syncCallGrid(participants);
+  renderCallParticipants(participants);
+
+  const primary = call.peer?.displayName || participants[0]?.displayName || '—';
+  const names = participants.map((person) => person.displayName).filter(Boolean);
+  el.callName.textContent = participants.length > 1 ? `Panggilan grup · ${participants.length + 1} orang` : primary;
+  el.callAvatar.textContent = initials(primary);
   el.callAvatar.dataset.uid = call.peer?.uid || '';
-  el.callStatus.textContent =
-    call.status === 'outgoing' ? 'memanggil…' : call.status === 'incoming' ? 'panggilan masuk' : 'menyambungkan…';
+
+  if (call.status === 'outgoing') {
+    el.callStatus.textContent = names.length ? `memanggil ${names.join(', ')}…` : 'memanggil…';
+  } else if (call.status === 'incoming') {
+    el.callStatus.textContent = 'panggilan masuk';
+  } else if (call.status === 'connecting') {
+    el.callStatus.textContent = 'menyambungkan…';
+  } else {
+    el.callStatus.textContent = 'panggilan berlangsung';
+  }
+
+  const answeredAt = Number(call.answeredAt) || 0;
+  el.callDuration.hidden = !answeredAt || call.status === 'incoming';
+  if (answeredAt) {
+    el.callDuration.dataset.liveCall = String(answeredAt);
+    el.callDuration.textContent = callClock(Date.now() - answeredAt);
+  } else {
+    delete el.callDuration.dataset.liveCall;
+  }
 
   el.ctlMic.classList.toggle('off', call.micOn === false);
   el.ctlCamera.classList.toggle('off', call.cameraOn === false);
   el.ctlScreen.classList.toggle('off', call.screenSharing === true);
+  el.ctlAdd.hidden = participants.length + 1 >= 8;
   paintAvatars();
 }
 
@@ -2178,13 +2497,78 @@ function startCall(video) {
   if (!room || room.type !== 'dm') return;
   const uid = otherUid(room);
   const peer = peerByUid(uid);
-  if (!peer) return showToast('Kontak nggak dikenal.');
-  if (!peer.online) return showToast(`${peer.displayName} sedang offline.`);
 
+  // Panggilan tidak lagi mensyaratkan lawannya online: undangannya tetap
+  // berdering dan dia dapat notifikasi push. Statusnya akan tampil "memanggil…".
   state.calls
-    .startCall(uid, { displayName: peer.displayName, photoURL: peer.photoURL }, { video })
+    .startCall(
+      uid,
+      { displayName: peer?.displayName || displayName(room), photoURL: peer?.photoURL || null },
+      { video }
+    )
     .catch((err) => showToast(err.message));
 }
+
+/** Pilih kontak untuk ditambahkan ke panggilan yang sedang berjalan. */
+function openAddPersonPicker() {
+  if (!state.calls?.active) return;
+  const current = new Set([state.me.uid, ...(state.callState?.participants || []).map((person) => person.uid)]);
+
+  const people = new Map();
+  for (const person of contactList()) people.set(person.uid, person);
+  for (const person of state.directory) {
+    if (!people.has(person.uid)) {
+      people.set(person.uid, { uid: person.uid, name: person.displayName, online: person.online });
+    }
+  }
+
+  const candidates = [...people.values()].filter((person) => !current.has(person.uid));
+  if (!candidates.length) return showToast('Belum ada kontak lain yang bisa ditambahkan.');
+
+  openModal(`
+    <h3>Tambah ke panggilan</h3>
+    <p class="sub">Panggilan tetap berjalan. Orang yang aplikasinya belum terbuka tetap mendapat notifikasi.</p>
+    <div class="add-person-list" id="add-person-list"></div>
+  `);
+
+  const list = document.getElementById('add-person-list');
+  for (const person of candidates.slice(0, 40)) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'add-person-row';
+    row.innerHTML = `
+      <span class="avatar">${esc(initials(person.name))}</span>
+      <span class="add-person-text">
+        <strong>${esc(person.name)}</strong>
+        <span class="muted">${person.online ? 'online' : 'offline — tetap dapat notifikasi'}</span>
+      </span>
+      <span class="ghost">Tambah</span>
+    `;
+    row.querySelector('.avatar').dataset.uid = person.uid;
+    row.addEventListener('click', async () => {
+      row.disabled = true;
+      try {
+        await state.calls.addParticipant(person.uid, { displayName: person.name });
+        closeModal();
+        showToast(`Undangan panggilan dikirim ke ${person.name}.`);
+      } catch (err) {
+        row.disabled = false;
+        showToast(err.message);
+      }
+    });
+    list.appendChild(row);
+  }
+  paintAvatars(list);
+}
+
+// Detik berjalan di layar panggilan dan di bubble chat diperbarui di satu
+// tempat, supaya keduanya tidak pernah berbeda angka.
+setInterval(() => {
+  for (const node of document.querySelectorAll('[data-live-call]')) {
+    const started = Number(node.dataset.liveCall) || 0;
+    if (started) node.textContent = callClock(Date.now() - started);
+  }
+}, 1000);
 
 /* ------------------------------------------------------------------ *
  * Modals
@@ -3126,6 +3510,14 @@ el.panelSettings.querySelector('[data-notify-toggle]').addEventListener('click',
 
   const result = await state.notifier.enable();
   paintNotificationSetting();
+  if (result.ok) {
+    // Langsung daftarkan push, tanpa menunggu halaman dimuat ulang — kalau
+    // tidak, panggilan baru bisa berdering di luar tab setelah reload berikutnya.
+    state.auth
+      ?.getIdToken?.()
+      .then((token) => syncPushSubscription(token))
+      .catch(() => {});
+  }
   showToast(result.ok ? 'Notifikasi aktif.' : result.error, result.ok ? 3000 : 7000);
 });
 // `+` membuka halaman tambah kontak, bukan daftar orang yang sedang online.
@@ -3181,7 +3573,7 @@ document.addEventListener('keydown', (event) => {
 document.addEventListener(
   'click',
   () => {
-    for (const node of [el.remoteVideo, el.localVideo]) {
+    for (const node of document.querySelectorAll('#call-overlay video')) {
       if (node.srcObject && node.paused) attachCallMedia(node, node.srcObject);
     }
   },
@@ -3202,17 +3594,23 @@ el.search.addEventListener('input', renderChatList);
 
 el.btnCallAudio.addEventListener('click', () => startCall(false));
 el.btnCallVideo.addEventListener('click', () => startCall(true));
-el.ctlHangup.addEventListener('click', () => state.calls?.end());
+el.ctlHangup.addEventListener('click', () => {
+  stopRingtone();
+  state.calls?.end();
+});
+el.ctlAdd.addEventListener('click', openAddPersonPicker);
 el.ctlMic.addEventListener('click', () => state.calls?.toggleMic());
 el.ctlCamera.addEventListener('click', () => state.calls?.toggleCamera().catch((e) => showToast(e.message)));
 el.ctlScreen.addEventListener('click', () => state.calls?.toggleScreenShare().catch((e) => showToast(e.message)));
 
 el.btnAccept.addEventListener('click', () => {
   el.incoming.hidden = true;
+  stopRingtone();
   state.calls?.acceptCall();
 });
 el.btnDecline.addEventListener('click', () => {
   el.incoming.hidden = true;
+  stopRingtone();
   state.calls?.rejectCall();
 });
 

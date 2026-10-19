@@ -29,6 +29,7 @@ import { createStorage, isSafePath, newBlobPath, resolveLocalPath, sniffImageTyp
 import { createUsernameRegistry, createUsernameStore } from './usernames.js';
 import { createModeration, createModerationStore, REPORT_REASONS } from './moderation.js';
 import { createAccountIndex, createAccountStore, looksLikeEmail, phoneDigits } from './accounts.js';
+import { createPushService } from './push.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,12 +59,26 @@ const accountStore = await createAccountStore(config);
 const accounts = await createAccountIndex({ store: accountStore });
 const savedAccounts = await accounts.load();
 
+// Web Push: satu-satunya jalan memberi tahu seseorang bahwa ada telepon masuk
+// saat halamannya belum terbuka. Kalau kuncinya tidak bisa dipakai, layanan ini
+// mati sendiri dan panggilan tetap bisa diterima lewat socket seperti biasa.
+const push = await createPushService(config);
+
 /** uid -> { profile, publicKey, socketId, socket } */
 const directory = new Map();
 /** uid -> [envelope] queued while offline */
 const inbox = new Map();
-/** callId -> { from, to, startedAt } */
+/**
+ * callId -> call room.
+ *
+ * Satu panggilan bukan lagi sepasang orang: siapa pun yang sudah diterima bisa
+ * mengundang anggota lain ke room yang sama, dan server hanya meneruskan
+ * SDP/ICE antar anggota. Bentuknya { id, host, video, members, ever, ... },
+ * dengan `members` berisi Map(uid -> { accepted, joinedAt, invitedBy }).
+ */
 const calls = new Map();
+/** uid -> [call log] yang belum sempat dikirim (penerima sedang offline). */
+const callLogs = new Map();
 /** uid -> { version, contentType, size } for the profile photo */
 const avatars = new Map();
 /** statusId -> { id, from, at, members, payload } */
@@ -80,6 +95,10 @@ const sentMessages = new Map();
 const MAX_INBOX = 500;
 const MAX_SENT_MESSAGES = 4000;
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+const MAX_CALL_LOGS = 40;
+const MAX_CALL_MEMBERS = 8;
+/** Berapa lama panggilan berdering sebelum dianggap tidak terjawab. */
+const CALL_RING_MS = Math.max(5000, Number(process.env.CALL_RING_MS || 45_000));
 /** A status is gone after a day, like the one everybody is used to. */
 const STATUS_TTL = 24 * 60 * 60 * 1000;
 const MAX_STATUSES_PER_USER = 30;
@@ -120,7 +139,7 @@ app.use((_req, res, next) => {
 
 app.get('/config.json', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json(publicConfig());
+  res.json(publicConfig(push.publicKey()));
 });
 
 app.get('/healthz', (_req, res) => {
@@ -133,10 +152,32 @@ app.get('/healthz', (_req, res) => {
     accounts: accounts.size(),
     avatars: avatars.size,
     trackedMessages: sentMessages.size,
-    statuses: statuses.size(),
+    statuses: statuses.size,
     calls: calls.size,
+    push: { enabled: push.enabled, subscriptions: push.count() },
     moderation: { bans: moderation.bannedCount(), openReports: moderation.openReportCount() },
   });
+});
+
+/* ---- Web Push --------------------------------------------------- *
+ * Browser mendaftarkan endpoint push-nya di sini setelah izin notifikasi
+ * diberikan. Yang disimpan hanya endpoint + kunci enkripsi transport milik
+ * browser; isi pesannya tetap tidak pernah lewat sini.
+ */
+app.post(
+  '/api/push/subscribe',
+  authenticateRequest,
+  express.json({ limit: '32kb' }),
+  async (req, res) => {
+    const ok = await push.subscribe(req.profile.uid, req.body?.subscription);
+    if (!ok) return res.status(400).json({ error: 'Langganan push tidak valid.' });
+    res.json({ ok: true });
+  }
+);
+
+app.post('/api/push/unsubscribe', authenticateRequest, express.json({ limit: '8kb' }), async (req, res) => {
+  await push.unsubscribe(req.profile.uid, req.body?.endpoint);
+  res.json({ ok: true });
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -237,6 +278,158 @@ function queueOrDeliver(uid, envelope) {
   if (queue.length > MAX_INBOX) queue.splice(0, queue.length - MAX_INBOX);
   inbox.set(uid, queue);
   return 'queued';
+}
+
+/* ------------------------------------------------------------------ *
+ * Panggilan: room, roster, dan catatan panggilan
+ *
+ * Server tidak menyentuh media. Yang diurusnya cuma siapa ada di room mana,
+ * siapa sudah menjawab, dan kapan panggilan berakhir — cukup untuk menolak
+ * sinyal dari orang luar dan untuk menulis "tidak terjawab" di chat kedua
+ * pihak walau salah satunya sedang offline.
+ * ------------------------------------------------------------------ */
+
+function memberInfo(uid) {
+  const id = String(uid);
+  const entry = directory.get(id);
+  return {
+    uid: id,
+    displayName: usernameFor(id) || entry?.profile.displayName || id.slice(0, 8),
+    photoURL: avatarUrl(id) || entry?.profile.photoURL || null,
+  };
+}
+
+/** Anggota yang sudah menjawab — yang boleh dipakai sebagai tujuan sinyal. */
+function callRoster(call) {
+  return [...call.members.entries()]
+    .filter(([, member]) => member.accepted)
+    .map(([uid, member]) => ({ ...memberInfo(uid), joinedAt: member.joinedAt }));
+}
+
+/** Panggilan yang sedang berjalan (termasuk yang masih berdering) untuk uid. */
+function activeCallFor(uid) {
+  for (const call of calls.values()) {
+    if (!call.ended && call.members.has(uid)) return call;
+  }
+  return null;
+}
+
+function incomingPayload(call, uid) {
+  const member = call.members.get(uid);
+  const inviter = member?.invitedBy || call.host;
+  return {
+    callId: call.id,
+    video: call.video,
+    from: memberInfo(inviter),
+    members: callRoster(call),
+    startedAt: call.createdAt,
+    answeredAt: call.answeredAt,
+  };
+}
+
+/** Relay ke satu uid. false = orangnya sedang tidak tersambung. */
+function sendTo(uid, event, payload) {
+  const target = directory.get(String(uid));
+  if (!target?.socketId) return false;
+  io.to(target.socketId).emit(event, payload);
+  return true;
+}
+
+/**
+ * Undang satu orang ke room. Kalau dia tidak tersambung, notifikasinya tetap
+ * dikirim lewat Web Push — itu satu-satunya cara dering tanpa halaman terbuka.
+ */
+function deliverCallInvite(call, uid, invitedBy) {
+  const payload = incomingPayload(call, uid);
+  payload.from = memberInfo(invitedBy);
+  const delivered = sendTo(uid, 'call:incoming', payload);
+  if (!delivered) {
+    push
+      .notify(uid, {
+        type: 'call',
+        callId: call.id,
+        video: call.video,
+        from: payload.from,
+        members: payload.members,
+        at: Date.now(),
+      })
+      .catch(() => {});
+  }
+  return delivered;
+}
+
+function takeCallLogs(uid) {
+  const list = callLogs.get(String(uid));
+  callLogs.delete(String(uid));
+  return list || [];
+}
+
+function deliverCallLog(uid, entry) {
+  if (sendTo(uid, 'call:log', entry)) return;
+  const list = callLogs.get(String(uid)) || [];
+  list.push(entry);
+  if (list.length > MAX_CALL_LOGS) list.splice(0, list.length - MAX_CALL_LOGS);
+  callLogs.set(String(uid), list);
+}
+
+/**
+ * Tutup satu panggilan: beri tahu semua yang pernah terlibat, lalu catat
+ * hasilnya di chat masing-masing. Durasi dihitung dari saat panggilan dijawab.
+ */
+function finishCall(call, reason) {
+  if (!call || call.ended) return;
+  call.ended = true;
+  clearTimeout(call.timer);
+  call.timer = null;
+
+  const duration = call.answeredAt ? Math.max(1, Math.round((Date.now() - call.answeredAt) / 1000)) : 0;
+  const answered = Boolean(call.answeredAt);
+  const ever = [...call.ever];
+
+  for (const uid of ever) {
+    sendTo(uid, 'call:ended', { callId: call.id, reason, duration, answered });
+    const other = ever.find((candidate) => candidate !== uid) || uid;
+    deliverCallLog(uid, {
+      id: crypto.randomUUID(),
+      kind: answered ? 'answered' : 'missed',
+      callId: call.id,
+      video: call.video,
+      at: Date.now(),
+      duration,
+      reason: reason || '',
+      group: ever.length > 2,
+      from: memberInfo(uid),
+      to: memberInfo(other),
+      participants: ever.map(memberInfo),
+    });
+  }
+
+  calls.delete(call.id);
+}
+
+function leaveCall(call, uid, reason) {
+  if (!call || call.ended) return;
+  const member = call.members.get(uid);
+  if (!member) return;
+  call.members.delete(uid);
+
+  const remaining = [...call.members.entries()].filter(([, entry]) => entry.accepted);
+  // Satu orang tersisa = tidak ada lagi yang bisa diajak bicara.
+  if (remaining.length < 2) return finishCall(call, reason || 'selesai');
+  if (member.accepted) {
+    for (const [otherUid] of remaining) {
+      sendTo(otherUid, 'call:member-left', { callId: call.id, uid });
+    }
+  }
+}
+
+function armRingTimer(call) {
+  call.timer = setTimeout(() => {
+    if (call.ended || call.answeredAt) return;
+    finishCall(call, 'tidak dijawab');
+  }, CALL_RING_MS);
+  // Timer panggilan tidak boleh menahan proses tetap hidup saat server ditutup.
+  call.timer.unref?.();
 }
 
 function sanitizeUids(uids) {
@@ -555,12 +748,22 @@ io.on('connection', (socket) => {
     directory: publicDirectory(),
     statuses: statusListFor(uid),
     inbox: pending,
+    // Catatan panggilan yang terjadi saat perangkat ini tertutup: tanpa ini,
+    // "panggilan tidak terjawab" cuma terlihat oleh orang yang menelpon.
+    callLogs: takeCallLogs(uid),
     // Cuma dipakai buat menampilkan tautan ke /admin.html; halaman itu sendiri
     // tetap memeriksa ulang ke server.
     admin: isAdmin(profile),
     server: { auth: verifier.mode, storage: storage.driver, calls: publicConfig().calls },
   });
   broadcastDirectory();
+
+  // Undangan panggilan yang masih berdering dikirim ulang setelah tersambung,
+  // supaya orang yang membuka aplikasi di tengah deringan tetap bisa menjawab.
+  for (const call of calls.values()) {
+    const member = call.members.get(uid);
+    if (member && !member.accepted && !call.ended) socket.emit('call:incoming', incomingPayload(call, uid));
+  }
 
   socket.on('publish_key', (key) => {
     if (!key?.x) return;
@@ -820,71 +1023,155 @@ io.on('connection', (socket) => {
    * relay (if used) only forwards those already-encrypted packets.
    */
 
-  const relayTo = (toUid, event, payload) => {
-    const target = directory.get(String(toUid));
-    if (!target?.socketId) return false;
-    io.to(target.socketId).emit(event, payload);
-    return true;
-  };
-
-  socket.on('call:invite', ({ toUid, video } = {}, ack) => {
+  /**
+   * Mulai panggilan baru, atau tambah satu orang ke panggilan yang sudah jalan
+   * (kalau `callId` ikut dikirim). Penerima yang sedang offline tetap boleh
+   * dipanggil: panggilannya berdering sampai batas waktu, dan dia dapat
+   * notifikasi push. Yang ditolak cuma yang sedang sibuk di panggilan lain.
+   */
+  socket.on('call:invite', ({ toUid, video, callId: joinId } = {}, ack) => {
     if (!usernames.get(uid)) return ack?.({ ok: false, error: 'Pilih username dulu.' });
     const to = String(toUid || '');
-    if (!directory.has(to)) return ack?.({ ok: false, error: 'User tidak ditemukan' });
     if (to === uid) return ack?.({ ok: false, error: 'Nggak bisa nelpon diri sendiri' });
+    if (!knownUids().has(to)) return ack?.({ ok: false, error: 'User tidak ditemukan' });
+    if (moderation.isBanned(to)) return ack?.({ ok: false, error: 'Akun itu sedang diblokir.' });
 
-    const callId = crypto.randomUUID();
-    calls.set(callId, { from: uid, to, startedAt: Date.now() });
-
-    const reachable = relayTo(to, 'call:incoming', {
-      callId,
-      video: !!video,
-      from: { uid, displayName: profile.displayName, photoURL: profile.photoURL },
-    });
-    if (!reachable) {
-      calls.delete(callId);
-      return ack?.({ ok: false, error: 'Dia sedang offline' });
+    // Sibuk: orang yang sudah di panggilan lain (termasuk yang masih berdering)
+    // tidak boleh dideringi dua kali. Pemanggilnya yang diberi tahu.
+    const busy = activeCallFor(to);
+    if (busy) {
+      deliverCallLog(uid, {
+        id: crypto.randomUUID(),
+        kind: 'busy',
+        callId: busy.id,
+        video: Boolean(video),
+        at: Date.now(),
+        duration: 0,
+        group: false,
+        from: memberInfo(uid),
+        to: memberInfo(to),
+        participants: [memberInfo(uid), memberInfo(to)],
+      });
+      return ack?.({ ok: false, busy: true, error: 'Ada panggilan yang sedang berlangsung' });
     }
-    ack?.({ ok: true, callId });
+
+    let call = null;
+    if (joinId) {
+      call = calls.get(String(joinId));
+      const mine = call?.members.get(uid);
+      if (!call || call.ended || !mine?.accepted) {
+        return ack?.({ ok: false, error: 'Panggilan itu sudah selesai.' });
+      }
+      if (call.members.has(to)) return ack?.({ ok: false, error: 'Dia sudah ada di panggilan ini.' });
+      const accepted = [...call.members.values()].filter((member) => member.accepted).length;
+      if (accepted >= MAX_CALL_MEMBERS) {
+        return ack?.({ ok: false, error: `Maksimal ${MAX_CALL_MEMBERS} orang dalam satu panggilan.` });
+      }
+      call.members.set(to, { accepted: false, joinedAt: Date.now(), invitedBy: uid });
+      call.ever.add(to);
+    } else {
+      if (activeCallFor(uid)) return ack?.({ ok: false, error: 'Kamu sedang dalam panggilan.' });
+      call = {
+        id: crypto.randomUUID(),
+        host: uid,
+        video: Boolean(video),
+        createdAt: Date.now(),
+        answeredAt: null,
+        members: new Map([[uid, { accepted: true, joinedAt: Date.now(), invitedBy: uid }]]),
+        ever: new Set([uid]),
+        timer: null,
+        ended: false,
+      };
+      call.members.set(to, { accepted: false, joinedAt: Date.now(), invitedBy: uid });
+      call.ever.add(to);
+      calls.set(call.id, call);
+      armRingTimer(call);
+    }
+
+    deliverCallInvite(call, to, uid);
+    ack?.({
+      ok: true,
+      callId: call.id,
+      video: call.video,
+      startedAt: call.createdAt,
+      answeredAt: call.answeredAt,
+      members: callRoster(call),
+    });
   });
 
-  /** Only the two participants of a live call may signal on it. */
-  const withCall = (data, fn) => {
-    const call = calls.get(String(data?.callId || ''));
-    if (!call) return false;
-    if (call.from !== uid && call.to !== uid) return false;
-    fn(call);
-    return true;
-  };
-
   socket.on('call:signal', (data) => {
-    withCall(data, (call) => relayTo(call.from === uid ? call.to : call.from, 'call:signal', {
-      callId: data.callId,
-      from: uid,
-      data: data.data,
-    }));
+    const call = calls.get(String(data?.callId || ''));
+    if (!call || call.ended || !call.members.has(uid)) return;
+    const to = String(data.toUid || '');
+    const target = call.members.get(to);
+    // Hanya antar anggota yang sudah menjawab; orang luar yang tahu callId
+    // tetap tidak bisa menyuntikkan SDP/ICE.
+    if (!target?.accepted) return;
+    sendTo(to, 'call:signal', { callId: call.id, from: uid, data: data.data });
   });
 
   socket.on('call:accept', (data, ack) => {
-    const ok = withCall(data, (call) => {
-      relayTo(call.from, 'call:accepted', { callId: data.callId, by: uid });
-    });
-    ack?.({ ok });
+    const call = calls.get(String(data?.callId || ''));
+    const member = call?.members.get(uid);
+    if (!call || call.ended || !member) return ack?.({ ok: false, error: 'Panggilan sudah selesai.' });
+
+    member.accepted = true;
+    if (!call.answeredAt) {
+      call.answeredAt = Date.now();
+      clearTimeout(call.timer);
+      call.timer = null;
+    }
+
+    const members = callRoster(call);
+    for (const [memberUid, entry] of call.members) {
+      if (!entry.accepted) continue;
+      // Yang baru masuk butuh roster lengkap; yang lain cuma perlu tahu ada
+      // anggota baru supaya bisa membuka koneksi peer-to-peer ke dia.
+      const event = memberUid === uid ? 'call:joined' : 'call:member-joined';
+      sendTo(memberUid, event, {
+        callId: call.id,
+        member: memberInfo(uid),
+        members,
+        video: call.video,
+        startedAt: call.createdAt,
+        answeredAt: call.answeredAt,
+      });
+      // Nama event lama tetap dikirim supaya klien versi sebelumnya tidak diam
+      // saja saat dipanggil dari aplikasi versi baru.
+      if (memberUid !== uid) sendTo(memberUid, 'call:accepted', { callId: call.id, by: uid });
+    }
+
+    ack?.({ ok: true, members, answeredAt: call.answeredAt });
   });
 
-  socket.on('call:reject', (data) => {
-    withCall(data, (call) => {
-      relayTo(call.from === uid ? call.to : call.from, 'call:rejected', { callId: data.callId, by: uid });
-      calls.delete(data.callId);
-    });
+  socket.on('call:reject', (data, ack) => {
+    const call = calls.get(String(data?.callId || ''));
+    const member = call?.members.get(uid);
+    if (!call || call.ended || !member) return ack?.({ ok: false });
+
+    call.members.delete(uid);
+    // Tinggal satu orang (atau nol) = tidak ada lagi yang bisa diajak bicara.
+    const left = [...call.members.values()].filter((entry) => entry.accepted).length;
+    if (left < 2) return finishCall(call, 'ditolak');
+
+    for (const [memberUid, entry] of call.members) {
+      if (!entry.accepted) continue;
+      sendTo(memberUid, 'call:rejected', { callId: call.id, by: uid });
+    }
+    ack?.({ ok: true });
   });
 
-  socket.on('call:end', (data) => {
-    withCall(data, (call) => {
-      relayTo(call.from === uid ? call.to : call.from, 'call:ended', { callId: data.callId, by: uid });
-      calls.delete(data.callId);
-    });
-  });
+  // "Keluar dari panggilan" dan "akhiri panggilan" sama saja dari sisi server:
+  // 1:1 otomatis selesai, grup tetap jalan untuk anggota yang tersisa.
+  const hangUp = (data, ack) => {
+    const call = calls.get(String(data?.callId || ''));
+    if (!call || call.ended || !call.members.has(uid)) return ack?.({ ok: false });
+    leaveCall(call, uid, 'selesai');
+    ack?.({ ok: true });
+  };
+
+  socket.on('call:end', hangUp);
+  socket.on('call:leave', hangUp);
 
   /* ---- Teardown -------------------------------------------------- */
 
@@ -896,10 +1183,9 @@ io.on('connection', (socket) => {
       broadcastDirectory();
     }
     // Never leave the other side of a call ringing forever.
-    for (const [callId, call] of calls) {
-      if (call.from !== uid && call.to !== uid) continue;
-      relayTo(call.from === uid ? call.to : call.from, 'call:ended', { callId, by: uid, reason: 'disconnected' });
-      calls.delete(callId);
+    for (const call of [...calls.values()]) {
+      if (!call.members.has(uid)) continue;
+      leaveCall(call, uid, 'disconnected');
     }
   });
 });
@@ -940,6 +1226,8 @@ export {
   usernames,
   moderation,
   accounts,
+  push,
+  callLogs,
   savedUsernames,
   savedModeration,
   savedAccounts,
