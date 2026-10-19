@@ -1,7 +1,7 @@
 Overview
 By Chat is a modern private-messaging interface built around a calm, bright canvas and a restrained blue accent. The system uses soft white surfaces ({colors.canvas} — #ffffff), mist-gray backgrounds ({colors.cloud} — #f7f8fa), and deep charcoal text ({colors.ink} — #17202a). A single clear accent — By Chat Blue ({colors.primary} — #2563eb) — highlights primary actions, active navigation, and important links. Pale blue outgoing-message bubbles create a subtle visual distinction without turning the conversation into a saturated interface.
 The visual language is quiet and functional: generous white space, thin cool-gray dividers, rounded message bubbles, and restrained elevation. The chat experience should feel familiar and readable, while status, profile settings, and moderation tools share the same token system. Unlike a product catalog, By Chat has no need for decorative hero graphics; the main visual focus is the conversation itself.
-The system has three surface modes: a white conversation surface for chat lists, messages, and dialogs; a soft gray canvas for the overall application and empty states; and a deep ink surface reserved for occasional high-contrast notices or footer-like utility areas. Blue should remain an action color rather than a large background fill.
+The system has three surface modes: a white conversation surface for chat lists, messages, and dialogs; a soft gray canvas for the overall application and empty states; and a deep ink surface reserved for occasional high-contrast notices or footer-like utility areas. Blue should remain an action color rather than a large background fill. The dark theme swaps the canvas, cloud, and paper values while keeping the same three-role structure.
 Key Characteristics:
 - Soft white canvas ({colors.canvas}) and pale gray app background ({colors.cloud}) establish a clean, low-distraction interface.
 - By Chat Blue ({colors.primary}) is reserved for primary buttons, links, active states, and selected navigation.
@@ -38,6 +38,13 @@ Semantic
 - Warning Amber ({colors.warning} — #b45309): warnings such as pending reports or connection interruptions.
 - Warning Tint ({colors.warning-soft} — #fef3c7): pale amber background for warning banners.
 - Offline Gray ({colors.offline} — #9ca3af): offline indicators when paired with a readable label.
+Dark Mode
+The interface ships with a light theme and a dark theme. Users switch themes from Pengaturan; the choice is stored on the device and applied before the first paint. Dark mode keeps the same token names, so components that already use tokens adapt without component-specific rules.
+- Canvas becomes {colors.canvas} #111827, Cloud becomes #0b1220, Paper becomes #151f31, and Fog becomes #1e293b.
+- Border becomes #263244; text becomes {colors.ink} #e5e7eb, with {colors.text-muted} #94a3b8 for timestamps and helper text.
+- Primary becomes By Chat Blue light #60a5fa, and On Primary becomes #07101d so labels stay readable on the lighter blue.
+- Semantic colors lighten for dark surfaces: success #4ade80, danger #f87171, warning #fbbf24.
+- Call and status overlays stay dark in both themes, since they always render over video or media.
 Typography
 Font Family
 Use a neutral, highly readable sans-serif family throughout the interface: Inter, with system-ui, -apple-system, Segoe UI, and sans-serif fallbacks. Inter's clean shapes work well for chat messages, compact timestamps, profile forms, and admin tables. Use weight 400 for body text, 500 for labels and contact names, and 600 for headings or primary button labels. Avoid overly decorative type; message content should remain the clearest element on screen.
@@ -139,8 +146,8 @@ App Shell
 - Desktop uses an icon **rail** (76px) on the far left: logo, then Chats, Status, Calls, and Settings, with the signed-in avatar pinned at the bottom. The active item sits on {colors.canvas} over the {colors.cloud} rail surface, uses {colors.primary} for the icon, and may show a {colors.primary} count badge.
 - The active list panel and the conversation stay on {colors.canvas}, separated by 1px {colors.border} hairlines; the rail itself is {colors.cloud}, so the two never read as one flat sheet.
 - Panel changes are animated, not instant: a short 240ms fade-and-lift (`view-in`) for the panel, and colour transitions on the menu buttons.
-- On mobile (< 760px) the rail is replaced by a floating **tab bar**: {rounded.pill} corners, 14px above the safe-area edge, translucent {colors.canvas} at roughly 72% opacity, `backdrop-filter: blur(20px) saturate(180%)`, and the Level 3 shadow. It is the only glassy surface in the product.
-- The active tab uses {colors.primary-tint} with {colors.primary} icon and label; the tab bar hides while a conversation is open, so the conversation owns the screen.
+- On mobile (< 760px) the rail is replaced by a floating **tab bar**: {rounded.pill} corners, 14px above the safe-area edge, translucent {colors.canvas} at roughly 72% opacity, `backdrop-filter: blur(24px) saturate(180%)`, a 1px light edge, an inset top highlight, and the Level 3 shadow. Fall back to an almost opaque bar when backdrop blur is unavailable or reduced transparency is requested. It is the only glassy surface in the product.
+- The active tab is a near-opaque glass lens with a {colors.primary} icon and a deeper primary label; the tab bar hides while a conversation is open, so the conversation owns the screen.
 
 Admin & Reports
 admin-summary-card

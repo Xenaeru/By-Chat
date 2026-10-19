@@ -15,8 +15,8 @@ process.env.STORAGE_DRIVER = 'local';
 process.env.SUPABASE_URL = '';
 process.env.SUPABASE_SERVICE_ROLE_KEY = '';
 
-const { createVerifier, makeDevToken } = await import('../auth.js');
-const { config, publicConfig } = await import('../config.js');
+const { createVerifier, makeDevToken } = await import('../src/auth.js');
+const { config, publicConfig } = await import('../src/config.js');
 
 test('the dev verifier round-trips a profile', async () => {
   const verifier = await createVerifier(config);
@@ -74,7 +74,7 @@ test('NODE_ENV=production refuses to boot with dev auth', async () => {
     process.env.SECURECHAT_SKIP_DOTENV = '1';
     process.env.NODE_ENV = 'production';
     process.env.AUTH_MODE = 'dev';
-    await import('./config.js');
+    await import('./src/config.js');
     console.log('SHOULD_NOT_REACH_HERE');
   `;
 
@@ -92,7 +92,7 @@ test('asking for firebase auth without credentials fails loudly', async () => {
   const script = `
     process.env.SECURECHAT_SKIP_DOTENV = '1';
     process.env.AUTH_MODE = 'firebase';
-    await import('./config.js');
+    await import('./src/config.js');
     console.log('SHOULD_NOT_REACH_HERE');
   `;
 
@@ -109,7 +109,7 @@ test('picking supabase storage without credentials fails loudly', async () => {
   const script = `
     process.env.SECURECHAT_SKIP_DOTENV = '1';
     process.env.STORAGE_DRIVER = 'supabase';
-    await import('./config.js');
+    await import('./src/config.js');
     console.log('SHOULD_NOT_REACH_HERE');
   `;
 

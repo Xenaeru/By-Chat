@@ -90,4 +90,4 @@ services:
         value: "true"
 
       # JANGAN set PORT di sini — Render yang menentukan port-nya dan
-      # menyuntikkannya lewat variabel PORT. config.js sudah membacanya.
+      # menyuntikkannya lewat variabel PORT. src/config.js sudah membacanya.

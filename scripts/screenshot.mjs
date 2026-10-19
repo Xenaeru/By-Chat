@@ -30,7 +30,7 @@ process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
 process.env.ADMIN_UIDS = `dev-${crypto.createHash('sha256').update('andi').digest('hex').slice(0, 20)}`;
 process.env.PORT = process.env.PORT || '4500';
 
-const { server } = await import('../server.js');
+const { server } = await import('../src/server.js');
 await new Promise((resolve) => (server.listening ? resolve() : server.once('listening', resolve)));
 const BASE_URL = `http://127.0.0.1:${process.env.PORT}`;
 

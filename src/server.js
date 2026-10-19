@@ -180,7 +180,7 @@ app.post('/api/push/unsubscribe', authenticateRequest, express.json({ limit: '8k
   res.json({ ok: true });
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
 /* ------------------------------------------------------------------ *
  * Small helpers

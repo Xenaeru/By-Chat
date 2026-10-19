@@ -70,8 +70,8 @@ async function showPush(data) {
         renotify: true,
         requireInteraction: true,
         vibrate: [700, 250, 700, 250, 900],
-        icon: '/logo.svg',
-        badge: '/logo.svg',
+        icon: '/assets/logo.svg',
+        badge: '/assets/logo.svg',
         data: { type: 'call', callId: data.callId, uid: null, roomId: null },
         actions: [
           { action: 'answer', title: 'Terima' },
@@ -85,8 +85,8 @@ async function showPush(data) {
   await self.registration.showNotification(data?.title || 'Pesan baru', {
     body: data?.body || '',
     tag: data?.tag || 'bychat:push',
-    icon: '/logo.svg',
-    badge: '/logo.svg',
+    icon: '/assets/logo.svg',
+    badge: '/assets/logo.svg',
     data: { roomId: data?.roomId || null, uid: null },
   });
 }

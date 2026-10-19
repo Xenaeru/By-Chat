@@ -10,13 +10,14 @@ import { fileURLToPath } from 'node:url';
 import { REPORT_REASONS, MAX_DETAIL } from './moderation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.join(__dirname, '..');
 
 // Node can read a .env file itself (21.7+). Absent file is fine.
 // Tests set SECURECHAT_SKIP_DOTENV so a developer's local .env can never
 // change what the suite is exercising.
 if (!process.env.SECURECHAT_SKIP_DOTENV) {
   try {
-    process.loadEnvFile(path.join(__dirname, '.env'));
+    process.loadEnvFile(path.join(projectRoot, '.env'));
   } catch {
     /* no .env — rely on real environment variables */
   }
@@ -76,7 +77,7 @@ if (storageDriver === 'supabase' && !(supabaseUrl && supabaseServiceKey)) {
 // Claims have to outlive a restart, otherwise the namespace is just a race.
 // Supabase is used when that driver is active; otherwise this JSON file.
 const usernameStore = {
-  file: env.USERNAME_STORE || path.join(__dirname, 'data', 'usernames.json'),
+  file: env.USERNAME_STORE || path.join(projectRoot, 'data', 'usernames.json'),
   object: env.USERNAME_STORE_OBJECT || 'registry/usernames.json',
 };
 
@@ -99,7 +100,7 @@ const adminEmails = cleanList(env.ADMIN_EMAILS).map((email) => email.toLowerCase
 // Untuk data diskalakan halus, driver Supabase menyimpannya di dalam bucket
 // yang sudah dipakai blobs, sedangkan driver local memakai file JSON di data/.
 const registeredStore = (fileKey, objectKey, defaultFile, defaultObject) => ({
-  file: env[fileKey] || path.join(__dirname, 'data', defaultFile),
+  file: env[fileKey] || path.join(projectRoot, 'data', defaultFile),
   object: env[objectKey] || defaultObject,
 });
 
@@ -170,8 +171,8 @@ export const config = {
   storage: {
     driver: storageDriver,
     bucket: supabaseBucket,
-    localDir: env.LOCAL_STORAGE_DIR || path.join(__dirname, 'data', 'attachments'),
-    avatarDir: env.LOCAL_AVATAR_DIR || path.join(__dirname, 'data', 'avatars'),
+    localDir: env.LOCAL_STORAGE_DIR || path.join(projectRoot, 'data', 'attachments'),
+    avatarDir: env.LOCAL_AVATAR_DIR || path.join(projectRoot, 'data', 'avatars'),
     maxBytes: Number(env.MAX_UPLOAD_BYTES || 100 * 1024 * 1024),
   },
 

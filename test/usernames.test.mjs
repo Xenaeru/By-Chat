@@ -14,7 +14,7 @@ import {
   suggestUsername,
   usernameKey,
   validateUsername,
-} from '../usernames.js';
+} from '../src/usernames.js';
 
 const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'securechat-names-'));
 

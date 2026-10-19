@@ -19,7 +19,7 @@ const SW_URL = '/sw.js';
 const SETTINGS_KEY = 'bychat.notifications.v1';
 const REPLY_CACHE = 'bychat-notif-replies';
 const REPLY_URL = '/__notif-reply__';
-const ICON = '/logo.svg';
+const ICON = '/assets/logo.svg';
 
 const supported = () =>
   typeof window !== 'undefined' &&

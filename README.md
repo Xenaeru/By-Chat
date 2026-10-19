@@ -201,7 +201,7 @@ jadi tetap ada walau service-nya tidur atau di-deploy ulang. Kalau kamu pakai dr
 host yang disk-nya ephemeral, semuanya ikut hilang tiap restart.
 
 `render.yaml` sengaja **tidak** menyetel `PORT` — Render yang menentukan port dan
-menyuntikkannya lewat variabel `PORT`, dan `config.js` sudah membacanya. Health check
+menyuntikkannya lewat variabel `PORT`, dan `src/config.js` sudah membacanya. Health check
 memakai `/healthz` yang sudah ada di server.
 
 ⚠️ Dua kesalahan yang paling gampang terjadi kalau form itu diisi manual: menambah baris
@@ -283,33 +283,48 @@ normal tanpa foto profil.
 ## Struktur
 
 ```
-config.js          Baca .env, pilih driver, pisah config publik vs rahasia.
-auth.js            Verifikasi ID token. Driver: firebase | dev (dev diblokir di production).
-storage.js         Driver blob: supabase | local. Path selalu dibuat server.
-usernames.js       Namespace @nama (normalisasi, nama sistem, simpan permanen).
-moderation.js      Laporan pengguna + daftar blokir, disimpan permanen.
-accounts.js        Indeks email/nomor HP buat mencari kontak yang belum pernah online.
-server.js          Relay + direktori kunci + endpoint lampiran + signaling + endpoint admin.
-public/crypto.js   Semua primitif E2EE. Pakai WebCrypto, jalan di browser dan Node.
-public/auth-client.js  Login Google / dev.
-public/files.js    Enkripsi, upload, unduh, dekripsi lampiran.
-public/call.js     WebRTC mesh (1:1 & grup): suara, video, layar, tambah peserta.
-public/app.js      UI + orkestrasi.
-public/index.html  Kerangka halaman chat.
-public/style.css   Seluruh tampilan; nilainya diambil dari DESIGN.md.
-public/notifications.js  Izin + tampilan notifikasi, dan pengambilan balasan yang dititipkan.
-public/sw.js       Service worker: notifikasi pesan, notifikasi panggilan dari Web Push, aksi balas/buka/terima/tolak.
-push.js           Web Push server: kunci VAPID, langganan per akun, pengiriman notifikasi.
-public/manifest.webmanifest  Identitas aplikasi (nama, ikon, warna) buat notifikasi & pemasangan.
-public/admin.html  Halaman admin (laporan + blokir).
-public/admin.js    Ambil data admin lewat REST dan render; nggak buka socket.
+src/
+  server.js        Entry point: relay + direktori kunci + lampiran + signaling + admin.
+  config.js        Baca .env, pilih driver, pisah config publik vs rahasia.
+  auth.js          Verifikasi ID token. Driver: firebase | dev (dev diblokir di production).
+  storage.js       Driver blob: supabase | local. Path selalu dibuat server.
+  usernames.js     Namespace @nama (normalisasi, nama sistem, simpan permanen).
+  moderation.js    Laporan pengguna + daftar blokir, disimpan permanen.
+  accounts.js      Indeks email/nomor HP buat mencari kontak yang belum pernah online.
+  push.js          Web Push server: kunci VAPID, langganan per akun, pengiriman notifikasi.
+
+public/
+  index.html       Kerangka halaman chat.
+  admin.html       Halaman admin (laporan + blokir).
+  manifest.webmanifest  Identitas aplikasi (nama, ikon, warna) buat notifikasi & pemasangan.
+  sw.js            Service worker: notifikasi pesan/panggilan + aksi balas/buka/terima/tolak.
+  js/
+    app.js         UI + orkestrasi.
+    admin.js       Ambil data admin lewat REST dan render; nggak buka socket.
+    auth-client.js Login Google / dev.
+    crypto.js      Semua primitif E2EE. Pakai WebCrypto, jalan di browser dan Node.
+    files.js       Enkripsi, upload, unduh, dekripsi lampiran.
+    call.js        WebRTC mesh (1:1 & grup): suara, video, layar, tambah peserta.
+    notifications.js  Izin + tampilan notifikasi, dan pengambilan balasan yang dititipkan.
+  css/
+    style.css      Seluruh tampilan; nilainya diambil dari DESIGN.md.
+  assets/
+    logo.svg, logo-lockup.svg, icon-192.png, icon-512.png
+
+docs/
+  STRUCTURE.md     Peta folder, alur HTTP, dan alur event Socket.IO.
+scripts/           Alat bantu: cek env, deploy, screenshot, tes browser.
+test/              Test otomatis (node --test).
 DESIGN.md          Sistem desain yang dipakai UI (warna, huruf, bentuk).
 ```
+
+Alur request HTTP dan event Socket.IO selengkapnya ada di
+[`docs/STRUCTURE.md`](docs/STRUCTURE.md).
 
 ## Tampilan (mengikuti `DESIGN.md`)
 
 UI-nya sengaja nggak punya bahasa desain sendiri: semua warna, bentuk, dan hurufnya diambil dari
-`DESIGN.md`, dan token itu dipasang sebagai CSS custom property di `public/style.css` supaya
+`DESIGN.md`, dan token itu dipasang sebagai CSS custom property di `public/css/style.css` supaya
 cuma ada satu sumber nilai.
 
 | Token `DESIGN.md` | Nilai | Dipakai untuk |

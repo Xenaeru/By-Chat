@@ -4,12 +4,22 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="theme-color" content="#f7f8fa" />
+<script>
+  (() => {
+    try {
+      const dark = localStorage.getItem('bychat.theme.v1') === 'dark';
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.content = dark ? '#0b1220' : '#f7f8fa';
+    } catch {}
+  })();
+</script>
 <title>Admin · By Chat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
-<link rel="stylesheet" href="style.css" />
-<link rel="icon" href="/logo.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="css/style.css" />
+<link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
 </head>
 <body>
 
@@ -30,7 +40,7 @@
 <div id="login" class="login" hidden>
   <div class="login-card">
     <div class="brand">
-      <img class="brand-mark" src="/logo.svg" alt="By Chat" width="54" height="54" />
+      <img class="brand-mark" src="/assets/logo.svg" alt="By Chat" width="54" height="54" />
       <div>
         <h1 class="wordmark"><span class="word-by">By</span><span class="word-chat">Chat</span></h1>
         <p class="brand-tag">Halaman admin — laporan pengguna dan daftar blokir.</p>
@@ -65,7 +75,7 @@
 <!-- ── Bukan admin ─────────────────────────────────────────────────── -->
 <div id="denied" class="onboarding" hidden>
   <div class="onboarding-card">
-    <img class="onboarding-mark" src="/logo.svg" alt="By Chat" width="48" height="48" />
+    <img class="onboarding-mark" src="/assets/logo.svg" alt="By Chat" width="48" height="48" />
     <span class="step-pill danger"><svg class="ico"><use href="#i-ban" /></svg> Bukan admin</span>
     <h1>Akun ini nggak punya akses admin</h1>
     <p class="muted" id="denied-detail">—</p>
@@ -81,7 +91,7 @@
 <!-- ── Dasbor admin ────────────────────────────────────────────────── -->
 <div id="admin" class="admin" hidden>
   <header class="admin-top">
-    <img class="admin-logo" src="/logo.svg" alt="" width="40" height="40" />
+    <img class="admin-logo" src="/assets/logo.svg" alt="" width="40" height="40" />
     <div class="admin-top-text">
       <h1>Halaman admin</h1>
       <p id="admin-me">—</p>
@@ -117,6 +127,6 @@
 <div id="modal" class="modal" hidden><div class="modal-card" id="modal-card"></div></div>
 <div id="toast" class="toast" hidden></div>
 
-<script type="module" src="admin.js"></script>
+<script type="module" src="js/admin.js"></script>
 </body>
 </html>

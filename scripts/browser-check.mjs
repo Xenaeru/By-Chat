@@ -35,10 +35,10 @@ process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
 process.env.ADMIN_UIDS = `dev-${crypto.createHash('sha256').update('andi').digest('hex').slice(0, 20)}`;
 process.env.PORT = process.env.PORT || '4400';
 
-const { server, directory, inbox, statuses, moderation } = await import('../server.js');
+const { server, directory, inbox, statuses, moderation } = await import('../src/server.js');
 // Token dev yang sama dengan yang dipakai browser, buat satu klien mentah di
 // bawah: pembuktian sisi penerima bahwa status orang asing tetap diabaikan.
-const { makeDevToken } = await import('../auth.js');
+const { makeDevToken } = await import('../src/auth.js');
 await new Promise((resolve) => (server.listening ? resolve() : server.once('listening', resolve)));
 
 const BASE_URL = `http://127.0.0.1:${process.env.PORT}`;
@@ -636,7 +636,7 @@ async function login(browser, username) {
     else if (msg.type() === 'warning') CONSOLE_LOG.push(`${username} warn: ${msg.text()}`);
   });
 
-  // Opt-in WebRTC tracing inside the page (see public/call.js).
+  // Opt-in WebRTC tracing inside the page (see public/js/call.js).
   if (CALL_DEBUG) await page.evaluateOnNewDocument(() => (globalThis.__SECURECHAT_CALL_DEBUG = true));
 
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
@@ -1169,6 +1169,93 @@ async function checkReportAndAdmin(andi, budi) {
   check('Setelah blokirnya dibuka, akunnya jalan lagi seperti semula', true);
 
   await adminPage.close();
+}
+
+async function checkTheme(andi) {
+  await front(andi.page);
+  await goView(andi.page, 'settings');
+
+  const initial = await andi.page.evaluate(() => ({
+    hasToggle: Boolean(document.querySelector('[data-theme-toggle]')),
+    pressed: document.querySelector('[data-theme-toggle]')?.getAttribute('aria-pressed'),
+    label: document.querySelector('[data-theme-toggle]')?.textContent.trim(),
+    note: document.querySelector('[data-theme-note]')?.textContent.trim() || '',
+    theme: document.documentElement.dataset.theme,
+    stored: localStorage.getItem('bychat.theme.v1'),
+    meta: document.querySelector('meta[name="theme-color"]')?.content,
+  }));
+  check(
+    'Pengaturan punya pilihan tema dengan keadaan awal terang',
+    initial.hasToggle &&
+      initial.pressed === 'false' &&
+      initial.label === 'Gunakan gelap' &&
+      /terang/i.test(initial.note) &&
+      initial.theme === 'light',
+    JSON.stringify(initial)
+  );
+
+  await andi.page.click('[data-theme-toggle]');
+  await andi.page.waitForFunction(() => document.documentElement.dataset.theme === 'dark', {
+    timeout: 5000,
+  });
+  const dark = await andi.page.evaluate(() => ({
+    pressed: document.querySelector('[data-theme-toggle]')?.getAttribute('aria-pressed'),
+    label: document.querySelector('[data-theme-toggle]')?.textContent.trim(),
+    note: document.querySelector('[data-theme-note]')?.textContent.trim() || '',
+    theme: document.documentElement.dataset.theme,
+    stored: localStorage.getItem('bychat.theme.v1'),
+    meta: document.querySelector('meta[name="theme-color"]')?.content,
+    body: getComputedStyle(document.body).backgroundColor,
+  }));
+  check(
+    'Mode gelap mengubah latar, menyimpan pilihan, dan memperbarui tombol',
+    dark.theme === 'dark' &&
+      dark.stored === 'dark' &&
+      dark.pressed === 'true' &&
+      dark.label === 'Gunakan terang' &&
+      /gelap/i.test(dark.note) &&
+      dark.meta === '#0b1220' &&
+      dark.body === 'rgb(11, 18, 32)',
+    JSON.stringify(dark)
+  );
+
+  const adminPage = await andi.context.newPage();
+  await adminPage.goto(`${BASE_URL}/admin.html`, { waitUntil: 'domcontentloaded' });
+  await adminPage.waitForSelector('#admin:not([hidden])', { timeout: 15000 });
+  const adminDark = await adminPage.evaluate(() => ({
+    theme: document.documentElement.dataset.theme,
+    meta: document.querySelector('meta[name="theme-color"]')?.content,
+    body: getComputedStyle(document.body).backgroundColor,
+  }));
+  check(
+    'Halaman admin ikut memakai tema gelap yang tersimpan',
+    adminDark.theme === 'dark' &&
+      adminDark.meta === '#0b1220' &&
+      adminDark.body === 'rgb(11, 18, 32)',
+    JSON.stringify(adminDark)
+  );
+  await adminPage.close();
+
+  await andi.page.click('[data-theme-toggle]');
+  await andi.page.waitForFunction(() => document.documentElement.dataset.theme === 'light', {
+    timeout: 5000,
+  });
+  const light = await andi.page.evaluate(() => ({
+    pressed: document.querySelector('[data-theme-toggle]')?.getAttribute('aria-pressed'),
+    label: document.querySelector('[data-theme-toggle]')?.textContent.trim(),
+    stored: localStorage.getItem('bychat.theme.v1'),
+    meta: document.querySelector('meta[name="theme-color"]')?.content,
+    body: getComputedStyle(document.body).backgroundColor,
+  }));
+  check(
+    'Pilihan tema bisa dikembalikan ke terang',
+    light.pressed === 'false' &&
+      light.label === 'Gunakan gelap' &&
+      light.stored === 'light' &&
+      light.meta === '#f7f8fa' &&
+      light.body === 'rgb(247, 248, 250)',
+    JSON.stringify(light)
+  );
 }
 
 const browser = await puppeteer.launch({
@@ -2038,6 +2125,7 @@ try {
   const statusText = await checkPhotoAndStatus(andi, budi);
 
   await checkReportAndAdmin(andi, budi);
+  await checkTheme(andi);
 
   /* ---- 5. Nothing readable on the server ------------------------ */
   const serverMemory = JSON.stringify({

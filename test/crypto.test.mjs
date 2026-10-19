@@ -14,7 +14,7 @@ import {
   dmRoomId,
   b64,
   unb64,
-} from '../public/crypto.js';
+} from '../public/js/crypto.js';
 
 const sha256 = async (blob) =>
   Buffer.from(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())).toString('hex');

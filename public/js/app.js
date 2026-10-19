@@ -20,6 +20,7 @@ const roomsKey = (uid) => `securechat.rooms.v3.${uid}`;
 const verifiedKey = (uid) => `securechat.verified.v3.${uid}`;
 const statusSeenKey = (uid) => `securechat.status.v1.${uid}`;
 const starredKey = (uid) => `securechat.starred.v1.${uid}`;
+const themeKey = 'bychat.theme.v1';
 
 const store = {
   get(key, fallback = null) {
@@ -81,6 +82,7 @@ const state = {
   statusView: null,
   isAdmin: false,
   notifier: null,
+  theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
   /** Panel yang sedang terbuka di kolom daftar: chats | status | calls | settings. */
   view: 'chats',
   /** Riwayat panggilan lokal + keadaan panggilan yang sedang berjalan. */
@@ -2836,6 +2838,33 @@ function openNewGroup() {
   });
 }
 
+function paintThemeSetting() {
+  const note = el.panelSettings?.querySelector('[data-theme-note]');
+  const button = el.panelSettings?.querySelector('[data-theme-toggle]');
+  if (!note || !button) return;
+
+  const dark = state.theme === 'dark';
+  button.setAttribute('aria-pressed', String(dark));
+  button.textContent = dark ? 'Gunakan terang' : 'Gunakan gelap';
+  note.textContent = dark
+    ? 'Tema gelap aktif. Latar gelap dipakai di seluruh aplikasi.'
+    : 'Tema terang aktif. Pilih gelap untuk ruangan redup.';
+}
+
+function applyTheme(theme, { persist = true } = {}) {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  state.theme = next;
+  document.documentElement.dataset.theme = next;
+  if (persist) {
+    try {
+      localStorage.setItem(themeKey, next);
+    } catch {}
+  }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = next === 'dark' ? '#0b1220' : '#f7f8fa';
+  paintThemeSetting();
+}
+
 /** Label + tombol notifikasi di panel Pengaturan, selalu mencerminkan izin asli browser. */
 function paintNotificationSetting() {
   const note = el.panelSettings?.querySelector('[data-notify-note]');
@@ -2888,6 +2917,7 @@ function renderSettings() {
   el.railAvatar.dataset.hueFor = name;
   el.railAvatar.dataset.uid = state.me.uid;
 
+  paintThemeSetting();
   paintNotificationSetting();
   paintAvatars(el.panelSettings);
 }
@@ -3522,6 +3552,14 @@ el.panelSettings.querySelector('[data-notify-toggle]').addEventListener('click',
       .catch(() => {});
   }
   showToast(result.ok ? 'Notifikasi aktif.' : result.error, result.ok ? 3000 : 7000);
+});
+el.panelSettings.querySelector('[data-theme-toggle]').addEventListener('click', () => {
+  applyTheme(state.theme === 'dark' ? 'light' : 'dark');
+});
+window.addEventListener('storage', (event) => {
+  if (event.key === themeKey) {
+    applyTheme(event.newValue === 'dark' ? 'dark' : 'light', { persist: false });
+  }
 });
 // `+` membuka halaman tambah kontak, bukan daftar orang yang sedang online.
 el.btnNewChat.addEventListener('click', openContactPage);
