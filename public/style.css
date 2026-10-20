@@ -885,6 +885,57 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .send:active { background: var(--primary-deep); }
 .send .ico { width: 20px; height: 20px; }
 
+/* ── Rekaman pesan suara ─────────────────────────────────────────────
+   Bar ini menggantikan komposer selama mikrofon hidup: titik merah yang
+   berdenyut, timer, gelombang kecil, tombol batal, dan tombol kirim. */
+.record-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  background: var(--canvas);
+  border-top: 1px solid var(--border);
+}
+.record-bar .icon-btn { color: var(--danger); }
+.record-dot {
+  width: 9px; height: 9px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: record-pulse 1.1s ease-in-out infinite;
+}
+.record-time {
+  min-width: 38px;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.record-wave { flex: 1; display: flex; align-items: center; justify-content: center; gap: 3px; height: 22px; }
+.record-wave i {
+  display: block;
+  width: 3px;
+  height: 35%;
+  border-radius: 2px;
+  background: var(--primary);
+  animation: record-wave .9s ease-in-out infinite;
+}
+.record-wave i:nth-child(2) { animation-delay: .12s; }
+.record-wave i:nth-child(3) { animation-delay: .24s; }
+.record-wave i:nth-child(4) { animation-delay: .36s; }
+.record-wave i:nth-child(5) { animation-delay: .48s; }
+.record-hint { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.record-bar .send:disabled { opacity: .55; }
+
+@keyframes record-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.78); }
+}
+@keyframes record-wave {
+  0%, 100% { height: 25%; }
+  50% { height: 100%; }
+}
+
 /* ── Modal ─────────────────────────────────────────────────────────── */
 .modal {
   position: fixed;
@@ -1767,6 +1818,79 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .attach-badge .ico { width: 11px; height: 11px; }
 
+/* ── Pesan suara ─────────────────────────────────────────────────────
+   Bukan kartu lampiran: tombol putar bulat, gelombang batang, durasi, dan
+   pengubah kecepatan. Batang tinggi-rendahnya diturunkan dari id pesan, jadi
+   bentuknya sama di semua perangkat tanpa perlu data tambahan. */
+.voice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 210px;
+  max-width: min(280px, 62vw);
+  padding: 2px 0;
+}
+.voice-btn {
+  flex: none;
+  width: 38px; height: 38px;
+  display: grid; place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--on-primary);
+  transition: background .16s, transform .12s;
+}
+.voice-btn:hover { background: var(--primary-deep); }
+.voice-btn:active { transform: scale(.96); }
+.voice-btn:disabled { opacity: .55; }
+.voice-btn .ico { width: 18px; height: 18px; }
+.voice-main { flex: 1; min-width: 0; }
+.voice-wave { display: flex; align-items: center; gap: 2px; height: 28px; }
+.voice-wave i {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 2px;
+  background: rgba(104, 115, 133, .32);
+  transition: background .12s;
+}
+.voice-wave i.on { background: var(--primary); }
+.msg.out .voice-wave i { background: rgba(37, 99, 235, .26); }
+.msg.out .voice-wave i.on { background: var(--primary-deep); }
+.voice-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 16px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.voice-time { font-variant-numeric: tabular-nums; font-weight: 500; }
+.voice-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.voice-hint .ico { width: 12px; height: 12px; }
+.voice-speed {
+  margin-left: auto;
+  padding: 1px 7px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: rgba(104, 115, 133, .14);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.voice-speed:hover { background: rgba(104, 115, 133, .24); }
+.msg.out .voice-speed { background: rgba(37, 99, 235, .12); }
+.voice.active .voice-speed { color: var(--primary); }
+
 /* ── Pilihan pesan (klik kanan / tahan) ──────────────────────────────
    `body.menu-open` yang membuat sisanya blur; yang dipilih tetap tajam. */
 .msg-menu { position: fixed; inset: 0; z-index: 60; }
@@ -1977,37 +2101,41 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
 .tab-btn.active .ico { transform: translateY(-1px) scale(1.06); }
 .tab-btn:active { transform: scale(.94); }
 
-/* ── Sakelar tema di Pengaturan ─────────────────────────────────────
-   Tiga pilihan, bukan satu tombol: "Otomatis" harus tetap bisa dipilih lagi
-   setelah orang mencoba mode gelap, tanpa harus mencari setting browser. */
-.theme-switch {
-  display: inline-flex;
-  gap: 2px;
-  padding: 3px;
-  background: var(--fog);
+/* ── Pilihan tema di Pengaturan ────────────────────────────────────
+   Dropdown, bukan segmen tiga tombol: panel Pengaturan sempit, dan tiga
+   tombol berebut lebar dengan keterangan sampai teksnya terlipat per kata.
+   `appearance: none` menghilangkan panah bawaan supaya bisa pakai ikon app. */
+.theme-row { flex-wrap: wrap; row-gap: 10px; }
+/* Keterangan dapat lebar minimum yang layak dibaca. Kalau dropdown nggak muat
+   di baris yang sama, dia turun ke baris berikutnya — bukan memeras teksnya. */
+.theme-row .settings-row-text { flex: 1 1 auto; min-width: 140px; }
+.theme-row .theme-select { margin-left: auto; }
+.theme-select { position: relative; flex: none; display: flex; align-items: center; }
+.theme-select select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-width: 132px;
+  min-height: 40px;
+  padding: 8px 34px 8px 12px;
   border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-}
-.theme-opt {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 7px 12px;
-  border: 0;
-  border-radius: var(--r-pill);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 500;
-  transition: background .16s, color .16s;
-}
-.theme-opt .ico { width: 16px; height: 16px; }
-.theme-opt:hover { color: var(--ink); }
-.theme-opt[aria-pressed="true"] {
+  border-radius: var(--r-md);
   background: var(--canvas);
   color: var(--ink);
-  box-shadow: var(--lift);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color .16s;
+}
+.theme-select select:hover { border-color: var(--steel); }
+.theme-select select:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.theme-select .ico {
+  position: absolute;
+  right: 10px;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  pointer-events: none;
 }
 
 /* ── Panah menu ala WhatsApp ─────────────────────────────────────────
@@ -2170,8 +2298,8 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
 }
 
 @media (max-width: 760px) {
-  .theme-switch { width: 100%; }
-  .theme-opt { flex: 1; justify-content: center; }
+  .theme-select { width: 100%; }
+  .theme-select select { width: 100%; }
 
   /* Satu kolom: daftar atau percakapan, dengan navbar melayang di bawah. */
   .app { grid-template-columns: 1fr; border: 0; }
@@ -2194,6 +2322,8 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
   .local-video { width: 104px; border-radius: var(--r-md); }
   .chat-header { padding: 10px 12px; }
   .composer { padding: 10px 12px 14px; }
+  .record-bar { padding: 10px 12px 14px; }
+  .record-hint { display: none; }
   /* Membuka percakapan terasa seperti halaman baru, bukan cuma ganti isi. */
   .app.show-chat .chat { animation: view-in .26s cubic-bezier(.22, .61, .36, 1) both; }
   .status-text { width: 92%; aspect-ratio: auto; min-height: 44vh; padding: 24px; font-size: 24px; }
@@ -2223,7 +2353,7 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spinner, .status-progress i.now::after { animation: none; }
+  .spinner, .status-progress i.now::after, .record-dot, .record-wave i { animation: none; }
   .call-sound { animation: none; }
   * { transition-duration: .01ms !important; }
 }
@@ -2233,6 +2363,13 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
    memakai warna terang secara langsung. Ditaruh paling bawah supaya menang
    tanpa perlu `!important`. */
 :root[data-theme="dark"] .msg.out { border-color: #2c4a6e; }
+:root[data-theme="dark"] .voice-wave i { background: rgba(255, 255, 255, .22); }
+:root[data-theme="dark"] .voice-wave i.on,
+:root[data-theme="dark"] .msg.out .voice-wave i.on { background: var(--primary-bright); }
+:root[data-theme="dark"] .voice-speed,
+:root[data-theme="dark"] .msg.out .voice-speed { background: rgba(255, 255, 255, .1); }
+:root[data-theme="dark"] .voice.active .voice-speed { color: var(--primary-bright); }
+:root[data-theme="dark"] .record-wave i { background: var(--primary-bright); }
 :root[data-theme="dark"] .msg.undecryptable { border-color: #5a2b2b; }
 :root[data-theme="dark"] .msg.out .msg-reaction {
   background: rgba(16, 27, 34, .55);

@@ -9,6 +9,7 @@ import {
 } from './crypto.js';
 import { createAuthClient } from './auth-client.js';
 import { uploadAttachment, fetchAttachment, formatBytes } from './files.js';
+import { MAX_VOICE_SECONDS, startVoiceRecording } from './voice.js';
 import { createCallManager } from './call.js';
 import { createNotifier } from './notifications.js';
 
@@ -83,11 +84,11 @@ function paintTheme() {
 
   if (el.themeNote) {
     el.themeNote.textContent =
-      themeChoice === 'system' ? `Otomatis — sekarang ${label}, ikut perangkat` : `Selalu ${label} di perangkat ini`;
+      themeChoice === 'system' ? `Ikut perangkat — sekarang ${label}` : `${label} di perangkat ini`;
   }
-  for (const button of document.querySelectorAll('[data-theme-choice]')) {
-    button.setAttribute('aria-pressed', String(button.dataset.themeChoice === themeChoice));
-  }
+  // Dropdown tetap menunjuk pilihan tersimpan, termasuk saat tema berubah
+  // sendiri karena perangkatnya beralih ke mode gelap.
+  if (el.themeSelect) el.themeSelect.value = themeChoice;
 }
 
 function setTheme(choice) {
@@ -120,6 +121,12 @@ const state = {
   incoming: null,
   blobUrls: new Map(),
   uploadToken: 0,
+  /** Pemutar pesan suara yang sedang aktif; cuma satu yang boleh berbunyi. */
+  voice: { id: null, audio: null, speed: 1, loading: null },
+  /** Node pemutar di DOM sekarang, dipakai buat memperbarui progres. */
+  voiceNodes: [],
+  voiceRecording: null,
+  voiceTimer: null,
   replyTo: null,
   starred: new Set(),
   /** Id pesan yang sudah dihapus untuk semua orang: jangan dimunculkan lagi. */
@@ -204,6 +211,13 @@ const el = {
   input: $('#composer-input'),
   btnAttach: $('#btn-attach'),
   fileInput: $('#file-input'),
+  btnSend: $('#btn-send'),
+  sendIcon: $('#send-icon'),
+  recordBar: $('#record-bar'),
+  recordTime: $('#record-time'),
+  recordHint: $('#record-hint'),
+  recordCancel: $('#record-cancel'),
+  recordSend: $('#record-send'),
   uploadBar: $('#upload-bar'),
   uploadLabel: $('#upload-label'),
   uploadFill: $('#upload-fill'),
@@ -222,6 +236,7 @@ const el = {
   chatMenuCatcher: $('#chat-menu-catcher'),
   chatMenuList: $('#chat-menu-list'),
   themeNote: $('[data-theme-note]'),
+  themeSelect: $('#theme-select'),
 
   viewer: $('#viewer'),
   viewerName: $('#viewer-name'),
@@ -364,6 +379,10 @@ const packMessage = (text, attachment, extra = {}) =>
     attachment: attachment || null,
     replyTo: extra.replyTo || null,
     forwarded: Boolean(extra.forwarded),
+    // Penanda pesan suara ikut di dalam payload terenkripsi, bukan di
+    // attachment: server nggak perlu (dan nggak boleh) tahu isinya suara.
+    voice: Boolean(extra.voice),
+    duration: extra.voice ? Math.round(Number(extra.duration) || 0) : null,
   });
 
 function unpackMessage(raw) {
@@ -404,6 +423,10 @@ function messagePreview(message) {
   if (message.deleted) return 'Pesan ini sudah dihapus';
   if (message.error) return 'Pesan nggak bisa dibuka';
   const attachment = message.attachment;
+  if (message.voice) {
+    const length = message.duration ? ` · ${formatClock(message.duration)}` : '';
+    return `Pesan suara${length}${message.text ? ` — ${message.text}` : ''}`;
+  }
   if (!attachment) return message.text || '';
   const label = KIND_LABEL[fileKind(attachment.mime)];
   const name = attachment.name ? ` · ${attachment.name}` : '';
@@ -1088,7 +1111,12 @@ async function keysForRoom(room) {
  * Kirim ke ruangan tertentu — bukan selalu ruangan yang sedang terbuka, karena
  * "Teruskan" mengirim ke chat lain sambil layarnya tetap di sini.
  */
-async function sendToRoom(room, text, attachment, { replyTo = null, forwarded = false } = {}) {
+async function sendToRoom(
+  room,
+  text,
+  attachment,
+  { replyTo = null, forwarded = false, voice = false, duration = 0 } = {}
+) {
   if (!room) return;
   if (!String(text || '').trim() && !attachment) return;
 
@@ -1107,7 +1135,10 @@ async function sendToRoom(room, text, attachment, { replyTo = null, forwarded = 
   const outgoing = attachment ? { ...attachment } : null;
   if (outgoing) delete outgoing.localUrl;
 
-  const payload = await encryptMessage(packMessage(text, outgoing, { replyTo, forwarded }), sharedKeys);
+  const payload = await encryptMessage(
+    packMessage(text, outgoing, { replyTo, forwarded, voice, duration }),
+    sharedKeys
+  );
   const local = {
     id: `local:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
     from: state.me.uid,
@@ -1115,6 +1146,8 @@ async function sendToRoom(room, text, attachment, { replyTo = null, forwarded = 
     attachment: attachment || null,
     replyTo: replyTo || null,
     forwarded: Boolean(forwarded),
+    voice: Boolean(voice),
+    duration: voice ? Math.round(Number(duration) || 0) : null,
     at: Date.now(),
     status: 'sending',
   };
@@ -1177,6 +1210,8 @@ async function receiveMessage(envelope) {
     attachment: parsed.attachment,
     replyTo: parsed.replyTo || null,
     forwarded: Boolean(parsed.forwarded),
+    voice: Boolean(parsed.voice),
+    duration: parsed.voice ? Number(parsed.duration) || 0 : null,
     error,
   });
 
@@ -1197,6 +1232,7 @@ async function receiveMessage(envelope) {
 function notificationPreview(parsed, error) {
   if (error) return 'Pesan tidak bisa dibuka di perangkat ini.';
   const text = String(parsed.text || '').trim();
+  if (parsed.voice) return 'Pesan suara';
   if (text) return text.length > 140 ? `${text.slice(0, 139)}…` : text;
   if (parsed.attachment) return KIND_LABEL[fileKind(parsed.attachment.mime)] || 'Lampiran';
   return 'Pesan baru';
@@ -1508,7 +1544,11 @@ function openForwardPicker(message) {
       const target = state.rooms.get(button.dataset.room);
       closeModal();
       if (!target) return;
-      await sendToRoom(target, message.text, message.attachment, { forwarded: true });
+      await sendToRoom(target, message.text, message.attachment, {
+        forwarded: true,
+        voice: Boolean(message.voice),
+        duration: message.duration,
+      });
       selectRoom(target.id);
       showToast(`Pesan diteruskan ke ${target.type === 'group' ? target.name : displayName(target)}.`);
     });
@@ -1891,6 +1931,136 @@ async function sendFiles(files) {
   if (token === state.uploadToken) el.uploadBar.hidden = true;
 }
 
+/* ---- Pesan suara ---------------------------------------------------
+ * Merekam tidak mengirim apa pun. Begitu tombol kirim ditekan, blob-nya
+ * dibungkus jadi File lalu masuk jalur lampiran yang sama dengan foto:
+ * dienkripsi di browser, diunggah sebagai ciphertext, dan kuncinya cuma ada
+ * di dalam pesan terenkripsi. Penerima men-download + mendekripsi saat
+ * memutar, bukan saat pesannya masuk.
+ */
+
+/** Tombol kanan komposer: mikrofon saat kosong, panah saat ada teks. */
+function paintComposerAction() {
+  const hasText = Boolean(el.input.value.trim());
+  const label = hasText ? 'Kirim' : 'Rekam pesan suara';
+  if (el.sendIcon) el.sendIcon.setAttribute('href', hasText ? '#i-send' : '#i-mic');
+  el.btnSend.title = label;
+  el.btnSend.setAttribute('aria-label', label);
+}
+
+function paintRecordingUi(recording) {
+  el.recordBar.hidden = !recording;
+  el.composer.hidden = Boolean(recording);
+  el.recordBar.classList.toggle('live', Boolean(recording));
+  if (recording) {
+    el.recordTime.textContent = '0:00';
+    el.recordHint.textContent = 'Merekam…';
+    el.recordSend.disabled = false;
+  }
+}
+
+async function startVoiceNote() {
+  if (state.voiceRecording) return;
+  if (!state.rooms.get(state.activeRoomId)) return;
+  stopTyping();
+
+  let recording;
+  try {
+    recording = await startVoiceRecording();
+  } catch (err) {
+    showToast(err.message, 6000);
+    return;
+  }
+
+  state.voiceRecording = recording;
+  paintRecordingUi(recording);
+  state.voiceTimer = setInterval(() => {
+    if (!state.voiceRecording) return;
+    const seconds = state.voiceRecording.elapsed();
+    el.recordTime.textContent = formatClock(seconds);
+    if (seconds >= MAX_VOICE_SECONDS) {
+      el.recordHint.textContent = 'Batas 5 menit — mengirim…';
+      finishVoiceNote();
+    }
+  }, 200);
+}
+
+function clearRecordingState() {
+  state.voiceRecording = null;
+  clearInterval(state.voiceTimer);
+  state.voiceTimer = null;
+  paintRecordingUi(null);
+  paintComposerAction();
+  el.input.focus();
+}
+
+function cancelVoiceNote() {
+  const recording = state.voiceRecording;
+  if (!recording) return;
+  clearRecordingState();
+  recording.cancel();
+}
+
+async function finishVoiceNote() {
+  const recording = state.voiceRecording;
+  if (!recording) return;
+  el.recordSend.disabled = true;
+  el.recordHint.textContent = 'Menyiapkan…';
+  const result = await recording.stop();
+  if (!state.voiceRecording) return;
+  clearRecordingState();
+
+  if (result.duration < 0.5 || !result.blob.size) {
+    showToast('Rekamannya terlalu pendek. Coba tahan tombolnya sebentar.');
+    return;
+  }
+  await sendVoiceNote(result);
+}
+
+const VOICE_EXT = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a' };
+
+async function sendVoiceNote({ blob, mime, ext, duration }) {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room) return;
+
+  const replyTo = state.replyTo;
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const file = new File([blob], `pesan-suara-${stamp}.${VOICE_EXT[mime] || ext || 'webm'}`, {
+    type: mime,
+  });
+
+  const token = ++state.uploadToken;
+  el.uploadBar.hidden = false;
+  el.uploadLabel.textContent = 'Menyiapkan pesan suara…';
+  el.uploadFill.style.width = '0%';
+
+  try {
+    const attachment = await uploadAttachment({
+      file,
+      getIdToken: () => state.auth.getIdToken(),
+      maxBytes: state.config.files.maxBytes,
+      onStage: (stage, fraction) => {
+        if (token !== state.uploadToken) return;
+        const verb = stage === 'encrypt' ? 'Mengenkripsi' : 'Mengunggah';
+        el.uploadLabel.textContent = `${verb} pesan suara — ${Math.round(fraction * 100)}%`;
+        el.uploadFill.style.width = `${Math.round(fraction * 100)}%`;
+      },
+    });
+    if (token !== state.uploadToken) return;
+
+    // Pratinjau langsung dari blob lokal: pengirim nggak perlu mengunduh
+    // rekamannya sendiri cuma buat mendengarkannya lagi.
+    attachment.localUrl = URL.createObjectURL(blob);
+    cancelReply();
+    await sendToRoom(room, '', attachment, { replyTo, voice: true, duration });
+  } catch (err) {
+    showToast(`Gagal kirim pesan suara: ${err.message}`, 6000);
+  } finally {
+    if (token === state.uploadToken) el.uploadBar.hidden = true;
+    el.uploadFill.style.width = '0%';
+  }
+}
+
 /**
  * Lampiran biasa (dokumen, arsip, apa pun yang bukan media): satu-satunya jenis
  * yang memang diunduh, karena memang itu yang orang mau.
@@ -1944,6 +2114,10 @@ function renderEmptyState() {
 
 function selectRoom(roomId) {
   closeMessageMenu();
+  // Pindah chat menghentikan rekaman dan suara yang sedang diputar; keduanya
+  // milik percakapan yang sedang dibuka, bukan percakapan berikutnya.
+  if (state.voiceRecording) cancelVoiceNote();
+  stopVoicePlayback();
   state.activeRoomId = roomId;
   state.unread.set(roomId, 0);
   const room = state.rooms.get(roomId);
@@ -1955,6 +2129,7 @@ function selectRoom(roomId) {
   renderPeerHeader();
   renderMessages();
   renderChatList();
+  paintComposerAction();
   el.input.focus();
 }
 
@@ -2298,6 +2473,209 @@ function attachmentNode(message) {
   return wrap;
 }
 
+/* ---- Pemutar pesan suara ------------------------------------------
+ * Suara yang datang diunduh + didekripsi dulu, baru diputar. Cuma satu
+ * pemutar yang boleh berbunyi; mulai yang lain menghentikan yang lama.
+ * Progres ditulis langsung ke node, bukan lewat render ulang seluruh chat,
+ * supaya audio nggak ikut terhenti tiap kali ada pesan baru masuk.
+ */
+const VOICE_BARS = 30;
+
+/** Detik → "0:07" / "12:40". Dipakai bubble suara dan timer rekaman. */
+function formatClock(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const minutes = Math.floor(total / 60);
+  return `${minutes}:${String(total % 60).padStart(2, '0')}`;
+}
+
+/** Tinggi batang diturunkan dari id pesan: sama di semua perangkat, stabil. */
+function voiceBars(message) {
+  let seed = 7;
+  for (const char of String(serverIdOf(message) || message.id)) {
+    seed = (seed * 31 + char.charCodeAt(0)) % 2147483647;
+  }
+  return Array.from({ length: VOICE_BARS }, (_, index) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    const shape = 0.55 + Math.sin((index / VOICE_BARS) * Math.PI) * 0.45;
+    return 20 + Math.round((seed / 2147483648) * 62 * shape);
+  });
+}
+
+function paintVoiceEntry(entry) {
+  const active = state.voice;
+  const isActive = active.id === entry.id && Boolean(active.audio);
+  const playing = Boolean(isActive && !active.audio.paused && !active.audio.ended);
+  const loading = active.loading === entry.id;
+
+  entry.btn.disabled = loading;
+  entry.btn.classList.toggle('playing', playing);
+  entry.btn.setAttribute('aria-label', playing ? 'Jeda pesan suara' : 'Putar pesan suara');
+  entry.btn.innerHTML = `<svg class="ico"><use href="#${playing ? 'i-pause' : 'i-play'}" /></svg>`;
+
+  entry.speed.hidden = !isActive;
+  entry.speed.textContent = `${active.speed}x`;
+
+  const current = isActive ? Math.min(active.audio.currentTime || 0, entry.total) : 0;
+  const progress = entry.total ? current / entry.total : 0;
+  entry.bars.forEach((bar, index) => {
+    bar.classList.toggle('on', (index + 1) / entry.bars.length <= progress + 0.001);
+  });
+
+  entry.time.textContent = loading ? '…' : formatClock(current > 0 ? current : entry.total);
+  entry.root.classList.toggle('active', isActive);
+}
+
+function paintVoice() {
+  for (const entry of state.voiceNodes) paintVoiceEntry(entry);
+}
+
+function stopVoicePlayback() {
+  const active = state.voice;
+  if (active.audio) {
+    active.audio.pause();
+    active.audio.currentTime = 0;
+  }
+  active.id = null;
+  active.audio = null;
+  paintVoice();
+}
+
+/** URL siap putar: pratinjau lokal, cache sesi, atau unduhan terenkripsi. */
+async function voiceSource(message) {
+  const ready = message.attachment?.localUrl || state.blobUrls.get(message.id);
+  if (ready) return ready;
+  if (state.voice.loading === message.id) return null;
+
+  state.voice.loading = message.id;
+  paintVoice();
+  try {
+    const url = await fetchAttachment({
+      attachment: message.attachment,
+      getIdToken: () => state.auth.getIdToken(),
+    });
+    state.blobUrls.set(message.id, url);
+    return url;
+  } finally {
+    if (state.voice.loading === message.id) state.voice.loading = null;
+    paintVoice();
+  }
+}
+
+async function toggleVoice(message) {
+  if (!message.attachment) return;
+  const active = state.voice;
+
+  if (active.id === message.id && active.audio) {
+    if (active.audio.paused) {
+      await active.audio.play().catch((err) => showToast(`Gagal memutar: ${err.message}`));
+    } else {
+      active.audio.pause();
+    }
+    paintVoice();
+    return;
+  }
+
+  if (active.audio) {
+    active.audio.pause();
+    active.audio.currentTime = 0;
+  }
+  active.id = message.id;
+  active.audio = null;
+  paintVoice();
+
+  let url;
+  try {
+    url = await voiceSource(message);
+  } catch (err) {
+    if (active.id === message.id) {
+      active.id = null;
+      paintVoice();
+    }
+    showToast(`Gagal memutar pesan suara: ${err.message}`, 6000);
+    return;
+  }
+  // Kedaluwarsa: orangnya sudah pindah ke pesan suara lain saat menunggu.
+  if (!url || active.id !== message.id) return;
+
+  const audio = new Audio(url);
+  audio.preload = 'metadata';
+  audio.playbackRate = active.speed;
+  active.audio = audio;
+  audio.addEventListener('timeupdate', paintVoice);
+  audio.addEventListener('play', paintVoice);
+  audio.addEventListener('pause', paintVoice);
+  audio.addEventListener('ended', () => {
+    audio.currentTime = 0;
+    paintVoice();
+  });
+  audio.addEventListener('error', () => showToast('Pesan suara ini nggak bisa diputar di perangkat ini.', 6000));
+
+  try {
+    await audio.play();
+  } catch (err) {
+    showToast(`Gagal memutar: ${err.message}`, 5000);
+  }
+  paintVoice();
+}
+
+/** 1x → 1,5x → 2x → 1x. Kecepatannya berlaku untuk semua pesan suara. */
+function cycleVoiceSpeed() {
+  const order = [1, 1.5, 2];
+  state.voice.speed = order[(order.indexOf(state.voice.speed) + 1) % order.length];
+  if (state.voice.audio) state.voice.audio.playbackRate = state.voice.speed;
+  paintVoice();
+}
+
+function voiceNode(message) {
+  const total = Math.max(0.1, Number(message.duration) || 0);
+  const root = document.createElement('div');
+  root.className = 'voice';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'voice-btn';
+  btn.setAttribute('aria-label', 'Putar pesan suara');
+  btn.innerHTML = '<svg class="ico"><use href="#i-play" /></svg>';
+
+  const main = document.createElement('div');
+  main.className = 'voice-main';
+
+  const wave = document.createElement('div');
+  wave.className = 'voice-wave';
+  const bars = voiceBars(message).map((height) => {
+    const bar = document.createElement('i');
+    bar.style.height = `${height}%`;
+    wave.appendChild(bar);
+    return bar;
+  });
+
+  const foot = document.createElement('div');
+  foot.className = 'voice-foot';
+  const time = document.createElement('span');
+  time.className = 'voice-time';
+  time.textContent = formatClock(total);
+  const hint = document.createElement('span');
+  hint.className = 'voice-hint';
+  hint.innerHTML = '<svg class="ico"><use href="#i-mic" /></svg><span>Pesan suara</span>';
+  const speed = document.createElement('button');
+  speed.type = 'button';
+  speed.className = 'voice-speed';
+  speed.textContent = `${state.voice.speed}x`;
+  speed.title = 'Ubah kecepatan putar';
+  speed.hidden = true;
+  foot.append(time, hint, speed);
+
+  main.append(wave, foot);
+  root.append(btn, main);
+
+  const entry = { id: message.id, total, root, bars, time, btn, speed };
+  state.voiceNodes.push(entry);
+  btn.addEventListener('click', () => toggleVoice(message));
+  speed.addEventListener('click', cycleVoiceSpeed);
+  paintVoiceEntry(entry);
+  return root;
+}
+
 function dayLabel(ts) {
   const date = new Date(ts);
   const today = new Date();
@@ -2437,6 +2815,9 @@ function ongoingCallBubble(call) {
 function renderMessages() {
   const room = state.rooms.get(state.activeRoomId);
   el.messages.innerHTML = '';
+  // Setiap render membangun ulang pemutarnya; daftar node lama dibuang supaya
+  // progres nggak ditulis ke elemen yang sudah lepas dari halaman.
+  state.voiceNodes.length = 0;
   if (!room) return;
 
   let lastDay = null;
@@ -2480,7 +2861,8 @@ function renderMessages() {
     } else {
       if (message.forwarded) div.appendChild(forwardedNode());
       if (message.replyTo?.id) div.appendChild(quoteNode(message));
-      if (message.attachment) div.appendChild(attachmentNode(message));
+      if (message.attachment && message.voice) div.appendChild(voiceNode(message));
+      else if (message.attachment) div.appendChild(attachmentNode(message));
       if (message.text) {
         const body = document.createElement('span');
         body.className = 'msg-text';
@@ -4025,9 +4407,7 @@ paintTheme();
 systemDark.addEventListener('change', () => {
   if (themeChoice === 'system') paintTheme();
 });
-for (const button of document.querySelectorAll('[data-theme-choice]')) {
-  button.addEventListener('click', () => setTheme(button.dataset.themeChoice));
-}
+el.themeSelect?.addEventListener('change', () => setTheme(el.themeSelect.value));
 
 el.chatMenuCatcher.addEventListener('click', () => closeChatMenu());
 
@@ -4040,7 +4420,13 @@ el.viewerStage.addEventListener('click', (event) => {
 });
 el.btnNewGroup.addEventListener('click', openNewGroup);
 el.btnVerify.addEventListener('click', openSafetyNumber);
-el.btnBack.addEventListener('click', () => el.app.classList.remove('show-chat'));
+el.btnBack.addEventListener('click', () => {
+  // Kembali ke daftar chat menutup percakapan: rekaman dan suara yang sedang
+  // berjalan ikut berhenti, bukan terus hidup di layar yang sudah hilang.
+  if (state.voiceRecording) cancelVoiceNote();
+  stopVoicePlayback();
+  el.app.classList.remove('show-chat');
+});
 el.search.addEventListener('input', renderChatList);
 
 el.btnCallAudio.addEventListener('click', () => startCall(false));
@@ -4083,13 +4469,20 @@ el.uploadCancel.addEventListener('click', () => {
 el.composer.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = el.input.value;
+  // Komposer kosong = permintaan merekam, bukan mengirim pesan kosong.
+  if (!text.trim()) return startVoiceNote();
+
   const replyTo = state.replyTo;
   el.input.value = '';
   el.input.style.height = 'auto';
+  paintComposerAction();
   cancelReply();
   stopTyping();
   sendMessage(text, null, { replyTo });
 });
+
+el.recordCancel.addEventListener('click', cancelVoiceNote);
+el.recordSend.addEventListener('click', finishVoiceNote);
 
 // Dropping files straight onto the conversation.
 el.messages.addEventListener('dragover', (event) => event.preventDefault());
@@ -4102,6 +4495,7 @@ let typingTimer = null;
 el.input.addEventListener('input', () => {
   el.input.style.height = 'auto';
   el.input.style.height = `${Math.min(el.input.scrollHeight, 140)}px`;
+  paintComposerAction();
   const room = state.rooms.get(state.activeRoomId);
   if (room) {
     socket?.emit('typing', { roomId: room.id, members: room.members, typing: true });
@@ -4113,7 +4507,8 @@ el.input.addEventListener('input', () => {
 el.input.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
-    el.composer.requestSubmit();
+    // Enter di kolom kosong nggak boleh tiba-tiba menyalakan mikrofon.
+    if (el.input.value.trim()) el.composer.requestSubmit();
   }
 });
 
@@ -4126,5 +4521,6 @@ function stopTyping() {
 /* ------------------------------------------------------------------ *
  * Go
  * ------------------------------------------------------------------ */
+paintComposerAction();
 renderEmptyState();
 boot();

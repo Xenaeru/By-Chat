@@ -1,6 +1,6 @@
 # 🔒 By Chat
 
-Aplikasi chat dengan **end-to-end encryption** yang beneran — pesan, **file**,
+Aplikasi chat dengan **end-to-end encryption** yang beneran — pesan, **file**, **pesan suara**,
 **status 24 jam**, dan **panggilan suara/video**. Server cuma perantara buta: dia nggak punya
 private key siapa pun, nggak bisa baca isi pesan, nggak bisa buka isi file, dan nggak pernah
 menyentuh audio/video.
@@ -37,10 +37,11 @@ disk lokal, dan panggilan pakai STUN publik. Cukup buat nyoba semuanya di lokal.
 | **Pilihan pesan** | Arahkan kursor ke gelembung → muncul **panah kecil di sudutnya** (ala WhatsApp Web) yang membuka menu; bisa juga klik kanan (mouse) atau tahan pesan (hp). Yang lain diblur, yang dipilih tetap tajam, lalu muncul reaksi cepat + **Balas, Teruskan, Salin, Beri bintang, Laporkan, Hapus untuk saya, Hapus untuk semua orang**. |
 | **Menu chat** | Arahkan kursor ke baris chat → **panah di sudutnya** (di hp: tahan barisnya). Isinya **Tandai sudah/belum dibaca**, **Bersihkan chat** (semua pesannya dihapus, chatnya tetap ada), dan **Hapus chat** (chatnya dibuang dari perangkat ini). Dua terakhir selalu minta konfirmasi. |
 | **File** | Enkripsi di browser sebelum dikirim, chunked AES-GCM, progress bar. Foto/video dibuka **selayar penuh** di dalam aplikasi (bukan diunduh, bukan tab blob: baru); dokumen lain baru diunduh. Nama file dan kuncinya cuma ada di dalam pesan terenkripsi. |
+| **Pesan suara** | Kolom kosong mengubah tombol kirim jadi **mikrofon**. Ketuk untuk merekam (maksimal 5 menit), lalu **kirim** atau **buang** dari bar rekaman yang menampilkan timer dan gelombang berjalan. Rekamannya masuk jalur lampiran yang sama: **dienkripsi di browser** sebelum diunggah, jadi server cuma melihat ciphertext. Di bubble, penerima mendapat tombol putar, gelombang yang ikut terisi, durasi, dan **kecepatan 1x / 1,5x / 2x**; suaranya baru diunduh + didekripsi saat benar-benar diputar. Bisa dibalas, diteruskan, diberi bintang, dan dihapus seperti pesan lain. |
 | **Menu ala WhatsApp** | Rail ikon di desktop (Chat, Status, Panggilan, Pengaturan) dan **navbar bawah oval yang melayang + berkaca di hp**. Perpindahan panelnya dianimasikan halus, dan di hp percakapan dibuka sebagai halaman penuh (navbar ikut menghilang). |
 | **Panggilan** | Suara, video, dan bagikan layar lewat WebRTC — **1:1 maupun grup sampai 8 orang**, dan peserta lain bisa **ditambahkan di tengah panggilan**. Nyalakan kamera di tengah panggilan suara tanpa renegosiasi. Hasilnya tercatat di **chat** dan panel Panggilan: **panggilan tidak terjawab**, **panggilan terjawab + durasinya**, atau **panggilan sedang berlangsung** dengan detik berjalan. Kalau orang yang ditelepon sedang di panggilan lain, pemanggilnya diberi tahu **ada panggilan yang sedang berlangsung**. Suara lawan bicara keluar dari elemen `<audio>` sendiri (bukan dari petak video), ada **meter mikrofon** di layar panggilan, dan kalau browser menahan suaranya muncul tombol **"Suara belum keluar — ketuk untuk menyalakan"**. |
 | **Status** | Teks atau foto, hilang sendiri setelah 24 jam. Isinya tetap terenkripsi end-to-end, dan yang sudah dilihat ditandai cincin. **Status cuma bisa dilihat orang yang sudah pernah chat** — kuncinya nggak pernah dibungkus buat orang lain, dan sisi penerimanya juga menyaring. |
-| **Pengaturan** | Satu panel berisi profil (foto + username), **sakelar tema Terang / Gelap / Otomatis**, sakelar notifikasi, dan tombol **Keluar** — bukan lagi modal terpisah atau tombol di header chat. |
+| **Pengaturan** | Satu panel berisi profil (foto + username), **dropdown tema Terang / Gelap / Otomatis**, sakelar notifikasi, dan tombol **Keluar** — bukan lagi modal terpisah atau tombol di header chat. |
 | **Mode gelap** | Palet kedua yang lengkap, bukan inversi otomatis: permukaan berlapis, teks terang, dan aksen biru yang naik kontrasnya. Pilihannya disimpan per perangkat dan dipasang **sebelum CSS dilukis**, jadi nggak ada kilatan putih saat aplikasi dibuka. "Otomatis" ikut `prefers-color-scheme` dan langsung berubah saat perangkatnya berganti mode. |
 | **Profil** | Username unik + foto profil yang bisa diganti dari Pengaturan. Foto profil **nggak** dienkripsi (memang buat dilihat orang) — lihat catatan di bawah. |
 | **Kontak** | Chat cuma bisa dibuka setelah kontaknya dicari lewat email, nomor HP, atau @username. Pencocokan dikerjakan server, dan hasilnya tetap ketemu walau orangnya offline. Nomor HP **nggak** lagi disiarkan ke semua klien. |
@@ -258,6 +259,10 @@ dua-duanya nggak pernah lihat kuncinya. Nomor chunk dan jumlah totalnya masuk se
 *additional authenticated data*, jadi blob yang diacak urutannya atau dipotong bakal
 ketahuan, bukan diterima diam-diam.
 
+**Pesan suara** nggak punya jalur enkripsi sendiri: rekaman `MediaRecorder` dibungkus jadi
+file, lalu ikut jalur di atas. Yang ditambahkan cuma penanda `voice` + durasi **di dalam**
+payload terenkripsi, jadi server nggak tahu sebuah lampiran itu suara atau dokumen biasa.
+
 **Panggilan** pakai WebRTC, jadi medianya dienkripsi **DTLS-SRTP** langsung antar
 browser — di grup pun setiap pasangan punya koneksinya sendiri (mesh). Server cuma
 meneruskan SDP dan ICE. Kalau pakai TURN, relay-nya juga cuma meneruskan paket yang sudah
@@ -301,6 +306,7 @@ server.js          Relay + direktori kunci + endpoint lampiran + signaling + end
 public/crypto.js   Semua primitif E2EE. Pakai WebCrypto, jalan di browser dan Node.
 public/auth-client.js  Login Google / dev.
 public/files.js    Enkripsi, upload, unduh, dekripsi lampiran.
+public/voice.js   Perekam pesan suara (MediaRecorder); hasilnya masuk jalur lampiran.
 public/call.js     WebRTC mesh (1:1 & grup): suara, video, layar, tambah peserta.
 public/app.js      UI + orkestrasi.
 public/index.html  Kerangka halaman chat.
@@ -374,7 +380,7 @@ cuma tanpa efek buram.
 
 ```
 npm test              # 104 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling (termasuk grup & sibuk), aset notifikasi, tooling
-npm run test:browser  # 296 cek: UI asli di Chrome, termasuk panggilan WebRTC, notifikasi, navbar hp, mode gelap, panah menu, dan Bersihkan/Hapus chat
+npm run test:browser  # 307 cek: UI asli di Chrome, termasuk panggilan WebRTC, notifikasi, pesan suara, navbar hp, mode gelap, panah menu, dan Bersihkan/Hapus chat
 CALL_DEBUG=1 npm run test:browser   # nyalain jejak negosiasi WebRTC di console
 ```
 
@@ -410,6 +416,12 @@ menaruh teksnya di clipboard (termasuk saat Clipboard API ditolak), bintang, rea
 sisi lain, **hapus untuk saya** cuma menghilangkan di perangkat itu, **hapus untuk semua orang**
 mengubah gelembung di kedua sisi jadi "Pesan ini sudah dihapus", dan foto dibuka selayar penuh
 tanpa pindah tab (dimensi + byte hasil dekripsi dicek di dalam penampilnya).
+
+Pesan suara diuji pakai mikrofon palsu Chrome yang memang menghasilkan audio: tombol kirim
+berubah jadi mikrofon saat kolom kosong, timer rekaman berjalan, rekaman dikirim lewat jalur
+lampiran terenkripsi, dan penerima bisa **memutarnya** — tombolnya berubah jadi jeda dan
+batang gelombangnya terisi. Durasi dan jumlah batangnya harus sama di dua sisi, dan tombol
+kecepatan harus berpindah ke `1,5x`. Jadi yang diperiksa bukan cuma "bubble-nya muncul".
 
 Video ikut diuji dengan file asli: browser di jalur tes ini merekam sendiri video WebM dari
 canvas, lalu memastikan penerimanya bisa membukanya di pemutar selayar penuh — dengan kontrol,

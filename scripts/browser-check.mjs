@@ -2301,9 +2301,106 @@ try {
   await sleep(300);
   check('Ketuk pendek di hp tidak membuka pilihan pesan', (await display(budi.page, '#msg-menu')) === 'none');
 
+  /* ---- 6b. Pesan suara ------------------------------------------
+     Mikrofon palsu Chrome yang dipakai di tes ini menghasilkan audio asli,
+     jadi rekaman, enkripsi, unggah, dan pemutaran bisa diuji ujung ke ujung. */
+  await goView(andi.page, 'chats');
+  if (await andi.page.$eval('#chat-view', (node) => node.hidden)) {
+    await andi.page.evaluate(() => {
+      const row = [...document.querySelectorAll('.chat-item')].find((node) => /budi/i.test(node.textContent));
+      row?.click();
+    });
+    await andi.page.waitForSelector('#chat-view:not([hidden])', { timeout: 10000 });
+  }
+  await andi.page.$eval('#composer-input', (field) => {
+    field.value = '';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const emptyComposer = await andi.page.evaluate(() => ({
+    icon: document.querySelector('#send-icon')?.getAttribute('href'),
+    title: document.querySelector('#btn-send')?.title,
+  }));
+  check(
+    'Komposer kosong mengubah tombol kirim jadi mikrofon',
+    emptyComposer.icon === '#i-mic' && /rekam/i.test(emptyComposer.title),
+    JSON.stringify(emptyComposer)
+  );
+
+  await andi.page.click('.send');
+  await andi.page.waitForSelector('#record-bar:not([hidden])', { timeout: 15000 });
+  check('Menekan mikrofon mulai merekam dan menyembunyikan komposer', (await display(andi.page, '#composer')) === 'none');
+  await sleep(1600);
+  const recordTimer = await andi.page.$eval('#record-time', (node) => node.textContent);
+  check('Timer rekaman berjalan selama mikrofon hidup', /^0:0[1-9]$/.test(recordTimer), recordTimer);
+  check(
+    'Bar rekaman punya tombol batal dan tombol kirim yang bisa dipakai',
+    await andi.page.evaluate(() => {
+      const cancel = document.querySelector('#record-cancel');
+      const send = document.querySelector('#record-send');
+      return Boolean(cancel && send && cancel.getBoundingClientRect().width > 0 && send.getBoundingClientRect().width > 0);
+    })
+  );
+
+  await andi.page.click('#record-send');
+  await andi.page.waitForFunction(() => document.querySelector('#messages .voice') !== null, { timeout: 30000 });
+  const sentVoice = await andi.page.evaluate(() => {
+    const voice = document.querySelector('#messages .voice');
+    const bubble = voice?.closest('.msg');
+    return {
+      bars: voice?.querySelectorAll('.voice-wave i').length || 0,
+      time: voice?.querySelector('.voice-time')?.textContent || '',
+      hint: voice?.querySelector('.voice-hint')?.textContent || '',
+      card: Boolean(bubble?.querySelector('.attach')),
+      playButton: Boolean(voice?.querySelector('.voice-btn svg')),
+    };
+  });
+  check(
+    'Pesan suara tampil sebagai pemutar, bukan kartu lampiran',
+    sentVoice.bars >= 20 && sentVoice.playButton && !sentVoice.card,
+    JSON.stringify(sentVoice)
+  );
+  check(
+    'Bubble pesan suara menampilkan durasi dan labelnya',
+    /^\d+:\d{2}$/.test(sentVoice.time) && /pesan suara/i.test(sentVoice.hint),
+    JSON.stringify(sentVoice)
+  );
+
+  await budi.page.waitForFunction(() => document.querySelector('#messages .voice') !== null, { timeout: 30000 });
+  const receivedVoice = await budi.page.evaluate(() => {
+    const voice = document.querySelector('#messages .voice');
+    return {
+      bars: voice?.querySelectorAll('.voice-wave i').length || 0,
+      time: voice?.querySelector('.voice-time')?.textContent || '',
+    };
+  });
+  check(
+    'Penerima menerima pesan suara dalam bentuk yang sama',
+    receivedVoice.bars === sentVoice.bars && receivedVoice.time === sentVoice.time,
+    JSON.stringify({ sent: sentVoice, received: receivedVoice })
+  );
+
+  await budi.page.click('#messages .voice-btn');
+  await sleep(1000);
+  const playback = await budi.page.evaluate(() => ({
+    playing: document.querySelector('#messages .voice-btn')?.classList.contains('playing') || false,
+    elapsed: document.querySelector('#messages .voice-time')?.textContent || '',
+    lit: document.querySelectorAll('#messages .voice-wave i.on').length,
+  }));
+  check(
+    'Penerima bisa memutar pesan suara yang sudah didekripsi',
+    playback.playing && playback.lit > 0,
+    JSON.stringify(playback)
+  );
+
+  await budi.page.click('#messages .voice-speed');
+  await sleep(150);
+  const speedLabel = await budi.page.$eval('#messages .voice-speed', (node) => node.textContent);
+  check('Kecepatan putar pesan suara bisa diubah', speedLabel === '1.5x', speedLabel);
+  await budi.page.click('#messages .voice-btn');
+
   /* ---- 7. Tema: terang, gelap, otomatis -------------------------- */
   await goView(andi.page, 'settings');
-  await andi.page.click('[data-theme-choice="dark"]');
+  await andi.page.select('#theme-select', 'dark');
   await sleep(250);
   const darkTheme = await andi.page.evaluate(() => {
     const lum = (color) => {
@@ -2326,8 +2423,17 @@ try {
       composerLum: composer ? lum(getComputedStyle(composer).backgroundColor) : null,
       textColour: getComputedStyle(panel).color,
       stored: localStorage.getItem('securechat.theme.v1'),
-      pressed: document.querySelector('[data-theme-choice="dark"]').getAttribute('aria-pressed'),
+      selected: document.querySelector('#theme-select').value,
+      control: document.querySelector('#theme-select').tagName,
       note: document.querySelector('[data-theme-note]').textContent,
+      noteWidth: Math.round(document.querySelector('[data-theme-note]').getBoundingClientRect().width),
+      // Keterangan yang terlipat per kata (keluhan aslinya) tingginya jauh
+      // lebih dari dua baris. Dua baris masih terbaca; lima tidak.
+      noteHeight: Math.round(document.querySelector('[data-theme-note]').getBoundingClientRect().height),
+      rowFits: (() => {
+        const row = document.querySelector('#theme-select').closest('.settings-row');
+        return row.scrollWidth <= row.clientWidth + 1;
+      })(),
       meta: document.querySelector('meta[name="theme-color"]').content,
     };
   });
@@ -2347,9 +2453,22 @@ try {
     JSON.stringify({ bubble: darkTheme.bubbleLum, text: darkTheme.bubbleTextLum, composer: darkTheme.composerLum })
   );
   check(
-    'Pilihan tema tersimpan dan tombolnya menandai pilihan aktif',
-    darkTheme.stored === 'dark' && darkTheme.choice === 'dark' && darkTheme.pressed === 'true' && /gelap/i.test(darkTheme.note),
-    JSON.stringify({ stored: darkTheme.stored, note: darkTheme.note })
+    'Tema memakai dropdown yang muat di panel Pengaturan',
+    darkTheme.control === 'SELECT' &&
+      darkTheme.rowFits &&
+      darkTheme.noteWidth > 100 &&
+      darkTheme.noteHeight <= 40,
+    JSON.stringify({
+      control: darkTheme.control,
+      rowFits: darkTheme.rowFits,
+      noteWidth: darkTheme.noteWidth,
+      noteHeight: darkTheme.noteHeight,
+    })
+  );
+  check(
+    'Pilihan tema tersimpan dan dropdown menandai pilihan aktif',
+    darkTheme.stored === 'dark' && darkTheme.choice === 'dark' && darkTheme.selected === 'dark' && /gelap/i.test(darkTheme.note),
+    JSON.stringify({ stored: darkTheme.stored, selected: darkTheme.selected, note: darkTheme.note })
   );
   check('Warna bilah browser ikut gelap', darkTheme.meta === '#0b141a', darkTheme.meta);
 
@@ -2361,7 +2480,7 @@ try {
   await freshPage.close();
   check('Tema dipasang sebelum CSS dilukis, jadi pilihannya bertahan', bootTheme === 'dark', String(bootTheme));
 
-  await andi.page.click('[data-theme-choice="light"]');
+  await andi.page.select('#theme-select', 'light');
   await sleep(220);
   const lightTheme = await andi.page.evaluate(() => ({
     attr: document.documentElement.dataset.theme,
@@ -2377,7 +2496,7 @@ try {
   );
 
   await andi.page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
-  await andi.page.click('[data-theme-choice="system"]');
+  await andi.page.select('#theme-select', 'system');
   await sleep(260);
   const autoDark = await andi.page.evaluate(() => document.documentElement.dataset.theme);
   check('Pilihan Otomatis mengikuti perangkat yang sedang gelap', autoDark === 'dark', String(autoDark));
@@ -2385,7 +2504,7 @@ try {
   await sleep(320);
   const autoLight = await andi.page.evaluate(() => document.documentElement.dataset.theme);
   check('Otomatis ikut berubah saat perangkat kembali terang', autoLight === 'light', String(autoLight));
-  await andi.page.click('[data-theme-choice="light"]');
+  await andi.page.select('#theme-select', 'light');
   await sleep(150);
 
   /* ---- 8. Menu chat: panah, Bersihkan chat, Hapus chat -------------
