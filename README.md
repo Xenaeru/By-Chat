@@ -34,12 +34,14 @@ disk lokal, dan panggilan pakai STUN publik. Cukup buat nyoba semuanya di lokal.
 | | |
 |---|---|
 | **Chat** | 1:1 dan grup, semua terenkripsi. Status online, indikator menulis, badge belum dibaca, ✓/✓✓, antrian pesan offline, pembatas hari. |
-| **Pilihan pesan** | Klik kanan (mouse) atau tahan pesan (hp): yang lain diblur, yang dipilih tetap tajam, lalu muncul reaksi cepat + **Balas, Teruskan, Salin, Beri bintang, Laporkan, Hapus untuk saya, Hapus untuk semua orang**. |
+| **Pilihan pesan** | Arahkan kursor ke gelembung → muncul **panah kecil di sudutnya** (ala WhatsApp Web) yang membuka menu; bisa juga klik kanan (mouse) atau tahan pesan (hp). Yang lain diblur, yang dipilih tetap tajam, lalu muncul reaksi cepat + **Balas, Teruskan, Salin, Beri bintang, Laporkan, Hapus untuk saya, Hapus untuk semua orang**. |
+| **Menu chat** | Arahkan kursor ke baris chat → **panah di sudutnya** (di hp: tahan barisnya). Isinya **Tandai sudah/belum dibaca**, **Bersihkan chat** (semua pesannya dihapus, chatnya tetap ada), dan **Hapus chat** (chatnya dibuang dari perangkat ini). Dua terakhir selalu minta konfirmasi. |
 | **File** | Enkripsi di browser sebelum dikirim, chunked AES-GCM, progress bar. Foto/video dibuka **selayar penuh** di dalam aplikasi (bukan diunduh, bukan tab blob: baru); dokumen lain baru diunduh. Nama file dan kuncinya cuma ada di dalam pesan terenkripsi. |
 | **Menu ala WhatsApp** | Rail ikon di desktop (Chat, Status, Panggilan, Pengaturan) dan **navbar bawah oval yang melayang + berkaca di hp**. Perpindahan panelnya dianimasikan halus, dan di hp percakapan dibuka sebagai halaman penuh (navbar ikut menghilang). |
-| **Panggilan** | Suara, video, dan bagikan layar lewat WebRTC — **1:1 maupun grup sampai 8 orang**, dan peserta lain bisa **ditambahkan di tengah panggilan**. Nyalakan kamera di tengah panggilan suara tanpa renegosiasi. Hasilnya tercatat di **chat** dan panel Panggilan: **panggilan tidak terjawab**, **panggilan terjawab + durasinya**, atau **panggilan sedang berlangsung** dengan detik berjalan. Kalau orang yang ditelepon sedang di panggilan lain, pemanggilnya diberi tahu **ada panggilan yang sedang berlangsung**. |
+| **Panggilan** | Suara, video, dan bagikan layar lewat WebRTC — **1:1 maupun grup sampai 8 orang**, dan peserta lain bisa **ditambahkan di tengah panggilan**. Nyalakan kamera di tengah panggilan suara tanpa renegosiasi. Hasilnya tercatat di **chat** dan panel Panggilan: **panggilan tidak terjawab**, **panggilan terjawab + durasinya**, atau **panggilan sedang berlangsung** dengan detik berjalan. Kalau orang yang ditelepon sedang di panggilan lain, pemanggilnya diberi tahu **ada panggilan yang sedang berlangsung**. Suara lawan bicara keluar dari elemen `<audio>` sendiri (bukan dari petak video), ada **meter mikrofon** di layar panggilan, dan kalau browser menahan suaranya muncul tombol **"Suara belum keluar — ketuk untuk menyalakan"**. |
 | **Status** | Teks atau foto, hilang sendiri setelah 24 jam. Isinya tetap terenkripsi end-to-end, dan yang sudah dilihat ditandai cincin. **Status cuma bisa dilihat orang yang sudah pernah chat** — kuncinya nggak pernah dibungkus buat orang lain, dan sisi penerimanya juga menyaring. |
-| **Pengaturan** | Satu panel berisi profil (foto + username), sakelar notifikasi, dan tombol **Keluar** — bukan lagi modal terpisah atau tombol di header chat. |
+| **Pengaturan** | Satu panel berisi profil (foto + username), **sakelar tema Terang / Gelap / Otomatis**, sakelar notifikasi, dan tombol **Keluar** — bukan lagi modal terpisah atau tombol di header chat. |
+| **Mode gelap** | Palet kedua yang lengkap, bukan inversi otomatis: permukaan berlapis, teks terang, dan aksen biru yang naik kontrasnya. Pilihannya disimpan per perangkat dan dipasang **sebelum CSS dilukis**, jadi nggak ada kilatan putih saat aplikasi dibuka. "Otomatis" ikut `prefers-color-scheme` dan langsung berubah saat perangkatnya berganti mode. |
 | **Profil** | Username unik + foto profil yang bisa diganti dari Pengaturan. Foto profil **nggak** dienkripsi (memang buat dilihat orang) — lihat catatan di bawah. |
 | **Kontak** | Chat cuma bisa dibuka setelah kontaknya dicari lewat email, nomor HP, atau @username. Pencocokan dikerjakan server, dan hasilnya tetap ketemu walau orangnya offline. Nomor HP **nggak** lagi disiarkan ke semua klien. |
 | **Laporan** | Dari header chat: pilih alasan (spam, pelecehan, penipuan, akun palsu, lainnya) + catatan. Yang terkirim cuma yang kamu tulis — isi chat nggak ikut. |
@@ -129,6 +131,12 @@ TURN_CREDENTIAL=...
 
 Sumbernya bisa [Twilio Network Traversal](https://console.twilio.com), Vonage, atau
 [coturn](https://github.com/coturn/coturn) yang di-host sendiri.
+
+Tanpa TURN, "panggilan tersambung tapi tidak ada suara" hampir selalu berarti jalur P2P-nya
+sendiri yang gagal di jaringan itu. Aplikasinya sekarang bilang terus terang — pesannya
+menyebut relay TURN — dan mencoba menyusun ulang jalur ICE sekali sebelum menyerah. Suara
+lawan bicara juga diputar dari elemen `<audio>` tersendiri (bukan dari petak video), dan
+meter mikrofon di layar panggilan menunjukkan apakah mikrofonnya benar-benar menangkap suara.
 
 ### 4. Panggilan saat aplikasi tertutup — Web Push
 
@@ -365,8 +373,8 @@ cuma tanpa efek buram.
 ## Testing
 
 ```
-npm test              # 101 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling (termasuk grup & sibuk), aset notifikasi, tooling
-npm run test:browser  # 272 cek: UI asli di Chrome, termasuk panggilan WebRTC, notifikasi, dan navbar hp
+npm test              # 104 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling (termasuk grup & sibuk), aset notifikasi, tooling
+npm run test:browser  # 296 cek: UI asli di Chrome, termasuk panggilan WebRTC, notifikasi, navbar hp, mode gelap, panah menu, dan Bersihkan/Hapus chat
 CALL_DEBUG=1 npm run test:browser   # nyalain jejak negosiasi WebRTC di console
 ```
 

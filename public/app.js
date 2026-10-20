@@ -48,6 +48,59 @@ const store = {
 };
 
 /* ------------------------------------------------------------------ *
+ * Tema: terang, gelap, atau ikut perangkat
+ *
+ * Pilihan disimpan di localStorage biasa (bukan di dalam profil), karena
+ * layar login pun ikut berwarna dan belum ada uid saat itu. Skrip kecil di
+ * index.html sudah memasang atribut `data-theme` sebelum CSS dilukis; fungsi
+ * di sini yang menjaga sisanya tetap sinkron setelah halaman hidup.
+ * ------------------------------------------------------------------ */
+const THEME_KEY = 'securechat.theme.v1';
+const THEMES = ['light', 'dark', 'system'];
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+let themeChoice = 'system';
+
+function readThemeChoice() {
+  try {
+    const raw = localStorage.getItem(THEME_KEY);
+    return THEMES.includes(raw) ? raw : 'system';
+  } catch {
+    return 'system';
+  }
+}
+
+const effectiveTheme = () =>
+  themeChoice === 'system' ? (systemDark.matches ? 'dark' : 'light') : themeChoice;
+
+function paintTheme() {
+  const theme = effectiveTheme();
+  const label = theme === 'dark' ? 'gelap' : 'terang';
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.dataset.themeChoice = themeChoice;
+
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = theme === 'dark' ? '#0b141a' : '#f7f8fa';
+
+  if (el.themeNote) {
+    el.themeNote.textContent =
+      themeChoice === 'system' ? `Otomatis — sekarang ${label}, ikut perangkat` : `Selalu ${label} di perangkat ini`;
+  }
+  for (const button of document.querySelectorAll('[data-theme-choice]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.themeChoice === themeChoice));
+  }
+}
+
+function setTheme(choice) {
+  themeChoice = THEMES.includes(choice) ? choice : 'system';
+  try {
+    localStorage.setItem(THEME_KEY, themeChoice);
+  } catch {
+    /* storage penuh / dimatikan: pilihannya tetap berlaku sampai tab ditutup */
+  }
+  paintTheme();
+}
+
+/* ------------------------------------------------------------------ *
  * State
  * ------------------------------------------------------------------ */
 const state = {
@@ -73,6 +126,8 @@ const state = {
   deletedIds: new Set(),
   menuOpen: false,
   menuOpenedAt: 0,
+  /** Kapan menu chat terakhir dibuka: menelan klik sintetis sesudah tahan. */
+  chatMenuOpenedAt: 0,
   viewer: null,
   viewerToken: 0,
   statuses: [],
@@ -163,6 +218,11 @@ const el = {
   msgMenuQuick: $('#msg-menu-quick'),
   msgMenuList: $('#msg-menu-list'),
 
+  chatMenu: $('#chat-menu'),
+  chatMenuCatcher: $('#chat-menu-catcher'),
+  chatMenuList: $('#chat-menu-list'),
+  themeNote: $('[data-theme-note]'),
+
   viewer: $('#viewer'),
   viewerName: $('#viewer-name'),
   viewerSub: $('#viewer-sub'),
@@ -186,6 +246,11 @@ const el = {
   ctlScreen: $('#ctl-screen'),
   ctlAdd: $('#ctl-add'),
   ctlHangup: $('#ctl-hangup'),
+  callAudio: $('#call-audio'),
+  callSound: $('#call-sound'),
+  callMic: $('#call-mic'),
+  callMicLevel: $('#call-mic-level'),
+  callMicNote: $('#call-mic-note'),
 
   incoming: $('#incoming'),
   incomingAvatar: $('#incoming-avatar'),
@@ -1962,8 +2027,22 @@ function renderChatList() {
       </div>
       ${peerOnline ? '<span class="dot"></span>' : ''}
       ${unread ? `<span class="badge">${unread}</span>` : ''}
+      <button type="button" class="chat-menu-btn" title="Menu chat" aria-label="Menu chat ${esc(name)}">
+        <svg class="ico"><use href="#i-chevron" /></svg>
+      </button>
     `;
-    li.addEventListener('click', () => selectRoom(room.id));
+    li.addEventListener('click', () => {
+      // Klik sintetis yang menyusul tahan-sebentar tidak boleh ikut membuka chat.
+      if (Date.now() - state.chatMenuOpenedAt < 600) return;
+      selectRoom(room.id);
+    });
+    li.querySelector('.chat-menu-btn').addEventListener('click', (event) => {
+      event.stopPropagation();
+      openChatMenu(li, room);
+    });
+    // Di layar sentuh panahnya nggak muncul; tahan baris chat sebentar sebagai
+    // jalan yang sama seperti WhatsApp.
+    bindChatLongPress(li, room);
     // Tapping the picture opens the status, the way the ring suggests it should.
     if (peerStatuses) {
       li.querySelector('.avatar').addEventListener('click', (event) => {
@@ -1991,6 +2070,185 @@ function paintNavBadges(unreadTotal = [...state.unread.values()].reduce((sum, co
     if (!badge) continue;
     badge.hidden = unreadTotal === 0;
     badge.textContent = unreadTotal > 99 ? '99+' : String(unreadTotal);
+  }
+}
+
+/* ---- Menu chat (panah di baris daftar chat) ------------------------
+ * Isinya sengaja cuma yang benar-benar dikerjakan aplikasi ini. "Bersihkan
+ * chat" menghapus semua pesannya tapi chatnya tetap ada; "Hapus chat"
+ * membuang chatnya sekalian dari perangkat ini. Dua-duanya lokal: server cuma
+ * perantara dan memang tidak menyimpan riwayat.
+ */
+const CHAT_LONG_PRESS_MS = 460;
+let chatPressTimer = null;
+let chatPressPoint = { x: 0, y: 0 };
+
+function chatMenuActions(room) {
+  const unread = state.unread.get(room.id) || 0;
+  const actions = [
+    {
+      id: unread ? 'read' : 'unread',
+      label: unread ? 'Tandai sudah dibaca' : 'Tandai belum dibaca',
+      icon: unread ? '#i-checks' : '#i-chat',
+    },
+  ];
+  if (room.messages.length) actions.push({ id: 'clear', label: 'Bersihkan chat', icon: '#i-broom' });
+  actions.push({ id: 'delete', label: 'Hapus chat', icon: '#i-trash', danger: true });
+  return actions;
+}
+
+function placeChatMenu(li) {
+  const rect = li.getBoundingClientRect();
+  const pad = 10;
+  const box = el.chatMenuList.getBoundingClientRect();
+  const left = Math.min(Math.max(pad, rect.right - box.width), Math.max(pad, innerWidth - box.width - pad));
+  let top = rect.bottom + 6;
+  if (top + box.height > innerHeight - pad) top = Math.max(pad, rect.top - box.height - 6);
+  el.chatMenuList.style.left = `${left}px`;
+  el.chatMenuList.style.top = `${top}px`;
+}
+
+function openChatMenu(li, room) {
+  if (!li || !room) return;
+  closeMessageMenu();
+  closeChatMenu();
+  state.chatMenuOpenedAt = Date.now();
+  el.chatMenu.hidden = false;
+  el.chatMenuList.innerHTML = '';
+  el.chatMenu.dataset.target = room.id;
+  li.classList.add('menu-target');
+
+  for (const action of chatMenuActions(room)) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'msg-menu-item' + (action.danger ? ' danger' : '');
+    button.dataset.action = action.id;
+    button.setAttribute('role', 'menuitem');
+    button.innerHTML = `<svg class="ico"><use href="${action.icon}" /></svg><span>${esc(action.label)}</span>`;
+    button.addEventListener('click', () => {
+      closeChatMenu();
+      runChatAction(action.id, room);
+    });
+    el.chatMenuList.appendChild(button);
+  }
+
+  placeChatMenu(li);
+}
+
+function closeChatMenu() {
+  if (el.chatMenu.hidden) return;
+  el.chatMenu.hidden = true;
+  el.chatMenuList.innerHTML = '';
+  delete el.chatMenu.dataset.target;
+  for (const node of el.chatList.querySelectorAll('.chat-item.menu-target')) node.classList.remove('menu-target');
+}
+
+/** Tahan baris chat (layar sentuh): jalan yang sama dengan panah di desktop. */
+function bindChatLongPress(li, room) {
+  const start = (point) => {
+    clearTimeout(chatPressTimer);
+    chatPressPoint = point;
+    chatPressTimer = setTimeout(() => {
+      chatPressTimer = null;
+      openChatMenu(li, room);
+    }, CHAT_LONG_PRESS_MS);
+  };
+  const cancel = () => clearTimeout(chatPressTimer);
+
+  li.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (event.target.closest('.chat-menu-btn')) return;
+    start({ x: event.clientX, y: event.clientY });
+  });
+  li.addEventListener('pointermove', (event) => {
+    if (!chatPressTimer) return;
+    if (Math.hypot(event.clientX - chatPressPoint.x, event.clientY - chatPressPoint.y) > 10) cancel();
+  });
+  for (const type of ['pointerup', 'pointercancel', 'pointerleave']) li.addEventListener(type, cancel);
+}
+
+function dropRoomMedia(room) {
+  for (const message of room.messages) {
+    const url = state.blobUrls.get(message.id);
+    if (!url) continue;
+    URL.revokeObjectURL(url);
+    state.blobUrls.delete(message.id);
+  }
+}
+
+/** Dialog konfirmasi kecil — dipakai sebelum ada pesan yang benar-benar hilang. */
+function confirmDialog({ title, body, confirmLabel, danger = false, onConfirm }) {
+  openModal(`
+    <h3>${esc(title)}</h3>
+    <p class="sub">${esc(body)}</p>
+    <div class="modal-actions">
+      <button type="button" data-cancel>Batal</button>
+      <button type="button" class="${danger ? 'danger' : 'primary'}" data-confirm>${esc(confirmLabel)}</button>
+    </div>
+  `);
+  el.modalCard.querySelector('[data-cancel]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-confirm]').addEventListener('click', () => {
+    closeModal();
+    onConfirm();
+  });
+}
+
+function clearChat(room) {
+  if (!room) return;
+  dropRoomMedia(room);
+  room.messages = [];
+  state.unread.set(room.id, 0);
+  cancelReply();
+  saveRooms();
+  renderChatList();
+  if (state.activeRoomId === room.id) renderMessages();
+  showToast('Chat dibersihkan — semua pesannya dihapus dari perangkat ini.');
+}
+
+function removeChat(room) {
+  if (!room) return;
+  dropRoomMedia(room);
+  state.rooms.delete(room.id);
+  state.unread.delete(room.id);
+  saveRooms();
+  if (state.activeRoomId === room.id) {
+    state.activeRoomId = null;
+    cancelReply();
+    closeMessageMenu();
+    el.app.classList.remove('show-chat');
+    renderEmptyState();
+  }
+  renderChatList();
+  showToast('Chat dihapus dari perangkat ini.');
+}
+
+function runChatAction(action, room) {
+  if (action === 'read') {
+    state.unread.set(room.id, 0);
+    renderChatList();
+    return;
+  }
+  if (action === 'unread') {
+    if (state.activeRoomId !== room.id) state.unread.set(room.id, 1);
+    renderChatList();
+    return;
+  }
+  if (action === 'clear') {
+    return confirmDialog({
+      title: 'Bersihkan chat ini?',
+      body: `Semua pesan dengan ${displayName(room)} dihapus dari perangkat ini. Chatnya tetap ada, jadi kamu bisa mulai lagi dari kosong.`,
+      confirmLabel: 'Bersihkan',
+      onConfirm: () => clearChat(room),
+    });
+  }
+  if (action === 'delete') {
+    return confirmDialog({
+      title: 'Hapus chat ini?',
+      body: `Chat dengan ${displayName(room)} dan seluruh pesannya hilang dari perangkat ini. Orang lain tidak terpengaruh, dan chatnya bisa dibuat lagi nanti.`,
+      confirmLabel: 'Hapus',
+      danger: true,
+      onConfirm: () => removeChat(room),
+    });
   }
 }
 
@@ -2242,6 +2500,22 @@ function renderMessages() {
     const reactions = reactionsNode(message);
     if (reactions) div.appendChild(reactions);
 
+    // Panah kecil di sudut gelembung: jalur menu yang sama dengan klik kanan /
+    // tahan-sebentar, cuma kelihatan saat kursor mendekat (CSS yang mengatur).
+    div.classList.add('has-menu');
+    const menuButton = document.createElement('button');
+    menuButton.type = 'button';
+    menuButton.className = 'msg-menu-btn';
+    menuButton.title = 'Menu pesan';
+    menuButton.setAttribute('aria-label', 'Buka menu pesan');
+    menuButton.innerHTML = '<svg class="ico"><use href="#i-chevron" /></svg>';
+    menuButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openMessageMenu(div);
+    });
+    div.appendChild(menuButton);
+
     el.messages.appendChild(div);
   }
 
@@ -2288,10 +2562,152 @@ function attachCallMedia(node, stream) {
   if (!stream || !node.paused) return;
 
   const played = node.play();
-  played?.catch((err) => {
-    console.warn('Pemutaran media panggilan ditolak:', err.message, '- ketuk layar sekali untuk mencoba lagi.');
-    showToast('Suaranya belum keluar. Ketuk layar panggilan sekali lagi.', 6000);
-  });
+  played
+    ?.then(() => {
+      if (node.dataset.callAudio === '1') paintSoundBanner(false);
+    })
+    .catch((err) => {
+      console.warn('Pemutaran media panggilan ditolak:', err.message, '- ketuk layar sekali untuk mencoba lagi.');
+      // Suara lawan bicara tidak boleh gagal diam-diam. Kalau yang tertahan
+      // justru elemen audionya, tombol "nyalakan suara" yang muncul; ketukan
+      // berikutnya di mana pun di halaman membuka kuncinya.
+      if (node.dataset.callAudio === '1') return paintSoundBanner(true);
+      showToast('Suaranya belum keluar. Ketuk layar panggilan sekali lagi.', 6000);
+    });
+}
+
+/* ---- Suara lawan bicara --------------------------------------------
+ * Satu elemen <audio> per peserta, terpisah dari petak video. Petak video bisa
+ * disembunyikan (kamera mati, layar dibagikan, video belum datang) dan elemen
+ * media yang tidak dilukis bukan tempat yang bisa diandalkan untuk mengeluarkan
+ * suara — di Safari bahkan tidak berbunyi sama sekali. Elemen audio ini nggak
+ * pernah disembunyikan, cuma dibuat berukuran nol.
+ */
+const callAudioNodes = new Map(); // uid -> HTMLAudioElement
+
+function callAudioFor(uid) {
+  let node = callAudioNodes.get(uid);
+  if (!node) {
+    node = document.createElement('audio');
+    node.autoplay = true;
+    node.playsInline = true;
+    node.dataset.callAudio = '1';
+    node.dataset.uid = uid;
+    el.callAudio.appendChild(node);
+    callAudioNodes.set(uid, node);
+  }
+  return node;
+}
+
+/** Buang elemen audio milik orang yang sudah tidak ada di panggilan. */
+function pruneCallAudio(keep) {
+  for (const [uid, node] of [...callAudioNodes]) {
+    if (keep.has(uid)) continue;
+    node.srcObject = null;
+    node.remove();
+    callAudioNodes.delete(uid);
+  }
+}
+
+function paintSoundBanner(show) {
+  if (!el.callSound) return;
+  el.callSound.hidden = !show;
+}
+
+/**
+ * Ketukan berikutnya mencoba membuka kunci autoplay untuk semua elemen audio.
+ * `play()` diulang dari gestur itu, jadi browser yang tadinya menolak (mis.
+ * panggilan yang dijawab dari notifikasi push) akhirnya boleh bersuara.
+ */
+async function retryCallAudio() {
+  let blocked = 0;
+  for (const node of callAudioNodes.values()) {
+    if (!node.srcObject) continue;
+    if (!node.paused) continue;
+    try {
+      await node.play();
+    } catch {
+      blocked += 1;
+    }
+  }
+  paintSoundBanner(blocked > 0);
+}
+
+/* ---- Meter mikrofon ------------------------------------------------
+ * Suara yang tidak tertangkap paling sering ketahuan setelah lawan bicara
+ * bilang "kamu nggak kedengaran". Meter ini menunjukkan level yang benar-benar
+ * dikirim, dan berubah merah kalau mikrofonnya hidup tapi tidak ada suara
+ * sama sekali — tanda perangkat input-nya salah atau dipakai aplikasi lain.
+ */
+let micMeter = null;
+
+function stopMicMeter() {
+  if (!micMeter) return;
+  cancelAnimationFrame(micMeter.frame);
+  micMeter.ctx.close().catch(() => {});
+  micMeter = null;
+  if (el.callMic) el.callMic.hidden = true;
+  if (el.callMicLevel) el.callMicLevel.style.width = '0%';
+}
+
+function startMicMeter(stream) {
+  const tracks = stream?.getAudioTracks?.() || [];
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!tracks.length || !Ctx) return stopMicMeter();
+  if (micMeter?.stream === stream) return;
+
+  stopMicMeter();
+  let ctx;
+  try {
+    ctx = new Ctx();
+  } catch {
+    return;
+  }
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const samples = new Float32Array(analyser.fftSize);
+
+  const meter = { ctx, stream, frame: 0, peak: 0, silentSince: 0, muted: false };
+  micMeter = meter;
+  el.callMic.hidden = false;
+  el.callMicNote.textContent = 'mikrofon';
+  el.callMic.classList.remove('quiet');
+
+  const tick = () => {
+    if (!micMeter || micMeter !== meter) return;
+    const live = stream.getAudioTracks();
+    const enabled = live.length > 0 && live.some((track) => track.enabled) && live.every((track) => track.readyState === 'live');
+
+    analyser.getFloatTimeDomainData(samples);
+    let peak = 0;
+    for (const value of samples) peak = Math.max(peak, Math.abs(value));
+    meter.peak = Math.max(peak, meter.peak * 0.92);
+
+    el.callMicLevel.style.width = `${Math.min(100, Math.round(meter.peak * 320))}%`;
+
+    if (!live.length || live.every((track) => track.readyState === 'ended')) {
+      el.callMic.classList.add('quiet');
+      el.callMicNote.textContent = 'mikrofon terputus';
+      meter.silentSince = 0;
+    } else if (!enabled) {
+      el.callMic.classList.remove('quiet');
+      el.callMicNote.textContent = 'mikrofon mati';
+      meter.silentSince = 0;
+    } else if (peak > 0.02) {
+      el.callMic.classList.remove('quiet');
+      el.callMicNote.textContent = 'mikrofon';
+      meter.silentSince = 0;
+    } else if (!meter.silentSince) {
+      meter.silentSince = performance.now();
+    } else if (performance.now() - meter.silentSince > 5000) {
+      el.callMic.classList.add('quiet');
+      el.callMicNote.textContent = 'tidak ada suara masuk';
+    }
+
+    meter.frame = requestAnimationFrame(tick);
+  };
+  tick();
 }
 
 /* ---- Dering ---- *
@@ -2388,16 +2804,23 @@ function syncCallGrid(participants) {
 
     const hasVideo = Boolean(person.stream?.getVideoTracks().length);
     const media = tile.querySelector('video');
+    // Petak ini cuma gambar. Suaranya keluar dari elemen <audio> pasangannya,
+    // supaya tidak dobel dan tidak ikut mati saat petaknya disembunyikan.
+    media.muted = true;
     media.hidden = !hasVideo;
     tile.classList.toggle('no-video', !hasVideo);
     tile.querySelector('.call-tile-name').textContent = person.displayName || '—';
     const avatar = tile.querySelector('.call-tile-avatar');
     avatar.textContent = initials(person.displayName);
     avatar.dataset.uid = person.uid;
-    if (person.stream) attachCallMedia(media, person.stream);
+    if (person.stream) {
+      attachCallMedia(media, person.stream);
+      attachCallMedia(callAudioFor(person.uid), person.stream);
+    }
   }
 
   for (const tile of [...el.callGrid.children]) if (!keep.has(tile.dataset.uid)) tile.remove();
+  pruneCallAudio(keep);
   el.callGrid.classList.toggle('multi', participants.length > 1);
   paintAvatars(el.callGrid);
 }
@@ -2431,6 +2854,9 @@ function renderCall(call = {}) {
     el.localVideo.srcObject = null;
     el.localVideo.hidden = true;
     clearCallGrid();
+    pruneCallAudio(new Set());
+    stopMicMeter();
+    paintSoundBanner(false);
     el.callParticipants.hidden = true;
     el.callDuration.hidden = true;
     // Bubble "panggilan sedang berlangsung" harus hilang dari chat.
@@ -2457,6 +2883,9 @@ function renderCall(call = {}) {
   if (call.localStream) {
     attachCallMedia(el.localVideo, call.localStream);
     el.localVideo.hidden = !(call.cameraOn || call.screenSharing);
+    startMicMeter(call.localStream);
+  } else {
+    stopMicMeter();
   }
 
   const participants = call.participants || [];
@@ -2889,6 +3318,7 @@ function renderSettings() {
   el.railAvatar.dataset.uid = state.me.uid;
 
   paintNotificationSetting();
+  paintTheme();
   paintAvatars(el.panelSettings);
 }
 
@@ -3565,6 +3995,7 @@ el.statusViewerMenu.addEventListener('click', async () => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (!el.chatMenu.hidden) return closeChatMenu();
   if (!el.msgMenu.hidden) return closeMessageMenu();
   if (!el.viewer.hidden) return closeViewer();
   if (!el.statusViewer.hidden) return closeStatusViewer();
@@ -3576,12 +4007,29 @@ document.addEventListener('keydown', (event) => {
 document.addEventListener(
   'click',
   () => {
-    for (const node of document.querySelectorAll('#call-overlay video')) {
+    for (const node of document.querySelectorAll('#call-overlay video, #call-audio audio')) {
       if (node.srcObject && node.paused) attachCallMedia(node, node.srcObject);
     }
   },
   true
 );
+
+el.callSound.addEventListener('click', (event) => {
+  event.stopPropagation();
+  retryCallAudio();
+});
+
+/* ---- Tema ---------------------------------------------------------- */
+themeChoice = readThemeChoice();
+paintTheme();
+systemDark.addEventListener('change', () => {
+  if (themeChoice === 'system') paintTheme();
+});
+for (const button of document.querySelectorAll('[data-theme-choice]')) {
+  button.addEventListener('click', () => setTheme(button.dataset.themeChoice));
+}
+
+el.chatMenuCatcher.addEventListener('click', () => closeChatMenu());
 
 el.replyCancel.addEventListener('click', cancelReply);
 el.viewerClose.addEventListener('click', closeViewer);

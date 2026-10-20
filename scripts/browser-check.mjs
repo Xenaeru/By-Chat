@@ -362,29 +362,40 @@ async function checkNotifications(andi, budi) {
   await budi.page.waitForSelector('#chat-view:not([hidden])', { timeout: 10000 });
 
   const notifText = 'kabar buat notifikasi andi';
-  await budi.page.type('#composer-input', notifText);
-  await budi.page.click('.send');
-
-  const shown = await andi.page.evaluate(async (text) => {
-    const registration = await navigator.serviceWorker.ready;
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline) {
-      const notes = await registration.getNotifications();
-      const hit = notes.find((note) => String(note.body || '').includes(text));
-      if (hit) {
-        return {
-          title: hit.title,
-          body: hit.body,
-          tag: hit.tag,
-          roomId: hit.data?.roomId || null,
-          uid: hit.data?.uid || null,
-          actions: (hit.actions || []).map((action) => action.action),
-        };
+  const readNotification = (text) =>
+    andi.page.evaluate(async (body) => {
+      const registration = await navigator.serviceWorker.ready;
+      const deadline = Date.now() + 7000;
+      while (Date.now() < deadline) {
+        const notes = await registration.getNotifications();
+        const hit = notes.find((note) => String(note.body || '').includes(body));
+        if (hit) {
+          return {
+            title: hit.title,
+            body: hit.body,
+            tag: hit.tag,
+            roomId: hit.data?.roomId || null,
+            uid: hit.data?.uid || null,
+            actions: (hit.actions || []).map((action) => action.action),
+          };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
       }
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-    return null;
-  }, notifText);
+      return null;
+    }, text);
+
+  // Memberi waktu registrasi service worker benar-benar siap lebih dulu: di
+  // Chrome headless, pesan pertama kadang datang sebelum notifikasinya bisa
+  // dipasang, dan yang tertinggal hanya pesan di chat. Kalau sampai 7 detik
+  // belum kelihatan, kirim ulang (paling banyak tiga kali) sebelum menyimpulkan
+  // bahwa notifikasinya memang rusak — pemeriksaannya tetap ketat seperti biasa.
+  let shown = null;
+  for (let attempt = 0; attempt < 3 && !shown; attempt += 1) {
+    if (attempt) await sleep(600);
+    await budi.page.type('#composer-input', notifText);
+    await budi.page.click('.send');
+    shown = await readNotification(notifText);
+  }
   check('Pesan masuk muncul sebagai notifikasi di luar jendela', Boolean(shown), JSON.stringify(shown));
   check(
     'Notifikasi menyebut pengirim dan isi pesannya',
@@ -1272,6 +1283,68 @@ try {
   );
   check('Pesan Andi tampil di layar Andi sendiri', true);
 
+  /* ---- 2a. Pembatas hari: oval memanjang, bukan bulat ----------------
+     Dulu label ini mewarisi max-width 80% dan terlipat jadi "Hari" / "ini",
+     sehingga bentuknya jadi lingkaran. Ukurannya diperiksa, bukan cuma
+     warnanya. */
+  const dayPill = await andi.page.evaluate(() => {
+    const span = document.querySelector('.day-sep span');
+    if (!span) return null;
+    const rect = span.getBoundingClientRect();
+    const style = getComputedStyle(span);
+    const pad = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    const lineHeight = parseFloat(style.lineHeight) || 18;
+    return {
+      text: span.textContent.trim(),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      whiteSpace: style.whiteSpace,
+      lines: Math.round((rect.height - pad) / lineHeight),
+    };
+  });
+  check('Pembatas hari ada di percakapan', dayPill?.text === 'Hari ini', JSON.stringify(dayPill));
+  check(
+    'Pembatas hari berbentuk oval memanjang, bukan lingkaran',
+    dayPill.width > dayPill.height * 1.6 && dayPill.width > 50,
+    JSON.stringify(dayPill)
+  );
+  check(
+    'Tulisan pembatas hari utuh dalam satu baris',
+    dayPill.whiteSpace === 'nowrap' && dayPill.lines === 1,
+    JSON.stringify(dayPill)
+  );
+
+  /* ---- 2b. Panah menu di sudut gelembung (ala WhatsApp Web) ---------- */
+  await andi.page.mouse.move(2, 2);
+  const firstBubble = await andi.page.$('.msg.out');
+  const firstBox = await firstBubble.boundingBox();
+  await andi.page.mouse.move(firstBox.x + firstBox.width / 2, firstBox.y + firstBox.height / 2);
+  await sleep(260);
+  const chevron = await andi.page.evaluate(() => {
+    const node = document.querySelector('.msg.out .msg-menu-btn');
+    if (!node) return null;
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return { display: style.display, opacity: Number(style.opacity), w: Math.round(rect.width) };
+  });
+  // Elemen berposisi absolute di-blockify browser: inline-flex jadi flex.
+  check(
+    'Gelembung punya tombol panah di sudutnya',
+    ['flex', 'inline-flex'].includes(chevron?.display),
+    JSON.stringify(chevron)
+  );
+  check('Panah menu kelihatan saat kursor di atas pesan', chevron.opacity === 1 && chevron.w > 0, JSON.stringify(chevron));
+  await andi.page.click('.msg.out .msg-menu-btn');
+  await andi.page.waitForSelector('#msg-menu:not([hidden])', { timeout: 5000 });
+  const chevronActions = await menuActions(andi.page);
+  check(
+    'Panah membuka menu pesan yang sama dengan klik kanan',
+    chevronActions.includes('reply') && chevronActions.includes('delete-me'),
+    chevronActions.join(' ')
+  );
+  await andi.page.keyboard.press('Escape');
+  await andi.page.waitForSelector('#msg-menu[hidden]', { timeout: 5000 });
+
   await budi.page.waitForSelector('.chat-item', { timeout: 10000 });
   const badge = await budi.page.$eval('.chat-item .badge', (el) => el.textContent).catch(() => null);
   check('Budi melihat badge belum dibaca', badge === '1', `badge=${badge}`);
@@ -1340,6 +1413,12 @@ try {
      berisi blob: yang cuma jadi halaman kosong. */
   await clickAt(budi.page, '.msg .attach');
   await budi.page.waitForSelector('#viewer:not([hidden]) .viewer-stage img', { timeout: 30000 });
+  // Elemen <img> muncul sebelum byte-nya selesai didekode. Ukuran aslinya baru
+  // ada setelah gambarnya termuat, jadi tunggu itu dulu — kalau tidak,
+  // pemeriksaannya gagal karena balapan waktu, bukan karena fotonya rusak.
+  await budi.page.waitForFunction(() => (document.querySelector('#viewer-stage img')?.naturalWidth || 0) > 0, {
+    timeout: 30000,
+  });
   check('Klik foto membuka penampil selayar penuh, bukan mengunduh', true);
 
   const viewerShot = await budi.page.evaluate(() => {
@@ -1874,12 +1953,18 @@ try {
         return Math.round(peak * 10000) / 10000;
       };
 
-      const remote = document.querySelector('#call-grid video');
+      // Suara lawan bicara keluar dari elemen <audio> khusus, bukan dari petak
+      // video (petaknya bisa disembunyikan saat kamera mati).
+      const remote = document.querySelector('#call-audio audio');
+      const tile = document.querySelector('#call-grid video');
       const local = document.querySelector('#local-video');
       return {
+        audioElements: document.querySelectorAll('#call-audio audio').length,
         paused: remote.paused,
         muted: remote.muted,
         volume: remote.volume,
+        tileMuted: tile.muted,
+        tileTracks: tile.srcObject?.getTracks().map((track) => track.kind) || [],
         remoteLevel: await measure(remote.srcObject),
         localLevel: await measure(local.srcObject),
       };
@@ -1895,6 +1980,15 @@ try {
   check(
     'Elemen suaranya tidak di-mute dan volumenya penuh',
     andiListen.muted === false && budiListen.muted === false && andiListen.volume === 1 && budiListen.volume === 1,
+    JSON.stringify({ andi: andiListen, budi: budiListen })
+  );
+  check(
+    'Setiap peserta punya elemen audio sendiri, dan petak videonya tidak ikut berbunyi',
+    andiListen.audioElements === 1 &&
+      budiListen.audioElements === 1 &&
+      andiListen.tileMuted === true &&
+      budiListen.tileMuted === true &&
+      andiListen.tileTracks.includes('audio'),
     JSON.stringify({ andi: andiListen, budi: budiListen })
   );
   check(
@@ -2206,6 +2300,178 @@ try {
   await budi.page.touchscreen.tap(mobilePoint.x, mobilePoint.y);
   await sleep(300);
   check('Ketuk pendek di hp tidak membuka pilihan pesan', (await display(budi.page, '#msg-menu')) === 'none');
+
+  /* ---- 7. Tema: terang, gelap, otomatis -------------------------- */
+  await goView(andi.page, 'settings');
+  await andi.page.click('[data-theme-choice="dark"]');
+  await sleep(250);
+  const darkTheme = await andi.page.evaluate(() => {
+    const lum = (color) => {
+      const parts = String(color).match(/\d+/g) || [];
+      return parts.slice(0, 3).reduce((sum, value) => sum + Number(value), 0) / 3;
+    };
+    const panel = document.querySelector('#panel-settings');
+    const bubble = document.querySelector('#messages .msg:not(.out)') || document.querySelector('#messages .msg');
+    const bubbleStyle = bubble ? getComputedStyle(bubble) : null;
+    const composer = document.querySelector('#composer-input');
+    return {
+      attr: document.documentElement.dataset.theme,
+      choice: document.documentElement.dataset.themeChoice,
+      body: getComputedStyle(document.body).backgroundColor,
+      panel: getComputedStyle(panel).backgroundColor,
+      bodyLum: lum(getComputedStyle(document.body).backgroundColor),
+      panelLum: lum(getComputedStyle(panel).backgroundColor),
+      bubbleLum: bubbleStyle ? lum(bubbleStyle.backgroundColor) : null,
+      bubbleTextLum: bubbleStyle ? lum(bubbleStyle.color) : null,
+      composerLum: composer ? lum(getComputedStyle(composer).backgroundColor) : null,
+      textColour: getComputedStyle(panel).color,
+      stored: localStorage.getItem('securechat.theme.v1'),
+      pressed: document.querySelector('[data-theme-choice="dark"]').getAttribute('aria-pressed'),
+      note: document.querySelector('[data-theme-note]').textContent,
+      meta: document.querySelector('meta[name="theme-color"]').content,
+    };
+  });
+  check(
+    'Mode gelap benar-benar memasang palet gelap',
+    darkTheme.attr === 'dark' && darkTheme.bodyLum < 40 && darkTheme.panelLum < 60,
+    JSON.stringify(darkTheme)
+  );
+  check(
+    'Teks di mode gelap terang, bukan hitam di atas hitam',
+    Number((darkTheme.textColour.match(/\d+/g) || [0])[0]) > 180,
+    darkTheme.textColour
+  );
+  check(
+    'Gelembung chat dan kolom ketik ikut jadi gelap, teksnya tetap terang',
+    darkTheme.bubbleLum < 90 && darkTheme.bubbleTextLum > 180 && darkTheme.composerLum < 90,
+    JSON.stringify({ bubble: darkTheme.bubbleLum, text: darkTheme.bubbleTextLum, composer: darkTheme.composerLum })
+  );
+  check(
+    'Pilihan tema tersimpan dan tombolnya menandai pilihan aktif',
+    darkTheme.stored === 'dark' && darkTheme.choice === 'dark' && darkTheme.pressed === 'true' && /gelap/i.test(darkTheme.note),
+    JSON.stringify({ stored: darkTheme.stored, note: darkTheme.note })
+  );
+  check('Warna bilah browser ikut gelap', darkTheme.meta === '#0b141a', darkTheme.meta);
+
+  // Halaman baru di profil yang sama: skrip di <head> harus memasang tema
+  // sebelum apa pun dilukis, jadi tidak ada kilatan putih saat aplikasi dibuka.
+  const freshPage = await andi.context.newPage();
+  await freshPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  const bootTheme = await freshPage.evaluate(() => document.documentElement.dataset.theme);
+  await freshPage.close();
+  check('Tema dipasang sebelum CSS dilukis, jadi pilihannya bertahan', bootTheme === 'dark', String(bootTheme));
+
+  await andi.page.click('[data-theme-choice="light"]');
+  await sleep(220);
+  const lightTheme = await andi.page.evaluate(() => ({
+    attr: document.documentElement.dataset.theme,
+    choice: document.documentElement.dataset.themeChoice,
+    body: getComputedStyle(document.body).backgroundColor,
+    canvas: getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim(),
+    stored: localStorage.getItem('securechat.theme.v1'),
+  }));
+  check(
+    'Mode terang mengembalikan palet asli',
+    lightTheme.attr === 'light' && lightTheme.body === 'rgb(247, 248, 250)' && lightTheme.canvas === '#ffffff',
+    JSON.stringify(lightTheme)
+  );
+
+  await andi.page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
+  await andi.page.click('[data-theme-choice="system"]');
+  await sleep(260);
+  const autoDark = await andi.page.evaluate(() => document.documentElement.dataset.theme);
+  check('Pilihan Otomatis mengikuti perangkat yang sedang gelap', autoDark === 'dark', String(autoDark));
+  await andi.page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }]);
+  await sleep(320);
+  const autoLight = await andi.page.evaluate(() => document.documentElement.dataset.theme);
+  check('Otomatis ikut berubah saat perangkat kembali terang', autoLight === 'light', String(autoLight));
+  await andi.page.click('[data-theme-choice="light"]');
+  await sleep(150);
+
+  /* ---- 8. Menu chat: panah, Bersihkan chat, Hapus chat -------------
+     Dijalankan paling akhir karena memang menghapus isi percakapan. */
+  await goView(andi.page, 'chats');
+  const findRow = () =>
+    andi.page.evaluate(() => {
+      const row = [...document.querySelectorAll('.chat-item')].find((node) => /budi/i.test(node.textContent));
+      if (!row) return null;
+      row.scrollIntoView({ block: 'center' });
+      const rect = row.getBoundingClientRect();
+      return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+    });
+
+  const rowPoint = await findRow();
+  check('Baris chat Budi ada di daftar', rowPoint !== null, JSON.stringify(rowPoint));
+  await andi.page.mouse.move(rowPoint.x, rowPoint.y);
+  await sleep(260);
+  const rowChevron = await andi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('.chat-item')].find((node) => /budi/i.test(node.textContent));
+    const node = row?.querySelector('.chat-menu-btn');
+    if (!node) return null;
+    const style = getComputedStyle(node);
+    return { display: style.display, opacity: Number(style.opacity) };
+  });
+  check(
+    'Panah menu muncul saat kursor di atas baris chat',
+    rowChevron?.display === 'grid' && rowChevron.opacity === 1,
+    JSON.stringify(rowChevron)
+  );
+
+  await andi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('.chat-item')].find((node) => /budi/i.test(node.textContent));
+    row.querySelector('.chat-menu-btn').click();
+  });
+  await andi.page.waitForSelector('#chat-menu:not([hidden])', { timeout: 5000 });
+  const chatMenuItems = await andi.page.$$eval('#chat-menu-list .msg-menu-item', (nodes) =>
+    nodes.map((node) => ({ action: node.dataset.action, label: node.textContent.trim() }))
+  );
+  check(
+    'Menu chat berisi Bersihkan chat dan Hapus chat',
+    chatMenuItems.some((item) => item.action === 'clear' && /bersihkan chat/i.test(item.label)) &&
+      chatMenuItems.some((item) => item.action === 'delete' && /hapus chat/i.test(item.label)),
+    JSON.stringify(chatMenuItems)
+  );
+  const chatMenuBox = await andi.page.$eval('#chat-menu-list', (node) => {
+    const rect = node.getBoundingClientRect();
+    return {
+      insideX: rect.left >= 0 && rect.right <= window.innerWidth + 1,
+      insideY: rect.top >= 0 && rect.bottom <= window.innerHeight + 1,
+    };
+  });
+  check('Menu chat nggak keluar dari layar', chatMenuBox.insideX && chatMenuBox.insideY, JSON.stringify(chatMenuBox));
+
+  await andi.page.click('#chat-menu-list [data-action="clear"]');
+  await andi.page.waitForSelector('#modal:not([hidden]) [data-confirm]', { timeout: 5000 });
+  await andi.page.click('#modal-card [data-confirm]');
+  await sleep(350);
+  const afterClear = await andi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('.chat-item')].find((node) => /budi/i.test(node.textContent));
+    return {
+      bubbles: document.querySelectorAll('#messages .msg, #messages .msg-call, #messages .system-note').length,
+      rowStillThere: Boolean(row),
+      preview: row?.querySelector('.chat-item-sub')?.textContent || '',
+    };
+  });
+  check('Bersihkan chat menghapus semua pesannya', afterClear.bubbles === 0, JSON.stringify(afterClear));
+  check(
+    'Chat-nya tetap ada di daftar, cuma kosong',
+    afterClear.rowStillThere && /belum ada pesan/i.test(afterClear.preview),
+    JSON.stringify(afterClear)
+  );
+
+  await andi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('.chat-item')].find((node) => /budi/i.test(node.textContent));
+    row.querySelector('.chat-menu-btn').click();
+  });
+  await andi.page.waitForSelector('#chat-menu:not([hidden])', { timeout: 5000 });
+  await andi.page.click('#chat-menu-list [data-action="delete"]');
+  await andi.page.waitForSelector('#modal:not([hidden]) [data-confirm]', { timeout: 5000 });
+  await andi.page.click('#modal-card [data-confirm]');
+  await sleep(400);
+  const afterDelete = await andi.page.evaluate(() => ({
+    rows: [...document.querySelectorAll('.chat-item')].filter((node) => /budi/i.test(node.textContent)).length,
+  }));
+  check('Hapus chat membuang chatnya dari daftar', afterDelete.rows === 0, JSON.stringify(afterDelete));
 
   console.log('');
   for (const r of results) console.log(`  ✔ ${r.label}`);

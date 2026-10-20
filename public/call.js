@@ -16,6 +16,18 @@ const RING_TIMEOUT_MS = 50_000;
 const CONNECT_TIMEOUT_MS = 30_000;
 
 /**
+ * Permintaan mikrofon yang sama dipakai di semua jalur (panggilan, ambil ulang
+ * setelah perangkat dicabut). Tiga penyaring ini yang membuat suara orang
+ * kedengaran seperti suara, bukan gema ruangan — beberapa perangkat Android
+ * mematikannya kalau constraint-nya tidak diminta secara eksplisit.
+ */
+const AUDIO_CONSTRAINTS = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+};
+
+/**
  * Kegagalan WebRTC hampir tidak terbaca dari UI, jadi mesinnya bisa dilacak:
  *   window.__SECURECHAT_CALL_DEBUG = true
  */
@@ -36,6 +48,8 @@ export function createCallManager({ socket, iceServers, onState, onError, selfUi
   let screenTrack = null;
   let startedAt = 0;
   let answeredAt = 0;
+  /** Pesan sekali-tampil yang ikut di emit berikutnya (mis. kamera gagal). */
+  let pendingNotice = '';
   /** Kapan kita bergabung — penentu siapa yang mengirim offer. */
   let selfJoinedAt = 0;
   /** Anggota lain: uid -> { uid, displayName, photoURL, pc, stream, connection, ... } */
@@ -76,7 +90,11 @@ export function createCallManager({ socket, iceServers, onState, onError, selfUi
     answeredAt,
   });
 
-  const emit = (extra = {}) => onState?.({ ...snapshot(), ...extra });
+  const emit = (extra = {}) => {
+    const notice = extra.notice || pendingNotice;
+    pendingNotice = '';
+    onState?.({ ...snapshot(), ...(notice ? { notice } : {}), ...extra });
+  };
 
   function clearTimers() {
     timers.forEach(clearTimeout);
@@ -91,14 +109,78 @@ export function createCallManager({ socket, iceServers, onState, onError, selfUi
    * Media
    * ---------------------------------------------------------------- */
 
+  const request = (withVideo) =>
+    navigator.mediaDevices.getUserMedia({
+      audio: AUDIO_CONSTRAINTS,
+      video: withVideo ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+    });
+
   async function acquireLocalStream() {
     if (localStream) return localStream;
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: videoWanted ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
-    });
+    try {
+      localStream = await request(videoWanted);
+    } catch (err) {
+      // Kamera yang ditolak/dipakai aplikasi lain bukan alasan mematikan
+      // panggilan video: coba sekali lagi dengan suara saja, lalu beri tahu
+      // orangnya lewat notice. Tanpa ini, satu kamera sibuk = panggilan mati.
+      if (!videoWanted) throw err;
+      log('kamera gagal, lanjut dengan suara saja', err.name, err.message);
+      videoWanted = false;
+      localStream = await request(false);
+      pendingNotice = 'Kamera tidak bisa dipakai — panggilan lanjut dengan suara saja.';
+    }
     cameraTrack = localStream.getVideoTracks()[0] || null;
+    watchLocalAudio();
     return localStream;
+  }
+
+  /**
+   * Mikrofon bisa hilang di tengah panggilan: headset dicabut, izin dicabut,
+   * atau aplikasi lain mengambil perangkatnya. Kalau track-nya berakhir, sisi
+   * lawan berhenti mendengar apa pun tanpa error. Track baru diambil dan
+   * ditukar ke sender yang sudah ada, jadi panggilannya tidak perlu diulang.
+   */
+  function watchLocalAudio() {
+    for (const track of localStream?.getAudioTracks?.() || []) {
+      if (track.watched) continue;
+      track.watched = true;
+      track.addEventListener('ended', () => {
+        log('track audio berakhir — ambil ulang mikrofon');
+        recoverMicrophone();
+      });
+    }
+  }
+
+  let recoveringMic = false;
+
+  async function recoverMicrophone() {
+    if (recoveringMic || !callId || !localStream) return;
+    if (localStream.getAudioTracks().some((track) => track.readyState === 'live')) return;
+    recoveringMic = true;
+    try {
+      const fresh = await navigator.mediaDevices.getUserMedia({ audio: AUDIO_CONSTRAINTS });
+      const track = fresh.getAudioTracks()[0];
+      if (!track) throw new Error('Tidak ada mikrofon');
+      if (!localStream) {
+        track.stop();
+        return;
+      }
+      localStream.addTrack(track);
+      for (const member of members.values()) {
+        const sender = member.pc
+          ?.getTransceivers()
+          .find((tx) => tx.sender.track?.kind === 'audio' || tx.receiver.track?.kind === 'audio')?.sender;
+        if (sender) await sender.replaceTrack(track).catch(() => {});
+      }
+      watchLocalAudio();
+      pendingNotice = 'Mikrofon tersambung ulang.';
+    } catch (err) {
+      log('mikrofon gagal diambil ulang', err.name, err.message);
+      pendingNotice = 'Mikrofon terputus dan tidak bisa diambil lagi — lawan bicara tidak mendengar kamu.';
+    } finally {
+      recoveringMic = false;
+      emit();
+    }
   }
 
   function syncVideoSender(member) {
@@ -144,12 +226,37 @@ export function createCallManager({ socket, iceServers, onState, onError, selfUi
       log('connectionState', member.uid, pc.connectionState);
       if (pc.connectionState === 'connected') {
         answeredAt = answeredAt || Date.now();
+        member.established = true;
+        member.iceRetried = false;
         clearTimeout(connectTimer);
       }
       if (pc.connectionState === 'failed') {
-        onError?.(new Error(`Koneksi ke ${member.displayName || 'anggota'} gagal.`));
+        // Jalur P2P putus (pindah WiFi → seluler, atau diblokir jaringan). Coba
+        // susun ulang jalur ICE sekali, lalu jelaskan penyebab yang paling
+        // sering: server ini belum punya relay TURN.
+        if (!member.iceRetried) {
+          member.iceRetried = true;
+          try {
+            pc.restartIce();
+          } catch {
+            /* browser lama tanpa restartIce: pesannya tetap disampaikan */
+          }
+        }
+        onError?.(
+          new Error(
+            `Koneksi ke ${member.displayName || 'anggota'} gagal. Jaringan ini kemungkinan butuh relay TURN — coba WiFi lain, atau isi TURN_URLS di server.`
+          )
+        );
       }
       emit();
+    };
+
+    // Negosiasi ulang hanya untuk koneksi yang sudah pernah tersambung. Alur
+    // pertama tetap milik aturan offer di syncRoster, jadi dua pihak tidak
+    // pernah menawarkan koneksi pada saat yang sama.
+    pc.onnegotiationneeded = () => {
+      if (!member.established || !callId || !shouldOffer(member)) return;
+      offerTo(member).catch((err) => log('renegotiation failed', err.message));
     };
 
     // Sinyal yang datang sebelum peer connection siap (mis. offer balapan
@@ -230,9 +337,12 @@ export function createCallManager({ socket, iceServers, onState, onError, selfUi
         uid,
         displayName: info.displayName || uid.slice(0, 8),
         photoURL: info.photoURL || null,
+        joinedAt: Number(info.joinedAt) || 0,
         pc: null,
         stream: null,
         connection: null,
+        established: false,
+        iceRetried: false,
         videoSender: null,
         pending: [],
         pendingIce: [],
@@ -242,6 +352,7 @@ export function createCallManager({ socket, iceServers, onState, onError, selfUi
     } else {
       if (info.displayName) member.displayName = info.displayName;
       if (info.photoURL !== undefined) member.photoURL = info.photoURL;
+      if (info.joinedAt) member.joinedAt = Number(info.joinedAt) || member.joinedAt;
     }
     return member;
   }
