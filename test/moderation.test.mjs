@@ -4,14 +4,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createModeration, createModerationStore, REPORT_REASONS } from '../moderation.js';
+import { createModeration, createModerationStore, REPORT_REASONS } from '../src/moderation.js';
 import {
   createAccountIndex,
   createAccountStore,
   looksLikeEmail,
   normalizeEmail,
   phoneMatches,
-} from '../accounts.js';
+} from '../src/accounts.js';
 
 const TMP = await fs.mkdtemp(path.join(os.tmpdir(), 'securechat-moderation-'));
 test.after(() => fs.rm(TMP, { recursive: true, force: true }));

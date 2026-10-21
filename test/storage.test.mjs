@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 process.env.SECURECHAT_SKIP_DOTENV = '1';
 
-const { newBlobPath, isSafePath, createStorage } = await import('../storage.js');
+const { newBlobPath, isSafePath, createStorage } = await import('../src/storage.js');
 
 test('generated blob paths are random, dated and accepted by the validator', () => {
   const a = newBlobPath('u-abc');

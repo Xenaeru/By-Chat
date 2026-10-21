@@ -14,4 +14,11 @@ google-application-credentials*.json
 render-env*.txt
 
 # Local attachment blobs and anything else written at runtime.
-data/
+/data/
+
+# Cache Python dari skill agent, bukan bagian dari aplikasi.
+__pycache__/
+*.pyc
+
+# Indeks lokal CodeGraph (dibuat ulang lewat `codegraph init`).
+.codegraph/

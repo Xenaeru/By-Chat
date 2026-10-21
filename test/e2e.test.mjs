@@ -34,10 +34,10 @@ const {
   decryptMessage,
   encryptFile,
   decryptFile,
-} = await import('../public/crypto.js');
-const { makeDevToken } = await import('../auth.js');
-const { server, directory, inbox, calls, statuses, moderation, accounts, push } = await import('../server.js');
-const { resolveLocalPath } = await import('../storage.js');
+} = await import('../public/js/crypto.js');
+const { makeDevToken } = await import('../src/auth.js');
+const { server, directory, inbox, calls, statuses, moderation, accounts, push } = await import('../src/server.js');
+const { resolveLocalPath } = await import('../src/storage.js');
 
 const BASE_URL = `http://127.0.0.1:${process.env.PORT}`;
 await new Promise((resolve) => (server.listening ? resolve() : server.once('listening', resolve)));
@@ -1240,7 +1240,7 @@ test('aset notifikasi disajikan apa adanya: manifest, service worker, modulnya',
   assert.equal(parsed.name, 'By Chat');
   assert.equal(parsed.start_url, '/');
   assert.equal(parsed.scope, '/');
-  assert.ok(parsed.icons.some((icon) => icon.src === '/logo.svg'), JSON.stringify(parsed.icons));
+  assert.ok(parsed.icons.some((icon) => icon.src === '/assets/logo.svg'), JSON.stringify(parsed.icons));
 
   // Service worker harus dilayani dari akar situs: dari subfolder scope-nya
   // tidak akan mencakup aplikasinya.
@@ -1250,7 +1250,7 @@ test('aset notifikasi disajikan apa adanya: manifest, service worker, modulnya',
   assert.match(swSource, /notificationclick/);
   assert.match(swSource, /bychat:notification/);
 
-  const module = await fetch(`${BASE_URL}/notifications.js`);
+  const module = await fetch(`${BASE_URL}/js/notifications.js`);
   assert.equal(module.status, 200);
   const moduleSource = await module.text();
   assert.match(moduleSource, /requestPermission/);

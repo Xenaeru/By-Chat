@@ -35,10 +35,10 @@ process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
 process.env.ADMIN_UIDS = `dev-${crypto.createHash('sha256').update('andi').digest('hex').slice(0, 20)}`;
 process.env.PORT = process.env.PORT || '4400';
 
-const { server, directory, inbox, statuses, moderation } = await import('../server.js');
+const { server, directory, inbox, statuses, moderation } = await import('../src/server.js');
 // Token dev yang sama dengan yang dipakai browser, buat satu klien mentah di
 // bawah: pembuktian sisi penerima bahwa status orang asing tetap diabaikan.
-const { makeDevToken } = await import('../auth.js');
+const { makeDevToken } = await import('../src/auth.js');
 await new Promise((resolve) => (server.listening ? resolve() : server.once('listening', resolve)));
 
 const BASE_URL = `http://127.0.0.1:${process.env.PORT}`;
@@ -647,8 +647,13 @@ async function login(browser, username) {
     else if (msg.type() === 'warning') CONSOLE_LOG.push(`${username} warn: ${msg.text()}`);
   });
 
-  // Opt-in WebRTC tracing inside the page (see public/call.js).
+  // Opt-in WebRTC tracing inside the page (see public/js/call.js).
   if (CALL_DEBUG) await page.evaluateOnNewDocument(() => (globalThis.__SECURECHAT_CALL_DEBUG = true));
+
+  // Tema awal harus terang supaya pemeriksaan tampilan login nggak berubah
+  // hanya karena mesin uji kebetulan memakai mode gelap. Tes tema di bawah
+  // mengganti preferensi ini sendiri saat menguji pilihan "Otomatis".
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }]);
 
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#login:not([hidden])', { timeout: 15000 });

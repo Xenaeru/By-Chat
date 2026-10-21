@@ -6,13 +6,13 @@
 <meta name="theme-color" content="#f7f8fa" />
 <title>By Chat</title>
 <!-- Inter, keluarga huruf yang ditulis DESIGN.md. Kalau font ini gagal
-     dimuat, rangkaian fallback di style.css tetap menampilkan halaman
+     dimuat, rangkaian fallback di css/style.css tetap menampilkan halaman
      dengan benar. -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
-<link rel="stylesheet" href="style.css" />
-<link rel="icon" href="/logo.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="css/style.css" />
+<link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
 <link rel="manifest" href="/manifest.webmanifest" />
 <!-- Tema dipasang sebelum CSS dilukis, supaya orang yang memilih mode gelap
      tidak sempat melihat kilatan layar putih. Aturannya sama dengan yang
@@ -28,6 +28,8 @@
     var dark = choice === 'dark' || (choice !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
     document.documentElement.dataset.themeChoice = choice;
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = dark ? '#0b141a' : '#f7f8fa';
   })();
 </script>
 </head>
@@ -92,7 +94,7 @@
 <div id="login" class="login" hidden>
   <div class="login-card">
     <div class="brand">
-      <img class="brand-mark" src="/logo.svg" alt="By Chat" width="54" height="54" />
+      <img class="brand-mark" src="/assets/logo.svg" alt="By Chat" width="54" height="54" />
       <div>
         <h1 class="wordmark"><span class="word-by">By</span><span class="word-chat">Chat</span></h1>
         <p class="brand-tag">Pesan, file, panggilan, dan status <strong>terenkripsi end-to-end</strong>.</p>
@@ -133,7 +135,7 @@
 <!-- ── Pilih username (sekali per akun) ────────────────────────────── -->
 <div id="onboarding" class="onboarding" hidden>
   <div class="onboarding-card">
-    <img class="onboarding-mark" src="/logo.svg" alt="By Chat" width="48" height="48" />
+    <img class="onboarding-mark" src="/assets/logo.svg" alt="By Chat" width="48" height="48" />
     <span class="step-pill"><svg class="ico"><use href="#i-spark" /></svg> Satu langkah lagi</span>
     <h1>Pilih username kamu</h1>
     <p class="muted">
@@ -161,7 +163,7 @@
 
   <!-- Rail ikon (desktop): pindah panel, sama seperti sidebar WhatsApp Web. -->
   <nav class="rail" id="rail" aria-label="Menu utama">
-    <img class="rail-logo" src="/logo.svg" alt="By Chat" width="34" height="34" />
+    <img class="rail-logo" src="/assets/logo.svg" alt="By Chat" width="34" height="34" />
 
     <button type="button" class="rail-btn" data-view="chats" title="Chat" aria-label="Chat" aria-pressed="true">
       <svg class="ico"><use href="#i-chat" /></svg>
@@ -321,7 +323,7 @@
 
   <main class="chat" id="chat">
     <section class="empty-state" id="empty-state">
-      <div class="empty-art"><img src="/logo.svg" alt="" width="56" height="56" /></div>
+      <div class="empty-art"><img src="/assets/logo.svg" alt="" width="56" height="56" /></div>
       <h2>Pilih chat buat mulai</h2>
       <p>Pesan, file, dan panggilan di sini terenkripsi end-to-end.<br />Server cuma perantara buta — dia nggak bisa baca apa pun.</p>
       <div class="chips">
@@ -464,7 +466,7 @@
 <!-- ── Akun diblokir ───────────────────────────────────────────────── -->
 <div id="banned" class="onboarding" hidden>
   <div class="onboarding-card">
-    <img class="onboarding-mark" src="/logo.svg" alt="By Chat" width="48" height="48" />
+    <img class="onboarding-mark" src="/assets/logo.svg" alt="By Chat" width="48" height="48" />
     <span class="step-pill danger"><svg class="ico"><use href="#i-ban" /></svg> Akses dihentikan</span>
     <h1>Akun kamu diblokir</h1>
     <p class="muted" id="banned-reason">—</p>
@@ -595,6 +597,6 @@
 <div id="toast" class="toast" hidden></div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script type="module" src="app.js"></script>
+<script type="module" src="js/app.js"></script>
 </body>
 </html>

@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "description": "WhatsApp-style chat with real end-to-end encryption. The server is a blind relay and never sees plaintext.",
-  "main": "server.js",
+  "main": "src/server.js",
   "engines": {
     "node": ">=22 <27"
   },
   "scripts": {
-    "start": "node server.js",
+    "start": "node src/server.js",
     "test": "node --test \"test/*.test.mjs\"",
     "test:browser": "node scripts/browser-check.mjs",
     "screenshots": "node scripts/screenshot.mjs",
