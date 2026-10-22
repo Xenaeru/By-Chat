@@ -2777,7 +2777,7 @@ function chatMenuItems(room) {
     { id: 'close', label: 'Tutup obrolan', icon: '#i-logout' },
     { sep: true },
     { id: 'call-link', label: 'Kirim tautan menelepon', icon: '#i-link' },
-    { id: 'group-call', label: 'Telepon grup baru', icon: '#i-users', hidden: room.type !== 'group' },
+    { id: 'group-call', label: 'Telepon grup baru', icon: '#i-users' },
     { sep: true },
     { id: 'report', label: 'Laporkan', icon: '#i-flag', hidden: !isDm },
     { id: 'block', label: blocked ? 'Buka blokir' : 'Blokir', icon: '#i-ban', hidden: !isDm },
@@ -2923,7 +2923,10 @@ function runChatOption(id, room) {
   }
   if (id === 'close') return closeConversation();
   if (id === 'call-link') return sendCallLink(room);
-  if (id === 'group-call') return startGroupCall(false);
+  // Di grup, pilihannya mengundang anggota ke satu panggilan. Di chat pribadi
+  // belum ada orang lain untuk diundang, jadi yang masuk akal adalah menelepon
+  // lawan bicaranya — persis seperti di WhatsApp, panggilannya tetap berjalan.
+  if (id === 'group-call') return room.type === 'group' ? startGroupCall(false) : startCall(false);
   if (id === 'report') return openReportModal();
   if (id === 'block') return toggleBlock(room);
   if (id === 'clear') return runChatAction('clear', room);

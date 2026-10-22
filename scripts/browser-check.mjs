@@ -2683,6 +2683,7 @@ try {
     'Tambah ke daftar',
     'Tutup obrolan',
     'Kirim tautan menelepon',
+    'Telepon grup baru',
     'Laporkan',
     'Blokir',
     'Bersihkan obrolan',
@@ -2839,6 +2840,15 @@ try {
     { timeout: 10000 }
   );
   check('Kirim tautan menelepon mengirim pesan berisi tautannya', true);
+
+  // Telepon grup baru: di chat pribadi belum ada anggota lain untuk diundang,
+  // jadi pilihannya menelepon lawan bicaranya — dan panggilannya benar-benar jalan.
+  await openHeaderMenu();
+  await clickOption('Telepon grup baru');
+  await budi.page.waitForSelector('#call-overlay:not([hidden])', { timeout: 15000 });
+  check('Telepon grup baru dari chat pribadi memulai panggilan', true);
+  await budi.page.click('#ctl-hangup');
+  await budi.page.waitForSelector('#call-overlay[hidden]', { timeout: 15000 });
 
   // Laporkan: form laporan yang sama dengan tombol lama di header.
   await openHeaderMenu();
