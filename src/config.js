@@ -118,6 +118,15 @@ const accountStore = registeredStore(
   'registry/accounts.json'
 );
 
+// Akun username + kata sandi. Isinya hash scrypt + kunci tanda tangan sesi,
+// jadi file ini sama rahasianya dengan kunci privat: jangan pernah dibagikan.
+const credentialStore = registeredStore(
+  'CREDENTIAL_STORE',
+  'CREDENTIAL_STORE_OBJECT',
+  'credentials.json',
+  'registry/credentials.json'
+);
+
 /* ------------------------------------------------------------------ *
  * Web Push (dering walau aplikasinya belum dibuka)
  * ------------------------------------------------------------------ */
@@ -181,6 +190,7 @@ export const config = {
   usernames: usernameStore,
   moderation: moderationStore,
   accounts: accountStore,
+  credentials: credentialStore,
   push: {
     ...pushStore,
     subject: env.VAPID_SUBJECT || 'mailto:admin@bychat.app',

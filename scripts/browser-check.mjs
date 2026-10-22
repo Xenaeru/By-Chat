@@ -29,6 +29,7 @@ process.env.LOCAL_AVATAR_DIR = path.join(TMP, 'avatars');
 process.env.USERNAME_STORE = path.join(TMP, 'usernames.json');
 process.env.MODERATION_STORE = path.join(TMP, 'moderation.json');
 process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
+process.env.CREDENTIAL_STORE = path.join(TMP, 'credentials.json');
 // `andi` yang jadi admin di jalur ini, jadi tautan admin muncul di sidebar-nya
 // dan halaman /admin.html benar-benar bisa dibuka — sekaligus bisa diuji bahwa
 // akun lain ditolak.
@@ -2251,25 +2252,42 @@ try {
     JSON.stringify(chatDocked)
   );
 
-  // Pesan terakhir yang masih punya isi, dibawa ke tengah layar dulu: titik
-  // sentuh harus benar-benar mengenai gelembungnya, bukan area kosong.
-  const mobilePoint = await budi.page.$$eval('.msg', (nodes) => {
-    const node = [...nodes].reverse().find((entry) => !entry.classList.contains('deleted'));
-    if (!node) return null;
-    node.scrollIntoView({ block: 'center' });
-    const rect = node.getBoundingClientRect();
-    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
-  });
-  // `scrollIntoView` di atas sinkron, tapi pastikan dulu posisinya benar-benar
-  // di dalam layar sebelum titik sentuhnya dipakai.
-  check('Ada gelembung pesan yang bisa ditahan di layar hp', mobilePoint !== null, JSON.stringify(mobilePoint));
-
+  // Emulasi sentuh dinyalakan lebih dulu: mengaktifkannya bisa menggeser tata
+  // letak sedikit, dan titik yang dihitung sebelum itu kadang mendarat di
+  // gelembung lain yang menumpuk di bawah pesan yang dituju.
   const touch = await budi.page.createCDPSession();
   await touch.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+
+  // Pesan terakhir yang masih punya isi, dibawa ke tengah layar: titik sentuh
+  // harus benar-benar mengenai gelembungnya, bukan area kosong atau bubble
+  // panggilan yang ada sesudahnya.
+  const mobilePoint = await budi.page.$$eval('.msg', (nodes) => {
+    for (const node of [...nodes].reverse()) {
+      if (node.classList.contains('deleted')) continue;
+      node.scrollIntoView({ block: 'center' });
+      const rect = node.getBoundingClientRect();
+      const x = Math.round(rect.left + rect.width / 2);
+      const y = Math.round(rect.top + rect.height / 2);
+      if (node.contains(document.elementFromPoint(x, y))) return { x, y };
+    }
+    return null;
+  });
+  check('Ada gelembung pesan yang bisa ditahan di layar hp', mobilePoint !== null, JSON.stringify(mobilePoint));
+
+  // Di emulasi seluler, Input.dispatchTouchEvent memakai koordinat visual
+  // viewport sedangkan getBoundingClientRect memakai layout viewport. Selisih
+  // keduanya (offset visual viewport) harus dipakai, kalau tidak sentuhannya
+  // mendarat sekitar satu baris di bawah gelembung yang dituju.
+  const viewShift = await budi.page.evaluate(() => ({
+    x: window.visualViewport?.offsetLeft || 0,
+    y: window.visualViewport?.offsetTop || 0,
+  }));
+  const touchPoint = { x: mobilePoint.x - viewShift.x, y: mobilePoint.y - viewShift.y };
+
   const touchAt = (type) =>
     touch.send('Input.dispatchTouchEvent', {
       type,
-      touchPoints: type === 'touchEnd' ? [] : [{ x: mobilePoint.x, y: mobilePoint.y }],
+      touchPoints: type === 'touchEnd' ? [] : [{ x: touchPoint.x, y: touchPoint.y }],
     });
 
   // Sentuhan yang ditahan: jari masih menempel ketika ambang 420 ms terlewat,
@@ -2302,9 +2320,32 @@ try {
   await budi.page.waitForSelector('#msg-menu[hidden]', { timeout: 5000 });
 
   // Ketukan pendek di lampiran tetap membuka penampil, bukan memicu pilihan.
-  await budi.page.touchscreen.tap(mobilePoint.x, mobilePoint.y);
+  await budi.page.touchscreen.tap(touchPoint.x, touchPoint.y);
   await sleep(300);
   check('Ketuk pendek di hp tidak membuka pilihan pesan', (await display(budi.page, '#msg-menu')) === 'none');
+  // Ketukan itu bisa membuka penampil lampiran. Tutup lagi: tirai penampil
+  // menutupi seluruh layar, dan bagian berikutnya mengklik tombol di chat.
+  if ((await display(budi.page, '#viewer')) !== 'none') {
+    await budi.page.click('#viewer-close');
+    await sleep(250);
+  }
+
+  // Bagian layar hp selesai. Kembalikan budi ke viewport desktop: emulasi
+  // seluler memakai pemetaan koordinat visual viewport, sehingga klik berbasis
+  // titik di tes berikutnya bisa meleset beberapa puluh piksel.
+  // Chrome memuat ulang halaman saat emulasi seluler dimatikan, jadi budi harus
+  // menunggu aplikasinya siap lagi dan membuka percakapan dengan andi kembali:
+  // tanpa itu pesan yang dikirim andi masuk ke percakapan yang tertutup.
+  await budi.page.setViewport(null);
+  await budi.page.waitForFunction(() => !document.querySelector('#app').hidden, { timeout: 20000 });
+  await goView(budi.page, 'chats');
+  if (await budi.page.$eval('#chat-view', (node) => node.hidden)) {
+    await budi.page.evaluate(() => {
+      const row = [...document.querySelectorAll('.chat-item')].find((node) => /andi/i.test(node.textContent));
+      row?.click();
+    });
+    await budi.page.waitForSelector('#chat-view:not([hidden])', { timeout: 15000 });
+  }
 
   /* ---- 6b. Pesan suara ------------------------------------------
      Mikrofon palsu Chrome yang dipakai di tes ini menghasilkan audio asli,
@@ -2596,6 +2637,241 @@ try {
     rows: [...document.querySelectorAll('.chat-item')].filter((node) => /budi/i.test(node.textContent)).length,
   }));
   check('Hapus chat membuang chatnya dari daftar', afterDelete.rows === 0, JSON.stringify(afterDelete));
+
+  /* ---- Menu titik tiga di header obrolan -------------------------
+     Menu ini yang dipakai orang di aplikasi: tiap pilihannya harus benar-benar
+     mengerjakan sesuatu, bukan cuma tampil di daftar. */
+  await goView(budi.page, 'chats');
+  if (await budi.page.$eval('#chat-view', (node) => node.hidden)) {
+    await budi.page.evaluate(() => {
+      const row = [...document.querySelectorAll('.chat-item')].find((node) => /andi/i.test(node.textContent));
+      row?.click();
+    });
+    await budi.page.waitForSelector('#chat-view:not([hidden])', { timeout: 15000 });
+  }
+
+  const menuLabels = () =>
+    budi.page.$$eval('#chat-options-list .chat-option > span', (nodes) => nodes.map((node) => node.textContent.trim()));
+  const openHeaderMenu = async () => {
+    if (await budi.page.$eval('#chat-options', (node) => node.hidden)) await budi.page.click('#btn-chat-more');
+    await budi.page.waitForSelector('#chat-options:not([hidden])', { timeout: 5000 });
+    return menuLabels();
+  };
+  const closeHeaderMenu = () => budi.page.evaluate(() => document.querySelector('#chat-options-catcher').click());
+  const clickOption = async (label) => {
+    const clicked = await budi.page.evaluate((text) => {
+      const row = [...document.querySelectorAll('#chat-options-list .chat-option')].find(
+        (node) => node.querySelector('span')?.textContent.trim() === text
+      );
+      row?.click();
+      return Boolean(row);
+    }, label);
+    await sleep(250);
+    return clicked;
+  };
+  const toastText = () => budi.page.$eval('#toast', (node) => (node.hidden ? '' : node.textContent));
+
+  const headerMenu = await openHeaderMenu();
+  const expectedMenu = [
+    'Info kontak',
+    'Cari',
+    'Pilih pesan',
+    'Bisukan notifikasi',
+    'Pesan sementara',
+    'Tema obrolan',
+    'Tambah ke favorit',
+    'Tambah ke daftar',
+    'Tutup obrolan',
+    'Kirim tautan menelepon',
+    'Laporkan',
+    'Blokir',
+    'Bersihkan obrolan',
+    'Hapus obrolan',
+  ];
+  check(
+    'Menu titik tiga memuat semua pilihan dengan urutan yang sama',
+    headerMenu.join('|') === expectedMenu.join('|'),
+    headerMenu.join(' | ')
+  );
+
+  // Bisukan: submenu durasi, pilihannya tersimpan, dan label menunya ikut berubah.
+  await clickOption('Bisukan notifikasi');
+  const muteChoices = (await menuLabels()).join('|');
+  check('Menu Bisukan notifikasi membuka pilihan durasi', muteChoices === '8 jam|1 minggu|Selamanya', muteChoices);
+  await clickOption('8 jam');
+  const muted = await budi.page.evaluate(() => ({
+    closed: document.querySelector('#chat-options').hidden,
+    toast: document.querySelector('#toast').hidden ? '' : document.querySelector('#toast').textContent,
+    bell: Boolean(document.querySelector('.chat-item [href="#i-bell-off"]')),
+  }));
+  check(
+    'Memilih durasi bisu menutup menu, memberi kabar, dan menandai baris chat',
+    muted.closed && /dimatikan/i.test(muted.toast) && muted.bell,
+    JSON.stringify(muted)
+  );
+  await openHeaderMenu();
+  check(
+    'Label Bisukan notifikasi menandai obrolan yang sudah dibisukan',
+    (await menuLabels()).includes('Bisukan notifikasi · aktif'),
+    (await menuLabels()).join(' | ')
+  );
+  await clickOption('Bisukan notifikasi · aktif');
+  check('Submenu bisu punya jalan untuk mematikan bisunya lagi', (await menuLabels()).includes('Matikan bisu'));
+  await clickOption('Matikan bisu');
+  await openHeaderMenu();
+  check('Setelah dimatikan, labelnya kembali normal', (await menuLabels()).includes('Bisukan notifikasi'));
+
+  // Pesan sementara: aktifkan, cek catatan sistemnya, lalu matikan lagi.
+  await clickOption('Pesan sementara');
+  const ttlChoices = (await menuLabels()).join('|');
+  check('Menu Pesan sementara menawarkan batas waktu', ttlChoices === '24 jam|7 hari|90 hari', ttlChoices);
+  await clickOption('24 jam');
+  await openHeaderMenu();
+  check(
+    'Pesan sementara yang aktif tertulis di label menunya',
+    (await menuLabels()).includes('Pesan sementara · 24 jam'),
+    (await menuLabels()).join(' | ')
+  );
+  await clickOption('Pesan sementara · 24 jam');
+  await clickOption('Matikan');
+  await openHeaderMenu();
+  check('Pesan sementara bisa dimatikan dari submenu yang sama', (await menuLabels()).includes('Pesan sementara'));
+
+  // Tema obrolan memakai pilihan tema aplikasi yang sudah ada.
+  await clickOption('Tema obrolan');
+  const themeChoices = (await menuLabels()).join('|');
+  check(
+    'Tema obrolan menawarkan terang, gelap, dan otomatis',
+    themeChoices === 'Terang|Gelap|Otomatis (ikut perangkat)',
+    themeChoices
+  );
+  await clickOption('Terang');
+  check(
+    'Memilih tema dari menu benar-benar memasangnya',
+    (await budi.page.$eval('html', (node) => node.dataset.theme || '')) === 'light',
+    await budi.page.$eval('html', (node) => node.dataset.theme || '(kosong)')
+  );
+
+  // Favorit: menandai baris chat, memunculkan chip Favorit, lalu bisa dibatalkan.
+  await openHeaderMenu();
+  await clickOption('Tambah ke favorit');
+  const favorite = await budi.page.evaluate(() => ({
+    toast: document.querySelector('#toast').hidden ? '' : document.querySelector('#toast').textContent,
+    star: Boolean(document.querySelector('.chat-item [href="#i-star-filled"]')),
+    chip: [...document.querySelectorAll('#list-filters button')].some((node) => /favorit/i.test(node.textContent)),
+  }));
+  check(
+    'Tambah ke favorit menandai chat dan memunculkan chip Favorit',
+    /favorit/i.test(favorite.toast) && favorite.star && favorite.chip,
+    JSON.stringify(favorite)
+  );
+  await openHeaderMenu();
+  check('Chat favorit bisa dibatalkan dari menu yang sama', (await menuLabels()).includes('Hapus dari favorit'));
+  await clickOption('Hapus dari favorit');
+
+  // Daftar: buat daftar baru dari menu, chat langsung masuk ke daftar itu.
+  await openHeaderMenu();
+  await clickOption('Tambah ke daftar');
+  check('Menu Tambah ke daftar menawarkan pembuatan daftar baru', (await menuLabels()).includes('+ Daftar baru…'));
+  await clickOption('+ Daftar baru…');
+  await budi.page.waitForSelector('#new-list-name', { visible: true, timeout: 5000 });
+  await budi.page.type('#new-list-name', 'Kantor');
+  await budi.page.click('#modal-card [data-save]');
+  await sleep(300);
+  const madeList = await budi.page.evaluate(() => ({
+    toast: document.querySelector('#toast').hidden ? '' : document.querySelector('#toast').textContent,
+    chip: [...document.querySelectorAll('#list-filters button')].map((node) => node.textContent.trim()),
+  }));
+  check(
+    'Daftar baru dibuat dan langsung muncul sebagai chip penyaring',
+    /daftar kantor/i.test(madeList.toast) && madeList.chip.includes('Kantor'),
+    JSON.stringify(madeList)
+  );
+  await openHeaderMenu();
+  await clickOption('Tambah ke daftar');
+  const listed = await budi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('#chat-options-list .chat-option')].find(
+      (node) => node.querySelector('span')?.textContent.trim() === 'Kantor'
+    );
+    return { found: Boolean(row), checked: Boolean(row?.querySelector('.chat-option-check')) };
+  });
+  check('Chat yang barusan dibuatkan daftar tampil tercentang di daftar itu', listed.found && listed.checked, JSON.stringify(listed));
+  await clickOption('Kantor'); // keepOpen: mencabut centang tanpa menutup submenu
+  await budi.page.click('#chat-options-list [data-back]');
+  await closeHeaderMenu();
+
+  // Info kontak, cari, dan pilih pesan.
+  await openHeaderMenu();
+  await clickOption('Info kontak');
+  await budi.page.waitForSelector('#modal:not([hidden])', { timeout: 5000 });
+  const info = await budi.page.evaluate(() => ({
+    title: document.querySelector('#modal-card h3')?.textContent || '',
+    verify: Boolean(document.querySelector('#modal-card [data-info="verify"]')),
+    mute: /dibisukan|berbunyi/.test(document.querySelector('#modal-card')?.textContent || ''),
+  }));
+  check(
+    'Info kontak menampilkan ringkasan obrolan dan tombol safety number',
+    /info kontak/i.test(info.title) && info.verify && info.mute,
+    JSON.stringify(info)
+  );
+  await budi.page.evaluate(() => document.querySelector('#modal').click());
+
+  await openHeaderMenu();
+  await clickOption('Cari');
+  check(
+    'Cari dari menu membuka kolom pencarian di obrolan',
+    (await display(budi.page, '#chat-search')) !== 'none' &&
+      (await budi.page.evaluate(() => document.activeElement?.id)) === 'chat-search-input',
+    await budi.page.evaluate(() => document.activeElement?.id)
+  );
+  await budi.page.click('#chat-search-close');
+
+  await openHeaderMenu();
+  await clickOption('Pilih pesan');
+  check('Pilih pesan dari menu masuk ke mode pilih', (await display(budi.page, '#select-bar')) !== 'none');
+  await budi.page.click('#select-close');
+
+  // Tautan panggilan: benar-benar terkirim sebagai pesan berisi tautannya.
+  await openHeaderMenu();
+  await clickOption('Kirim tautan menelepon');
+  await budi.page.waitForFunction(
+    () => [...document.querySelectorAll('#messages .msg')].some((node) => node.textContent.includes('?call=')),
+    { timeout: 10000 }
+  );
+  check('Kirim tautan menelepon mengirim pesan berisi tautannya', true);
+
+  // Laporkan: form laporan yang sama dengan tombol lama di header.
+  await openHeaderMenu();
+  await clickOption('Laporkan');
+  await budi.page.waitForSelector('#report-reason', { timeout: 5000 });
+  check(
+    'Laporkan dari menu membuka form laporan untuk lawan bicara',
+    /laporkan andi/i.test(await budi.page.$eval('#modal-card h3', (node) => node.textContent)),
+    await budi.page.$eval('#modal-card h3', (node) => node.textContent)
+  );
+  await budi.page.evaluate(() => document.querySelector('#modal').click());
+
+  // Blokir lokal: pesan disembunyikan, dan menu menawarkan jalan membukanya.
+  await openHeaderMenu();
+  await clickOption('Blokir');
+  const blocked = await budi.page.evaluate(() => ({
+    toast: document.querySelector('#toast').hidden ? '' : document.querySelector('#toast').textContent,
+    bar: document.querySelector('#blocked-bar')?.hidden === false,
+  }));
+  check('Blokir menyembunyikan pesannya di perangkat ini', /diblokir/i.test(blocked.toast) && blocked.bar, JSON.stringify(blocked));
+  await openHeaderMenu();
+  check('Menu menawarkan buka blokir setelah diblokir', (await menuLabels()).includes('Buka blokir'));
+  await clickOption('Buka blokir');
+  check('Buka blokir mengembalikan pesannya', (await display(budi.page, '#blocked-bar')) === 'none');
+
+  // Terakhir: tutup obrolan mengembalikan tampilan ke daftar kosong.
+  await openHeaderMenu();
+  await clickOption('Tutup obrolan');
+  const closedChat = await budi.page.evaluate(() => ({
+    chatHidden: document.querySelector('#chat-view').hidden,
+    emptyShown: document.querySelector('#empty-state')?.hidden === false,
+  }));
+  check('Tutup obrolan menutup percakapan dan kembali ke layar kosong', closedChat.chatHidden && closedChat.emptyShown, JSON.stringify(closedChat));
 
   console.log('');
   for (const r of results) console.log(`  ✔ ${r.label}`);

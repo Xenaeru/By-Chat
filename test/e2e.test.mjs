@@ -22,6 +22,8 @@ process.env.MODERATION_STORE = path.join(TMP, 'moderation.json');
 process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
 // Kunci VAPID + langganan push juga tidak boleh menumpuk di data/ developer.
 process.env.PUSH_STORE = path.join(TMP, 'push.json');
+// Akun username+kata sandi punya file sendiri juga.
+process.env.CREDENTIAL_STORE = path.join(TMP, 'credentials.json');
 // Satu akun di sini yang jadi admin, supaya endpoint /api/admin/* bisa diuji.
 process.env.ADMIN_UIDS = 'u-petugas';
 process.env.PORT = process.env.TEST_PORT || '4399';
@@ -1257,4 +1259,80 @@ test('aset notifikasi disajikan apa adanya: manifest, service worker, modulnya',
 
   const html = await fetch(`${BASE_URL}/`).then((res) => res.text());
   assert.match(html, /rel="manifest"/);
+});
+
+/* ------------------------------------------------------------------ *
+ * Akun username + kata sandi
+ * ------------------------------------------------------------------ */
+
+test('daftar lalu masuk dengan kata sandi: tokennya diterima socket', async () => {
+  const post = async (path, body) => {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+
+  // Belum didaftarkan berarti tidak bisa masuk, dengan alasan yang jelas.
+  const unknown = await post('/api/auth/login', { username: 'belum.ada', password: 'rahasia123' });
+  assert.equal(unknown.status, 401);
+  assert.match(unknown.body.error, /belum terdaftar/i);
+
+  const created = await post('/api/auth/register', { username: 'sandi.budi', password: 'rahasia123' });
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.equal(created.body.username, 'sandi.budi');
+
+  // Nama yang sama tidak bisa didaftarkan dua kali (besar/kecil diabaikan).
+  const duplicate = await post('/api/auth/register', { username: 'SandiBudi', password: 'rahasia123' });
+  // 409 kalau namanya sudah dipakai sebagai @username, 400 kalau sudah ada
+  // akunnya tapi klaim @-nya belum sempat tersimpan. Dua-duanya penolakan.
+  assert.ok([400, 409].includes(duplicate.status), String(duplicate.status));
+  assert.match(duplicate.body.error, /sudah terdaftar|sudah dipakai/i);
+
+  const wrong = await post('/api/auth/login', { username: 'sandi.budi', password: 'salah-banget' });
+  assert.equal(wrong.status, 401);
+  assert.match(wrong.body.error, /salah/i);
+
+  const login = await post('/api/auth/login', { username: 'sandi.budi', password: 'rahasia123' });
+  assert.equal(login.status, 200, JSON.stringify(login.body));
+  assert.match(login.body.token, /^sess\./);
+  assert.match(login.body.profile.uid, /^pw-/);
+
+  // Token itu benar-benar dipakai seperti token login lain: socket tersambung
+  // dan username-nya sudah diklaim saat pendaftaran.
+  const identity = await generateIdentity();
+  const socket = ioClient(BASE_URL, {
+    transports: ['websocket'],
+    forceNew: true,
+    auth: { token: login.body.token, publicKey: identity.publicKey },
+  });
+  sockets.push(socket);
+  const ready = await new Promise((resolve, reject) => {
+    socket.once('ready', resolve);
+    socket.once('connect_error', (err) => reject(new Error(err.message)));
+    setTimeout(() => reject(new Error('timeout menunggu ready')), 5000);
+  });
+  assert.equal(ready.profile.uid, login.body.profile.uid);
+  assert.equal(ready.username, 'sandi.budi');
+  socket.close();
+
+  // Token yang diubah satu karakter tidak boleh diterima.
+  const forged = ioClient(BASE_URL, {
+    transports: ['websocket'],
+    forceNew: true,
+    auth: { token: `${login.body.token}x`, publicKey: identity.publicKey },
+  });
+  sockets.push(forged);
+  await assert.rejects(
+    () =>
+      new Promise((resolve, reject) => {
+        forged.once('ready', resolve);
+        forged.once('connect_error', (err) => reject(new Error(err.message)));
+        setTimeout(() => reject(new Error('timeout: token palsu diterima')), 5000);
+      }),
+    /Tidak terautentikasi/
+  );
+  forged.close();
 });

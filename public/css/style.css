@@ -300,7 +300,47 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 
 /* #login-dev sengaja dibiarkan `block`: tes browser memeriksa nilai itu. */
-#login-dev > * + * { margin-top: 14px; }
+#login-dev > * + *,
+#login-password > * + *,
+#register-form > * + * { margin-top: 14px; }
+
+/* Pemisah antara tombol Google dan kotak username + kata sandi. */
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  font-size: 12px;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* Di mode dev tidak ada tombol Google, jadi pemisahnya tidak tampil dan
+   jarak dari merek diambil alih di sini. */
+#login-divider[hidden] + #login-password { margin-top: 22px; }
+
+/* {button-link}: pindah antara masuk dan daftar, bukan aksi utama. */
+.link-btn {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
+.link-btn:hover { background: var(--primary-tint); }
 
 /* {button-primary}: satu-satunya tombol biru, label kalimat biasa. */
 .primary {
@@ -2464,3 +2504,256 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
   color: var(--danger);
 }
 .modal-actions .danger:hover { background: var(--danger); color: #fff; }
+
+/* ==================================================================
+ * Menu obrolan (titik tiga di header)
+ *
+ * Satu kartu melayang berisi aksi per obrolan, dengan submenu yang
+ * menggantikan isi kartu (bukan popover bertumpuk) supaya di layar hp
+ * tidak ada dua kartu yang saling menutupi.
+ * ================================================================== */
+.chat-options { position: fixed; inset: 0; z-index: 63; }
+.chat-options-catcher { position: absolute; inset: 0; }
+.chat-options-list {
+  position: absolute;
+  min-width: 250px;
+  max-width: min(310px, calc(100vw - 16px));
+  max-height: min(72vh, 580px);
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: var(--r-lg);
+  background: var(--paper);
+  border: 1px solid var(--border);
+  box-shadow: var(--float);
+  animation: options-in .12s ease-out;
+}
+@keyframes options-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.chat-option {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+.chat-option:hover:not(:disabled) { background: var(--cloud); }
+.chat-option:disabled { color: var(--text-soft); cursor: default; }
+.chat-option .ico { width: 19px; height: 19px; color: var(--text-muted); flex: none; }
+.chat-option:disabled .ico { color: var(--text-soft); }
+.chat-option > span { flex: 1; min-width: 0; }
+.chat-option .chat-option-arrow { width: 14px; height: 14px; color: var(--text-soft); transform: rotate(-90deg); }
+.chat-option .chat-option-check { width: 16px; height: 16px; color: var(--primary); }
+.chat-option-sep { height: 1px; margin: 6px 10px; background: var(--border); }
+.chat-option-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+.chat-option-head strong { font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.chat-option-head .ico { width: 16px; height: 16px; color: var(--text-muted); }
+.chat-option-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+.chat-option-head button:hover { background: var(--primary-tint); }
+
+/* ── Cari di dalam obrolan ─────────────────────────────────────────── */
+.chat-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--border);
+}
+.chat-search > .ico { width: 17px; height: 17px; color: var(--text-muted); flex: none; }
+.chat-search input {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 12px;
+  background: var(--cloud);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.chat-search input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-tint); }
+.chat-search-count { flex: none; min-width: 40px; text-align: center; font-size: 12px; color: var(--text-muted); }
+.chat-search .icon-btn { width: 34px; height: 34px; flex: none; }
+.chat-search .ico.up { transform: rotate(180deg); }
+
+.msg.search-hidden { display: none; }
+.msg.search-hit { outline: 2px solid var(--primary-tint); outline-offset: 1px; }
+.msg.search-current { outline-color: var(--primary); }
+
+/* ── Blokir (hanya di perangkat ini) ──────────────────────────────── */
+.blocked-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--danger-soft);
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  font-size: 13px;
+}
+.blocked-bar .ico { width: 17px; height: 17px; color: var(--danger); flex: none; }
+.blocked-bar span { flex: 1; min-width: 0; }
+.blocked-bar .link { padding: 0; font-size: 13px; font-weight: 600; }
+
+/* ── Pilih beberapa pesan ─────────────────────────────────────────── */
+.select-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--primary-tint);
+  border-top: 1px solid var(--border);
+}
+.select-count { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--ink); }
+.select-bar .ghost {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+.select-bar .ghost:hover { background: var(--cloud); }
+.select-bar .ghost.danger { color: var(--danger); }
+#chat-view.selecting .msg { cursor: pointer; }
+#chat-view.selecting .msg-menu-btn { display: none !important; }
+.msg.selected { outline: 2px solid var(--primary); outline-offset: 1px; }
+.msg .msg-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 7px;
+  border: 1.5px solid var(--steel);
+  border-radius: var(--r-pill);
+  vertical-align: -3px;
+  color: transparent;
+}
+.msg .msg-check .ico { width: 12px; height: 12px; stroke-width: 2.4; }
+.msg.selected .msg-check { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
+
+/* ── Daftar obrolan (favorit & daftar buatan sendiri) ─────────────── */
+.list-filters {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.list-filters::-webkit-scrollbar { display: none; }
+.list-filters button {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--paper);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.list-filters button.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+.chat-item .chat-item-flag { width: 13px; height: 13px; color: var(--text-soft); flex: none; }
+.chat-item .chat-item-flag.star { color: var(--warning); }
+.chat-item .chat-item-flag.muted { color: var(--text-soft); }
+.chat-item.blocked .chat-item-sub { color: var(--danger); }
+
+/* Tautan panggilan yang dikirim sebagai pesan. */
+.msg .call-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--primary);
+  border-radius: var(--r-md);
+  background: var(--canvas);
+  color: var(--primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+.msg .call-link:hover { background: var(--primary-tint); }
+.msg .call-link .ico { width: 16px; height: 16px; }
+
+@media (max-width: 720px) {
+  .chat-options-list { min-width: min(272px, calc(100vw - 16px)); }
+  .select-bar { flex-wrap: wrap; }
+  .select-bar .ghost { flex: 1; }
+}
+
+/* Penanda di baris daftar chat: bintang favorit, lonceng dibisukan. */
+.chat-item-name .chat-item-flag,
+.chat-item-time .chat-item-flag {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 3px;
+}
+.chat-item-name .chat-item-flag { margin-right: 0; margin-left: 5px; }
+
+/* Info kontak: kartu ringkas di dalam dialog. */
+.contact-info-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 0 14px;
+}
+.contact-info-head .avatar { width: 52px; height: 52px; font-size: 20px; flex: none; }
+.contact-info-head strong { display: block; font-size: 16px; }
+.contact-info-head .muted { font-size: 12px; }
+.contact-info-list { list-style: none; margin: 0 0 16px; padding: 0; }
+.contact-info-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.contact-info-list li strong { font-weight: 500; text-align: right; }
+
+/* Elemen di bawah ini memakai display:flex, yang mengalahkan atribut `hidden`
+   bawaan browser. Tanpa aturan ini, panelnya tetap tampil walau disembunyikan. */
+.chat-search[hidden],
+.blocked-bar[hidden],
+.select-bar[hidden],
+.list-filters[hidden] { display: none; }

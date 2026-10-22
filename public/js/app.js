@@ -21,6 +21,12 @@ const roomsKey = (uid) => `securechat.rooms.v3.${uid}`;
 const verifiedKey = (uid) => `securechat.verified.v3.${uid}`;
 const statusSeenKey = (uid) => `securechat.status.v1.${uid}`;
 const starredKey = (uid) => `securechat.starred.v1.${uid}`;
+// Preferensi per obrolan (favorit, bisu, pesan sementara), daftar buatan
+// sendiri, dan kontak yang diblokir. Semuanya lokal: server tetap buta isi
+// percakapan, jadi tidak ada yang perlu dia ketahui soal ini.
+const chatPrefsKey = (uid) => `securechat.chatprefs.v1.${uid}`;
+const listsKey = (uid) => `securechat.lists.v1.${uid}`;
+const blockedKey = (uid) => `securechat.blocked.v1.${uid}`;
 
 const store = {
   get(key, fallback = null) {
@@ -148,6 +154,20 @@ const state = {
   /** Riwayat panggilan lokal + keadaan panggilan yang sedang berjalan. */
   callLog: [],
   callState: null,
+  /** roomId -> { favorite, mutedUntil, mutedFor, disappearMs, lists[] } */
+  chatPrefs: new Map(),
+  /** Daftar obrolan buatan sendiri: [{ id, name }] */
+  lists: [],
+  /** uid yang diblokir di perangkat ini. */
+  blocked: new Set(),
+  /** Filter daftar obrolan: 'all' | 'favorite' | id daftar. */
+  listFilter: 'all',
+  /** Mode pilih pesan: Set berisi id pesan, atau null saat tidak aktif. */
+  selection: null,
+  /** Pencarian di dalam obrolan. */
+  searchQuery: '',
+  searchHits: [],
+  searchIndex: -1,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -160,6 +180,19 @@ const el = {
   loginUsername: $('#login-username'),
   loginSubmit: $('#login-submit'),
   loginError: $('#login-error'),
+  loginNotice: $('#login-notice'),
+  loginDivider: $('#login-divider'),
+  loginPasswordForm: $('#login-password'),
+  loginAccount: $('#login-account'),
+  loginPasswordInput: $('#login-password-input'),
+  loginPasswordSubmit: $('#login-password-submit'),
+  loginToRegister: $('#login-to-register'),
+  registerForm: $('#register-form'),
+  registerUsername: $('#register-username'),
+  registerPassword: $('#register-password'),
+  registerConfirm: $('#register-confirm'),
+  registerSubmit: $('#register-submit'),
+  registerToLogin: $('#register-to-login'),
   btnGoogle: $('#btn-google'),
 
   onboarding: $('#onboarding'),
@@ -235,6 +268,27 @@ const el = {
   chatMenu: $('#chat-menu'),
   chatMenuCatcher: $('#chat-menu-catcher'),
   chatMenuList: $('#chat-menu-list'),
+
+  btnChatMore: $('#btn-chat-more'),
+  chatOptions: $('#chat-options'),
+  chatOptionsCatcher: $('#chat-options-catcher'),
+  chatOptionsList: $('#chat-options-list'),
+  chatSearch: $('#chat-search'),
+  chatSearchInput: $('#chat-search-input'),
+  chatSearchCount: $('#chat-search-count'),
+  chatSearchPrev: $('#chat-search-prev'),
+  chatSearchNext: $('#chat-search-next'),
+  chatSearchClose: $('#chat-search-close'),
+  blockedBar: $('#blocked-bar'),
+  blockedText: $('#blocked-text'),
+  blockedUnblock: $('#blocked-unblock'),
+  selectBar: $('#select-bar'),
+  selectCount: $('#select-count'),
+  selectClose: $('#select-close'),
+  selectCopy: $('#select-copy'),
+  selectForward: $('#select-forward'),
+  selectDelete: $('#select-delete'),
+  listFilters: $('#list-filters'),
   themeNote: $('[data-theme-note]'),
   themeSelect: $('#theme-select'),
 
@@ -538,6 +592,10 @@ async function boot() {
   el.loginFirebase.hidden = !firebaseMode;
   el.loginDev.hidden = firebaseMode;
   el.loginDevNote.hidden = firebaseMode;
+  // Kotak username + kata sandi jalan di kedua mode: akunnya dibuat server ini
+  // sendiri, bukan oleh penyedia login.
+  el.loginPasswordForm.hidden = false;
+  el.loginDivider.hidden = !firebaseMode;
 
   // Notifikasi: dibuat sekali, dipakai ulang tiap akun. Kalau orangnya pernah
   // menyalakannya, service worker dipasang lagi tanpa menanyakan izin ulang.
@@ -575,6 +633,16 @@ function showLogin() {
   el.banned.hidden = true;
   el.app.hidden = true;
   el.login.hidden = false;
+  el.loginNotice.hidden = true;
+  el.loginError.hidden = true;
+  showAuthPanel('login');
+  state.chatPrefs = new Map();
+  state.lists = [];
+  state.blocked = new Set();
+  state.listFilter = 'all';
+  state.selection = null;
+  closeChatSearch();
+  closeChatOptions();
 }
 
 async function enterApp(profile) {
@@ -594,6 +662,11 @@ async function enterApp(profile) {
   state.verified = new Set(store.get(verifiedKey(profile.uid), []));
   state.starred = new Set(store.get(starredKey(profile.uid), []));
   state.deletedIds.clear();
+  loadChatPrefs(profile.uid);
+  state.listFilter = 'all';
+  state.selection = null;
+  closeChatSearch();
+  closeChatOptions();
   cancelReply();
   closeMessageMenu();
   closeViewer();
@@ -604,6 +677,9 @@ async function enterApp(profile) {
   state.rooms.clear();
   state.unread.clear();
   loadRooms(profile.uid);
+  // Pesan sementara langsung berlaku saat aplikasi dibuka, bukan menunggu
+  // interval pertama.
+  pruneDisappearing();
   state.callState = null;
   loadCallLog(profile.uid);
 
@@ -1119,6 +1195,9 @@ async function sendToRoom(
 ) {
   if (!room) return;
   if (!String(text || '').trim() && !attachment) return;
+  // Pesan ke kontak yang diblokir tidak dikirim: blokir yang cuma menyembunyikan
+  // pesan masuk akan jadi tombol tanpa arti.
+  if (peerBlocked(room)) return showToast('Buka blokir dulu untuk mengirim pesan ke kontak ini.');
 
   let sharedKeys;
   try {
@@ -1182,6 +1261,9 @@ async function receiveMessage(envelope) {
   if (envelope.deleted) return applyRemoteDelete(envelope);
   // Bisa saja kabar hapusnya duluan sampai (misalnya dari inbox offline).
   if (state.deletedIds.has(envelope.id)) return;
+  // Kontak yang diblokir di perangkat ini: pesannya tidak masuk ke riwayat,
+  // tidak menambah belum-dibaca, dan tidak memicu notifikasi.
+  if (isPeerBlocked(envelope.from)) return;
 
   const room = ensureRoom({
     id: envelope.roomId,
@@ -1223,9 +1305,15 @@ async function receiveMessage(envelope) {
   saveRooms();
   renderChatList();
 
-  // Notifikasi cuma kalau orangnya memang tidak sedang membaca percakapan ini.
-  // Isinya sudah didekripsi di sini; SW cuma menampilkan teksnya.
-  if (!reading && envelope.from !== state.me.uid) notifyIncoming(room, envelope, parsed, error);
+  // Notifikasi cuma kalau orangnya memang tidak sedang membaca percakapan ini,
+  // dan obrolannya tidak sedang dibisukan. Isinya sudah didekripsi di sini;
+  // SW cuma menampilkan teksnya.
+  if (!reading && envelope.from !== state.me.uid && !isMuted(room.id)) {
+    notifyIncoming(room, envelope, parsed, error);
+  }
+
+  // Pesan sementara: yang datang telat pun ikut hilang kalau umurnya lewat.
+  if (Number(roomPrefs(room.id).disappearMs)) pruneDisappearing();
 }
 
 /** Cuplikan singkat untuk notifikasi — sama seperti yang tampil di daftar chat. */
@@ -1307,12 +1395,17 @@ async function flushNotificationReply() {
 /** `/?chat=<id>` — dipakai notifikasi untuk membuka percakapan yang tepat. */
 function openRoomFromQuery() {
   const params = new URLSearchParams(location.search);
+  // `chat` membuka percakapan, `call` membuka percakapan sekaligus menelepon —
+  // yang terakhir itulah tautan dari menu "Kirim tautan menelepon".
   const roomId = params.get('chat');
-  if (!roomId) return;
+  const callRoom = params.get('call');
+  const target = roomId || callRoom;
+  if (!target) return;
   history.replaceState(null, '', location.pathname);
-  if (!state.rooms.has(roomId)) return;
+  if (!state.rooms.has(target)) return;
   setView('chats', { animate: false });
-  selectRoom(roomId);
+  selectRoom(target);
+  if (callRoom) setTimeout(() => joinCallFromLink(callRoom), 400);
 }
 
 function pushSystemNote(room, text) {
@@ -1450,25 +1543,36 @@ function toggleStar(message) {
   showToast(on ? 'Pesan diberi bintang.' : 'Bintangnya dilepas.');
 }
 
+/** Salin teks, dengan jalan cadangan kalau Clipboard API ditolak. */
+async function writeClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Clipboard API butuh HTTPS dan izin; ini jalan terakhirnya.
+    const scratch = document.createElement('textarea');
+    scratch.value = text;
+    scratch.style.position = 'fixed';
+    scratch.style.opacity = '0';
+    document.body.appendChild(scratch);
+    scratch.select();
+    try {
+      document.execCommand('copy');
+      return true;
+    } catch {
+      return false;
+    } finally {
+      scratch.remove();
+    }
+  }
+}
+
 function copyMessage(message) {
   const text = String(message.text || '').trim();
   if (!text) return showToast('Pesan ini nggak punya teks buat disalin.');
-
-  return navigator.clipboard
-    .writeText(text)
-    .then(() => showToast('Pesan disalin.'))
-    .catch(() => {
-      // Clipboard API butuh HTTPS dan izin; ini jalan terakhirnya.
-      const scratch = document.createElement('textarea');
-      scratch.value = text;
-      scratch.style.position = 'fixed';
-      scratch.style.opacity = '0';
-      document.body.appendChild(scratch);
-      scratch.select();
-      document.execCommand('copy');
-      scratch.remove();
-      showToast('Pesan disalin.');
-    });
+  return writeClipboard(text).then((ok) =>
+    showToast(ok ? 'Pesan disalin.' : 'Teksnya nggak bisa disalin di browser ini.')
+  );
 }
 
 /* ---- Balas ---------------------------------------------------------
@@ -1746,6 +1850,8 @@ function openMessageMenu(bubble) {
   const room = state.rooms.get(state.activeRoomId);
   const message = room?.messages.find((m) => (serverIdOf(m) || m.id) === bubble.dataset.id);
   if (!room || !message) return;
+  // Di mode pilih pesan, satu ketukan mencentang pesan — bukan membuka menu.
+  if (state.selection) return toggleSelected(bubble);
 
   closeMessageMenu();
   state.menuOpen = true;
@@ -2118,6 +2224,9 @@ function selectRoom(roomId) {
   // milik percakapan yang sedang dibuka, bukan percakapan berikutnya.
   if (state.voiceRecording) cancelVoiceNote();
   stopVoicePlayback();
+  closeChatOptions();
+  closeChatSearch();
+  exitSelection({ render: false });
   state.activeRoomId = roomId;
   state.unread.set(roomId, 0);
   const room = state.rooms.get(roomId);
@@ -2146,14 +2255,22 @@ function renderPeerHeader() {
   el.btnCallAudio.hidden = !canCall;
   el.btnCallVideo.hidden = !canCall;
   el.btnVerify.hidden = !isDm;
+  el.btnReport.hidden = !isDm;
+
+  // Blokir berlaku di perangkat ini saja: kolom ketik dikunci dan pesan dari
+  // kontak itu tidak dimunculkan (lihat receiveMessage).
+  const blocked = peerBlocked(room);
+  el.blockedBar.hidden = !blocked;
+  if (blocked) el.blockedText.textContent = `Kamu memblokir ${name}. Pesannya nggak akan muncul di perangkat ini.`;
+  el.input.disabled = blocked;
+  el.btnSend.disabled = blocked;
+  el.btnAttach.disabled = blocked;
 
   if (!isDm) {
     const names = room.members.filter((m) => m !== state.me.uid).map((m) => peerByUid(m)?.displayName || '?');
     el.peerSub.textContent = `${room.members.length} anggota · ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}`;
     return;
   }
-
-  el.btnReport.hidden = !isDm;
 
   const peer = peerByUid(otherUid(room));
   const shield = state.verified.has(otherUid(room)) ? '🛡️ ' : '';
@@ -2167,11 +2284,22 @@ function renderPeerHeader() {
 
 function renderChatList() {
   const filter = el.search.value.trim().toLowerCase();
-  const rooms = [...state.rooms.values()].sort((a, b) => {
-    const at = a.messages[a.messages.length - 1]?.at || 0;
-    const bt = b.messages[b.messages.length - 1]?.at || 0;
-    return bt - at;
-  });
+  renderListFilters();
+
+  const inFilter = (room) => {
+    if (state.listFilter === 'all') return true;
+    if (state.listFilter === 'favorite') return isFavorite(room.id);
+    return roomPrefs(room.id).lists.includes(state.listFilter);
+  };
+
+  const rooms = [...state.rooms.values()]
+    .filter(inFilter)
+    .sort((a, b) => {
+      const at = a.messages[a.messages.length - 1]?.at || 0;
+      const bt = b.messages[b.messages.length - 1]?.at || 0;
+      // Favorit selalu di atas; sisanya urut pesan terbaru.
+      return Number(isFavorite(b.id)) - Number(isFavorite(a.id)) || bt - at;
+    });
 
   el.chatList.innerHTML = '';
   let shown = 0;
@@ -2184,21 +2312,33 @@ function renderChatList() {
     const last = room.messages[room.messages.length - 1];
     const unread = state.unread.get(room.id) || 0;
     const peerOnline = room.type === 'dm' && peerByUid(otherUid(room))?.online;
+    const fav = isFavorite(room.id);
+    const muted = isMuted(room.id);
+    const blocked = peerBlocked(room);
 
     const peerUid = room.type === 'dm' ? otherUid(room) : null;
     const peerStatuses = peerUid ? statusesFrom(peerUid).length : 0;
     const ring = peerStatuses ? (unseenStatusCount(peerUid) ? ' ring' : ' ring-seen') : '';
 
     const li = document.createElement('li');
-    li.className = 'chat-item' + (room.id === state.activeRoomId ? ' active' : '');
+    li.className =
+      'chat-item' +
+      (room.id === state.activeRoomId ? ' active' : '') +
+      (blocked ? ' blocked' : '');
     li.innerHTML = `
       <div class="avatar${ring}"${peerUid ? ` data-uid="${esc(peerUid)}"` : ''}>${esc(initials(name))}</div>
       <div class="chat-item-main">
         <div class="chat-item-top">
-          <span class="chat-item-name">${esc(name)}${room.type === 'group' ? ' 👥' : ''}</span>
-          <span class="chat-item-time">${last ? formatListTime(last.at) : ''}</span>
+          <span class="chat-item-name">${esc(name)}${room.type === 'group' ? ' 👥' : ''}${
+            fav ? '<svg class="ico chat-item-flag star"><use href="#i-star-filled" /></svg>' : ''
+          }</span>
+          <span class="chat-item-time">${
+            muted ? '<svg class="ico chat-item-flag muted"><use href="#i-bell-off" /></svg>' : ''
+          }${last ? formatListTime(last.at) : ''}</span>
         </div>
-        <div class="chat-item-sub">${esc(preview(last))}</div>
+        <div class="chat-item-sub">${esc(
+          blocked ? 'Diblokir — pesan dari kontak ini disembunyikan' : preview(last)
+        )}</div>
       </div>
       ${peerOnline ? '<span class="dot"></span>' : ''}
       ${unread ? `<span class="badge">${unread}</span>` : ''}
@@ -2229,7 +2369,11 @@ function renderChatList() {
   }
 
   el.chatListEmpty.hidden = shown > 0;
-  el.chatListEmpty.textContent = filter ? 'Nggak ada chat yang cocok.' : 'Belum ada chat. Tekan ＋ buat mulai.';
+  el.chatListEmpty.textContent = filter
+    ? 'Nggak ada chat yang cocok.'
+    : state.listFilter === 'all'
+      ? 'Belum ada chat. Tekan ＋ buat mulai.'
+      : 'Belum ada chat di daftar ini.';
   paintAvatars(el.chatList);
 
   // Jumlah belum dibaca ikut ke judul tab, supaya kelihatan walau jendelanya
@@ -2340,6 +2484,797 @@ function bindChatLongPress(li, room) {
     if (Math.hypot(event.clientX - chatPressPoint.x, event.clientY - chatPressPoint.y) > 10) cancel();
   });
   for (const type of ['pointerup', 'pointercancel', 'pointerleave']) li.addEventListener(type, cancel);
+}
+
+/* ------------------------------------------------------------------ *
+ * Preferensi obrolan: favorit, bisu, pesan sementara, daftar, blokir
+ *
+ * Semuanya lokal dan disimpan per akun. Server memang perantara buta: dia
+ * tidak punya riwayat untuk dimute atau dihapus, jadi mengatur semua ini di
+ * sini bukan kekurangan — itu satu-satunya tempat yang masuk akal.
+ * ------------------------------------------------------------------ */
+
+/** Nilai khusus untuk "dibisukan sampai kapan pun". */
+const FOREVER = 'forever';
+const MUTE_OPTIONS = [
+  { label: '8 jam', value: 8 * 60 * 60 * 1000 },
+  { label: '1 minggu', value: 7 * 24 * 60 * 60 * 1000 },
+  { label: 'Selamanya', value: FOREVER },
+];
+const DISAPPEAR_OPTIONS = [
+  { label: '24 jam', value: 24 * 60 * 60 * 1000 },
+  { label: '7 hari', value: 7 * 24 * 60 * 60 * 1000 },
+  { label: '90 hari', value: 90 * 24 * 60 * 60 * 1000 },
+];
+const THEME_OPTIONS = [
+  { label: 'Terang', value: 'light' },
+  { label: 'Gelap', value: 'dark' },
+  { label: 'Otomatis (ikut perangkat)', value: 'system' },
+];
+
+function roomPrefs(roomId) {
+  let prefs = state.chatPrefs.get(roomId);
+  if (!prefs || typeof prefs !== 'object') {
+    prefs = { favorite: false, mutedUntil: 0, mutedFor: 0, disappearMs: 0, lists: [] };
+    state.chatPrefs.set(roomId, prefs);
+  }
+  if (!Array.isArray(prefs.lists)) prefs.lists = [];
+  return prefs;
+}
+
+function loadChatPrefs(uid) {
+  const saved = store.get(chatPrefsKey(uid), []) || [];
+  state.chatPrefs = new Map(Array.isArray(saved) ? saved.filter((entry) => Array.isArray(entry)) : []);
+  state.lists = (store.get(listsKey(uid), []) || []).filter((list) => list?.id && list?.name);
+  state.blocked = new Set(store.get(blockedKey(uid), []) || []);
+}
+
+function saveChatPrefs() {
+  if (!state.me) return;
+  store.set(chatPrefsKey(state.me.uid), [...state.chatPrefs]);
+  store.set(listsKey(state.me.uid), state.lists);
+  store.set(blockedKey(state.me.uid), [...state.blocked]);
+}
+
+const isFavorite = (roomId) => Boolean(roomPrefs(roomId).favorite);
+const isMuted = (roomId) => {
+  const until = roomPrefs(roomId).mutedUntil;
+  return until === FOREVER || Number(until) > Date.now();
+};
+const isPeerBlocked = (uid) => state.blocked.has(String(uid || ''));
+const peerBlocked = (room) => room?.type === 'dm' && isPeerBlocked(otherUid(room));
+
+function muteLabel(roomId) {
+  const until = roomPrefs(roomId).mutedUntil;
+  if (until === FOREVER) return 'selamanya';
+  if (Number(until) > Date.now()) {
+    const hours = Math.ceil((Number(until) - Date.now()) / (60 * 60 * 1000));
+    return hours > 24 ? `${Math.ceil(hours / 24)} hari` : `${hours} jam`;
+  }
+  return null;
+}
+
+function setMute(room, value) {
+  const prefs = roomPrefs(room.id);
+  // `value` dari menu itu durasi (8 jam, 1 minggu), bukan waktu kedaluwarsa:
+  // yang disimpan harus titik berakhirnya, supaya bisunya benar-benar habis.
+  prefs.mutedFor = value === FOREVER ? FOREVER : Number(value) || 0;
+  prefs.mutedUntil = value === FOREVER ? FOREVER : value ? Date.now() + Number(value) : 0;
+  saveChatPrefs();
+  renderChatList();
+  if (!value) return showToast('Notifikasi obrolan ini berbunyi lagi.');
+  showToast(
+    value === FOREVER
+      ? `Notifikasi ${displayName(room)} dimatikan selamanya.`
+      : `Notifikasi ${displayName(room)} dimatikan selama ${MUTE_OPTIONS.find((o) => o.value === value)?.label || 'sebentar'}.`
+  );
+}
+
+const disappearLabel = (ms) => DISAPPEAR_OPTIONS.find((option) => option.value === ms)?.label || null;
+
+/**
+ * Buang pesan yang umurnya sudah lewat batas "pesan sementara". Batasnya
+ * dihitung dari waktu pesan itu diterima, di perangkat ini — satu-satunya jam
+ * yang bisa dipercaya karena server tidak menyimpan riwayat sama sekali.
+ */
+function pruneDisappearing() {
+  let removed = 0;
+  for (const room of state.rooms.values()) {
+    const ttl = Number(roomPrefs(room.id).disappearMs) || 0;
+    if (!ttl) continue;
+    const cutoff = Date.now() - ttl;
+    // Catatan sistem dan riwayat panggilan bukan pesan, jadi tidak ikut hilang
+    // bersama isi percakapannya.
+    const kept = room.messages.filter((m) => m.system || m.call || (Number(m.at) || 0) >= cutoff);
+    removed += room.messages.length - kept.length;
+    room.messages = kept;
+  }
+  if (!removed) return false;
+  saveRooms();
+  renderChatList();
+  if (state.activeRoomId) renderMessages();
+  return true;
+}
+
+function setDisappearing(room, ms) {
+  const prefs = roomPrefs(room.id);
+  prefs.disappearMs = Number(ms) || 0;
+  saveChatPrefs();
+  if (prefs.disappearMs) {
+    pushSystemNote(
+      room,
+      `Pesan sementara ${disappearLabel(prefs.disappearMs)} aktif. Pesan yang lebih lama dari itu hilang dari perangkat ini.`
+    );
+  } else {
+    pushSystemNote(room, 'Pesan sementara dimatikan.');
+  }
+  saveRooms();
+  if (state.activeRoomId === room.id) renderMessages();
+  renderChatList();
+  showToast(prefs.disappearMs ? `Pesan sementara ${disappearLabel(prefs.disappearMs)}.` : 'Pesan sementara dimatikan.');
+}
+
+/* ---- Daftar obrolan buatan sendiri ---- */
+function createList(name) {
+  const clean = String(name || '').trim().slice(0, 24);
+  if (!clean) return null;
+  if (state.lists.some((list) => list.name.toLowerCase() === clean.toLowerCase())) {
+    showToast('Daftar dengan nama itu sudah ada.');
+    return null;
+  }
+  const list = { id: `list-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name: clean };
+  state.lists.push(list);
+  saveChatPrefs();
+  return list;
+}
+
+function toggleRoomList(room, listId) {
+  const prefs = roomPrefs(room.id);
+  const has = prefs.lists.includes(listId);
+  prefs.lists = has ? prefs.lists.filter((id) => id !== listId) : [...prefs.lists, listId];
+  saveChatPrefs();
+  renderChatList();
+  return !has;
+}
+
+/** Baris chip "Semua / Favorit / daftar…" di atas daftar chat. */
+function renderListFilters() {
+  if (!el.listFilters) return;
+  const hasFavorites = [...state.rooms.values()].some((room) => isFavorite(room.id));
+  const chips = [
+    { id: 'all', label: 'Semua' },
+    ...(hasFavorites ? [{ id: 'favorite', label: 'Favorit' }] : []),
+    ...state.lists.map((list) => ({ id: list.id, label: list.name })),
+  ];
+  el.listFilters.hidden = chips.length < 2;
+  el.listFilters.innerHTML = '';
+  for (const chip of chips) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.filter = chip.id;
+    button.textContent = chip.label;
+    button.classList.toggle('active', state.listFilter === chip.id);
+    button.addEventListener('click', () => {
+      state.listFilter = chip.id;
+      renderChatList();
+    });
+    el.listFilters.appendChild(button);
+  }
+}
+
+/* ---- Blokir (lokal) ---- */
+function toggleBlock(room) {
+  if (room?.type !== 'dm') return showToast('Blokir cuma berlaku untuk chat pribadi.');
+  const uid = otherUid(room);
+  if (state.blocked.has(uid)) {
+    state.blocked.delete(uid);
+    showToast(`${displayName(room)} nggak lagi diblokir di perangkat ini.`);
+  } else {
+    state.blocked.add(uid);
+    showToast(`${displayName(room)} diblokir di perangkat ini. Pesannya disembunyikan.`);
+  }
+  saveChatPrefs();
+  renderChatList();
+  if (state.activeRoomId === room.id) {
+    renderPeerHeader();
+    renderMessages();
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Menu obrolan (titik tiga di header)
+ * ------------------------------------------------------------------ */
+
+function chatMenuItems(room) {
+  const prefs = roomPrefs(room.id);
+  const isDm = room.type === 'dm';
+  const muted = isMuted(room.id);
+  const ttl = Number(prefs.disappearMs) || 0;
+  const blocked = peerBlocked(room);
+
+  return [
+    { id: 'info', label: 'Info kontak', icon: '#i-info' },
+    { id: 'search', label: 'Cari', icon: '#i-search' },
+    {
+      id: 'select',
+      label: 'Pilih pesan',
+      icon: '#i-checks',
+      disabled: !room.messages.some((message) => !message.system && !message.call),
+    },
+    {
+      id: 'mute',
+      label: muted ? 'Bisukan notifikasi · aktif' : 'Bisukan notifikasi',
+      icon: '#i-bell-off',
+      submenu: () => ({
+        title: 'Bisukan notifikasi',
+        items: [
+          ...MUTE_OPTIONS.map((option) => ({
+            label: option.label,
+            active: muted && prefs.mutedFor === option.value,
+            run: () => setMute(room, option.value),
+          })),
+          ...(muted ? [{ label: 'Matikan bisu', run: () => setMute(room, 0) }] : []),
+        ],
+      }),
+    },
+    {
+      id: 'disappear',
+      label: ttl ? `Pesan sementara · ${disappearLabel(ttl)}` : 'Pesan sementara',
+      icon: '#i-timer',
+      submenu: () => ({
+        title: 'Pesan sementara',
+        note: 'Pesan yang lebih lama dari batas ini hilang dari perangkat ini.',
+        items: [
+          ...DISAPPEAR_OPTIONS.map((option) => ({
+            label: option.label,
+            active: ttl === option.value,
+            run: () => setDisappearing(room, option.value),
+          })),
+          ...(ttl ? [{ label: 'Matikan', run: () => setDisappearing(room, 0) }] : []),
+        ],
+      }),
+    },
+    {
+      id: 'theme',
+      label: 'Tema obrolan',
+      icon: '#i-sun',
+      submenu: () => ({
+        title: 'Tema obrolan',
+        note: 'Berlaku untuk seluruh aplikasi di perangkat ini.',
+        items: THEME_OPTIONS.map((option) => ({
+          label: option.label,
+          active: themeChoice === option.value,
+          run: () => setTheme(option.value),
+        })),
+      }),
+    },
+    {
+      id: 'favorite',
+      label: prefs.favorite ? 'Hapus dari favorit' : 'Tambah ke favorit',
+      icon: '#i-star',
+    },
+    {
+      id: 'lists',
+      label: 'Tambah ke daftar',
+      icon: '#i-list',
+      submenu: () => ({
+        title: 'Tambah ke daftar',
+        items: [
+          ...state.lists.map((list) => ({
+            label: list.name,
+            active: prefs.lists.includes(list.id),
+            keepOpen: true,
+            run: () => {
+              const added = toggleRoomList(room, list.id);
+              showToast(added ? `Ditambahkan ke daftar ${list.name}.` : `Dikeluarkan dari daftar ${list.name}.`);
+              return true;
+            },
+          })),
+          { label: '+ Daftar baru…', run: () => promptList(room) },
+        ],
+      }),
+    },
+    { id: 'close', label: 'Tutup obrolan', icon: '#i-logout' },
+    { sep: true },
+    { id: 'call-link', label: 'Kirim tautan menelepon', icon: '#i-link' },
+    { id: 'group-call', label: 'Telepon grup baru', icon: '#i-users', hidden: room.type !== 'group' },
+    { sep: true },
+    { id: 'report', label: 'Laporkan', icon: '#i-flag', hidden: !isDm },
+    { id: 'block', label: blocked ? 'Buka blokir' : 'Blokir', icon: '#i-ban', hidden: !isDm },
+    { sep: true },
+    {
+      id: 'clear',
+      label: 'Bersihkan obrolan',
+      icon: '#i-broom',
+      disabled: room.messages.length === 0,
+    },
+    { id: 'delete', label: 'Hapus obrolan', icon: '#i-trash', danger: true },
+  ];
+}
+
+function optionRow({ label, icon, danger, disabled, arrow, active, onSelect }) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'chat-option' + (danger ? ' danger' : '');
+  button.setAttribute('role', 'menuitem');
+  button.disabled = Boolean(disabled);
+  button.innerHTML = `
+    ${icon ? `<svg class="ico"><use href="${icon}" /></svg>` : ''}
+    <span>${esc(label)}</span>
+    ${active ? '<svg class="ico chat-option-check"><use href="#i-check" /></svg>' : ''}
+    ${arrow ? '<svg class="ico chat-option-arrow"><use href="#i-chevron" /></svg>' : ''}
+  `;
+  if (danger) button.style.color = 'var(--danger)';
+  if (onSelect) button.addEventListener('click', onSelect);
+  return button;
+}
+
+function renderChatOptions(room, submenuId = null) {
+  if (!room) return;
+  const list = el.chatOptionsList;
+  list.innerHTML = '';
+
+  // Submenu dibangun ulang dari definisinya tiap kali digambar, jadi tanda
+  // centangnya selalu mengikuti nilai yang tersimpan sekarang.
+  const submenu = submenuId
+    ? chatMenuItems(room).find((entry) => entry.id === submenuId)?.submenu?.()
+    : null;
+
+  if (submenu) {
+    const head = document.createElement('div');
+    head.className = 'chat-option-head';
+    head.innerHTML = '<button type="button" data-back><svg class="ico"><use href="#i-back" /></svg> Kembali</button>';
+    head.appendChild(Object.assign(document.createElement('strong'), { textContent: submenu.title }));
+    head.querySelector('[data-back]').addEventListener('click', () => renderChatOptions(room));
+    list.appendChild(head);
+
+    if (submenu.note) {
+      const note = document.createElement('p');
+      note.className = 'hint';
+      note.style.padding = '0 10px 8px';
+      note.textContent = submenu.note;
+      list.appendChild(note);
+    }
+
+    for (const item of submenu.items) {
+      list.appendChild(
+        optionRow({
+          label: item.label,
+          active: item.active,
+          onSelect: () => {
+            // Item bertanda keepOpen tetap membuka submenu ini supaya orang bisa
+            // mencentang beberapa daftar berturut-turut.
+            if (!item.keepOpen) closeChatOptions();
+            item.run();
+            if (item.keepOpen) renderChatOptions(room, submenuId);
+          },
+        })
+      );
+    }
+    placeChatOptions();
+    return;
+  }
+
+  for (const item of chatMenuItems(room)) {
+    if (item.sep) {
+      const sep = document.createElement('div');
+      sep.className = 'chat-option-sep';
+      list.appendChild(sep);
+      continue;
+    }
+    if (item.hidden) continue;
+    list.appendChild(
+      optionRow({
+        label: item.label,
+        icon: item.icon,
+        danger: item.danger,
+        disabled: item.disabled,
+        arrow: Boolean(item.submenu),
+        onSelect: () => {
+          if (item.submenu) return renderChatOptions(room, item.id);
+          closeChatOptions();
+          runChatOption(item.id, room);
+        },
+      })
+    );
+  }
+  placeChatOptions();
+}
+
+function placeChatOptions() {
+  const rect = el.btnChatMore.getBoundingClientRect();
+  const box = el.chatOptionsList.getBoundingClientRect();
+  const pad = 8;
+  const left = Math.min(Math.max(pad, rect.right - box.width), Math.max(pad, innerWidth - box.width - pad));
+  const top = Math.min(Math.max(pad, rect.bottom + 6), Math.max(pad, innerHeight - box.height - pad));
+  el.chatOptionsList.style.left = `${left}px`;
+  el.chatOptionsList.style.top = `${top}px`;
+}
+
+function openChatOptions() {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room) return;
+  closeMessageMenu();
+  closeChatMenu();
+  el.chatOptions.dataset.room = room.id;
+  el.chatOptions.hidden = false;
+  el.btnChatMore.setAttribute('aria-expanded', 'true');
+  renderChatOptions(room);
+}
+
+function closeChatOptions() {
+  if (!el.chatOptions || el.chatOptions.hidden) return;
+  el.chatOptions.hidden = true;
+  el.chatOptionsList.innerHTML = '';
+  delete el.chatOptions.dataset.room;
+  el.btnChatMore.setAttribute('aria-expanded', 'false');
+}
+
+function runChatOption(id, room) {
+  const prefs = roomPrefs(room.id);
+  if (id === 'info') return openContactInfo(room);
+  if (id === 'search') return openChatSearch();
+  if (id === 'select') return startSelection();
+  if (id === 'favorite') {
+    prefs.favorite = !prefs.favorite;
+    saveChatPrefs();
+    renderChatList();
+    return showToast(prefs.favorite ? 'Ditambahkan ke favorit.' : 'Dihapus dari favorit.');
+  }
+  if (id === 'close') return closeConversation();
+  if (id === 'call-link') return sendCallLink(room);
+  if (id === 'group-call') return startGroupCall(false);
+  if (id === 'report') return openReportModal();
+  if (id === 'block') return toggleBlock(room);
+  if (id === 'clear') return runChatAction('clear', room);
+  if (id === 'delete') return runChatAction('delete', room);
+}
+
+/* ---- Info kontak ---- */
+function openContactInfo(room) {
+  const isDm = room.type === 'dm';
+  const peer = isDm ? peerByUid(otherUid(room)) : null;
+  const name = displayName(room);
+  const blocked = peerBlocked(room);
+  const muted = isMuted(room.id);
+  const ttl = Number(roomPrefs(room.id).disappearMs) || 0;
+
+  const rows = [
+    ['Status', peer ? (peer.online ? 'online' : 'offline') : `${room.members.length} anggota`],
+    ['Enkripsi', 'End-to-end — server cuma perantara buta'],
+    ['Notifikasi', muted ? 'dibisukan' : 'berbunyi'],
+    ['Pesan sementara', ttl ? disappearLabel(ttl) : 'mati'],
+  ];
+  if (isDm && peer?.uid) rows.push(['ID', peer.uid.slice(0, 12)]);
+
+  openModal(`
+    <h3>Info kontak</h3>
+    <div class="contact-info-head">
+      <span class="avatar" ${peer?.uid ? `data-uid="${esc(peer.uid)}"` : ''}>${esc(initials(name))}</span>
+      <div>
+        <strong>${esc(name)}</strong>
+        <span class="muted">${room.type === 'group' ? 'Grup' : 'Chat pribadi'} · terenkripsi end-to-end</span>
+      </div>
+    </div>
+    <ul class="contact-info-list">
+      ${rows
+        .map(
+          ([key, value]) =>
+            `<li><span class="muted">${esc(key)}</span><strong>${esc(value)}</strong></li>`
+        )
+        .join('')}
+    </ul>
+    <div class="modal-actions">
+      ${isDm ? '<button type="button" data-info="verify">Safety number</button>' : ''}
+      ${isDm ? `<button type="button" data-info="block">${blocked ? 'Buka blokir' : 'Blokir'}</button>` : ''}
+      <button type="button" data-close>Tutup</button>
+    </div>
+  `);
+
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-info="verify"]')?.addEventListener('click', () => {
+    closeModal();
+    openSafetyNumber();
+  });
+  el.modalCard.querySelector('[data-info="block"]')?.addEventListener('click', () => {
+    closeModal();
+    toggleBlock(room);
+  });
+}
+
+/* ---- Tutup obrolan ---- */
+function closeConversation() {
+  if (state.voiceRecording) cancelVoiceNote();
+  stopVoicePlayback();
+  exitSelection({ render: false });
+  closeChatSearch();
+  cancelReply();
+  closeMessageMenu();
+  state.activeRoomId = null;
+  el.app.classList.remove('show-chat');
+  renderEmptyState();
+  renderChatList();
+}
+
+/* ---- Cari di dalam obrolan ---- */
+function openChatSearch() {
+  el.chatSearch.hidden = false;
+  el.chatSearchInput.value = '';
+  state.searchQuery = '';
+  applyChatSearch();
+  el.chatSearchInput.focus();
+}
+
+function closeChatSearch() {
+  if (!el.chatSearch || el.chatSearch.hidden) return;
+  el.chatSearch.hidden = true;
+  el.chatSearchInput.value = '';
+  state.searchQuery = '';
+  state.searchHits = [];
+  state.searchIndex = -1;
+  for (const node of el.messages.querySelectorAll('.msg')) {
+    node.classList.remove('search-hidden', 'search-hit', 'search-current');
+  }
+  el.chatSearchCount.textContent = '';
+}
+
+function applyChatSearch() {
+  const query = state.searchQuery.trim().toLowerCase();
+  const room = state.rooms.get(state.activeRoomId);
+  const bubbles = [...el.messages.querySelectorAll('.msg')];
+  state.searchHits = [];
+  state.searchIndex = -1;
+
+  if (!room || !query) {
+    for (const node of bubbles) node.classList.remove('search-hidden', 'search-hit', 'search-current');
+    el.chatSearchCount.textContent = '';
+    return;
+  }
+
+  // Yang dicari cuma isi pesan yang benar-benar ada di perangkat ini: teks,
+  // nama lampiran, dan pesan sistem (mis. catatan pesan sementara).
+  const matched = new Set();
+  for (const message of room.messages) {
+    const haystack = `${message.text || ''} ${message.attachment?.name || ''}`.toLowerCase();
+    if (haystack.includes(query)) matched.add(String(serverIdOf(message) || message.id));
+  }
+
+  for (const node of bubbles) {
+    const hit = matched.has(node.dataset.id);
+    node.classList.toggle('search-hit', hit);
+    node.classList.toggle('search-hidden', !hit);
+    if (hit) state.searchHits.push(node);
+  }
+
+  if (state.searchHits.length) state.searchIndex = 0;
+  paintSearchCurrent();
+}
+
+function paintSearchCurrent() {
+  el.chatSearchCount.textContent = state.searchHits.length
+    ? `${state.searchIndex + 1}/${state.searchHits.length}`
+    : '0';
+  state.searchHits.forEach((node, index) => node.classList.toggle('search-current', index === state.searchIndex));
+  const current = state.searchHits[state.searchIndex];
+  if (current) current.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function stepChatSearch(delta) {
+  if (!state.searchHits.length) return;
+  state.searchIndex = (state.searchIndex + delta + state.searchHits.length) % state.searchHits.length;
+  paintSearchCurrent();
+}
+
+/* ---- Pilih beberapa pesan ---- */
+function startSelection() {
+  if (state.selection) return;
+  state.selection = new Set();
+  el.chatView.classList.add('selecting');
+  el.selectBar.hidden = false;
+  paintSelection();
+  renderMessages();
+}
+
+function exitSelection({ render = true } = {}) {
+  if (!state.selection) return;
+  state.selection = null;
+  el.chatView.classList.remove('selecting');
+  el.selectBar.hidden = true;
+  if (render && state.activeRoomId) renderMessages();
+}
+
+function toggleSelected(bubble) {
+  if (!state.selection) return;
+  const id = bubble?.dataset?.id;
+  if (!id) return;
+  if (state.selection.has(id)) state.selection.delete(id);
+  else state.selection.add(id);
+  bubble.classList.toggle('selected', state.selection.has(id));
+  paintSelection();
+}
+
+function selectedMessages() {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room || !state.selection) return [];
+  return room.messages.filter((message) => state.selection.has(String(serverIdOf(message) || message.id)));
+}
+
+function paintSelection() {
+  const count = state.selection?.size || 0;
+  el.selectCount.textContent = `${count} dipilih`;
+  el.selectCopy.disabled = count === 0;
+  el.selectForward.disabled = count === 0;
+  el.selectDelete.disabled = count === 0;
+}
+
+async function copySelected() {
+  const messages = selectedMessages().filter((message) => String(message.text || '').trim());
+  if (!messages.length) return showToast('Pesan yang dipilih nggak punya teks buat disalin.');
+  await writeClipboard(messages.map((message) => message.text).join('\n'));
+  exitSelection();
+  showToast(`${messages.length} pesan disalin.`);
+}
+
+function forwardSelected() {
+  const messages = selectedMessages().filter((message) => !message.deleted);
+  if (!messages.length) return showToast('Pilih pesan yang mau diteruskan dulu.');
+  const rooms = [...state.rooms.values()].sort((a, b) => displayName(a).localeCompare(displayName(b)));
+  if (!rooms.length) return showToast('Belum ada chat lain buat tujuan teruskan.');
+
+  openModal(`
+    <h3>Teruskan ${messages.length} pesan</h3>
+    <p class="sub">Pilih chat tujuan. Isinya dienkripsi ulang untuk chat itu, jadi server tetap nggak bisa membacanya.</p>
+    <ul class="forward-list">
+      ${rooms
+        .map(
+          (room) => `<li><button type="button" class="forward-target" data-room="${esc(room.id)}">
+            <span class="avatar" data-hue-for="${esc(room.type === 'group' ? room.name : displayName(room))}">${esc(
+              initials(room.type === 'group' ? room.name : displayName(room))
+            )}</span>
+            <span class="forward-target-main">
+              <strong>${esc(room.type === 'group' ? room.name : displayName(room))}</strong>
+              <span class="muted">${esc(preview(room.messages[room.messages.length - 1]))}</span>
+            </span>
+          </button></li>`
+        )
+        .join('')}
+    </ul>
+    <div class="modal-actions"><button type="button" data-close>Tutup</button></div>
+  `);
+
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  for (const button of el.modalCard.querySelectorAll('.forward-target')) {
+    button.addEventListener('click', async () => {
+      const target = state.rooms.get(button.dataset.room);
+      closeModal();
+      if (!target) return;
+      for (const message of messages) {
+        await sendToRoom(target, message.text, message.attachment, {
+          forwarded: true,
+          voice: Boolean(message.voice),
+          duration: message.duration,
+        });
+      }
+      exitSelection();
+      selectRoom(target.id);
+      showToast(`${messages.length} pesan diteruskan ke ${target.type === 'group' ? target.name : displayName(target)}.`);
+    });
+  }
+}
+
+function deleteSelected() {
+  const messages = selectedMessages();
+  if (!messages.length) return;
+  confirmDialog({
+    title: `Hapus ${messages.length} pesan?`,
+    body: 'Pesan yang dipilih hilang dari perangkat ini saja. Orang lain tidak terpengaruh.',
+    confirmLabel: 'Hapus',
+    danger: true,
+    onConfirm: () => {
+      const room = state.rooms.get(state.activeRoomId);
+      if (!room) return;
+      for (const message of messages) {
+        const index = room.messages.indexOf(message);
+        if (index !== -1) room.messages.splice(index, 1);
+        state.blobUrls.delete(message.id);
+      }
+      saveRooms();
+      exitSelection({ render: false });
+      renderMessages();
+      renderChatList();
+      showToast(`${messages.length} pesan dihapus dari perangkat ini.`);
+    },
+  });
+}
+
+/* ---- Tautan menelepon ---- */
+
+/** Ambil id ruang dari tautan panggilan By Chat di dalam sebuah pesan. */
+function callRoomInText(text) {
+  const match = String(text || '').match(/https?:\/\/\S*[?&]call=([A-Za-z0-9%:_-]+)/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function joinCallFromLink(roomId) {
+  const room = state.rooms.get(roomId);
+  if (!room) return showToast('Obrolan untuk tautan panggilan ini nggak ada di perangkat ini.');
+  if (!state.config.calls.enabled) return showToast('Panggilan dimatikan di server ini.');
+  if (state.activeRoomId !== roomId) selectRoom(roomId);
+  if (room.type === 'group') return startGroupCall(false);
+  return startCall(false);
+}
+
+async function sendCallLink(room) {
+  const url = new URL(location.href);
+  url.search = `?call=${encodeURIComponent(room.id)}`;
+  const label = room.type === 'group' ? 'Ayo gabung panggilan grup di By Chat' : 'Ayo telepon di By Chat';
+  await sendToRoom(room, `${label}: ${url.toString()}`);
+  showToast('Tautan panggilan dikirim.');
+}
+
+/**
+ * Panggilan grup: mulai dengan satu anggota, lalu undang sisanya ke room yang
+ * sama. Batas anggota ditegakkan server (8 orang), jadi undangan yang ditolak
+ * cuma dilewati.
+ */
+async function startGroupCall(video) {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room || room.type !== 'group') return showToast('Panggilan grup cuma bisa dimulai dari grup.');
+  const others = room.members.filter((uid) => uid !== state.me.uid);
+  if (!others.length) return showToast('Grup ini belum punya anggota lain.');
+
+  const person = (uid) => ({
+    displayName: peerByUid(uid)?.displayName || 'Anggota',
+    photoURL: peerByUid(uid)?.photoURL || null,
+  });
+  const [first, ...rest] = others;
+  try {
+    await state.calls.startCall(first, person(first), { video: Boolean(video) });
+    for (const uid of rest.slice(0, 6)) {
+      await state.calls.addParticipant(uid, person(uid)).catch(() => {});
+    }
+    showToast(`Panggilan grup dimulai dengan ${others.length} anggota.`);
+  } catch (err) {
+    showToast(err.message);
+  }
+}
+
+/* ---- Daftar baru (dari menu "Tambah ke daftar") ---- */
+function promptList(room) {
+  openModal(`
+    <h3>Daftar baru</h3>
+    <p class="sub">Daftar cuma ada di perangkat ini, dan dipakai buat menyaring daftar obrolan.</p>
+    <label for="new-list-name">Nama daftar</label>
+    <input id="new-list-name" type="text" maxlength="24" placeholder="misal: Kantor" />
+    <div class="modal-actions">
+      <button type="button" data-cancel>Batal</button>
+      <button type="button" class="primary" data-save>Buat</button>
+    </div>
+  `);
+  const input = el.modalCard.querySelector('#new-list-name');
+  input.focus();
+  el.modalCard.querySelector('[data-cancel]').addEventListener('click', closeModal);
+  const save = () => {
+    const list = createList(input.value);
+    if (!list) return;
+    if (room && !roomPrefs(room.id).lists.includes(list.id)) roomPrefs(room.id).lists.push(list.id);
+    saveChatPrefs();
+    closeModal();
+    renderChatList();
+    showToast(`Daftar ${list.name} dibuat.`);
+  };
+  el.modalCard.querySelector('[data-save]').addEventListener('click', save);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      save();
+    }
+  });
 }
 
 function dropRoomMedia(room) {
@@ -2591,6 +3526,7 @@ async function toggleVoice(message) {
       active.id = null;
       paintVoice();
     }
+    console.warn('VOICE err', err.message);
     showToast(`Gagal memutar pesan suara: ${err.message}`, 6000);
     return;
   }
@@ -2854,6 +3790,16 @@ function renderMessages() {
       div.appendChild(sender);
     }
 
+    // Mode pilih pesan: tiap gelembung dapat kotak centang dan ikut ditandai
+    // kalau id-nya ada di pilihan.
+    if (state.selection) {
+      div.classList.toggle('selected', state.selection.has(div.dataset.id));
+      const check = document.createElement('span');
+      check.className = 'msg-check';
+      check.innerHTML = '<svg class="ico"><use href="#i-check" /></svg>';
+      div.appendChild(check);
+    }
+
     if (message.deleted) {
       div.appendChild(deletedNode());
     } else if (message.error) {
@@ -2868,6 +3814,20 @@ function renderMessages() {
         body.className = 'msg-text';
         body.textContent = message.text;
         div.appendChild(body);
+      }
+      // Tautan panggilan yang dikirim lewat menu "Kirim tautan menelepon"
+      // dibuat bisa diketuk, bukan cuma teks panjang yang harus disalin.
+      const callRoom = callRoomInText(message.text);
+      if (callRoom) {
+        const join = document.createElement('button');
+        join.type = 'button';
+        join.className = 'call-link';
+        join.innerHTML = '<svg class="ico"><use href="#i-phone" /></svg><span>Gabung panggilan</span>';
+        join.addEventListener('click', (event) => {
+          event.stopPropagation();
+          joinCallFromLink(callRoom);
+        });
+        div.appendChild(join);
       }
     }
 
@@ -2908,6 +3868,9 @@ function renderMessages() {
 
   el.messages.scrollTop = el.messages.scrollHeight;
   renderTyping();
+  // Pencarian yang sedang terbuka ikut disaring ulang setelah render, kalau
+  // tidak, pesan baru muncul tanpa highlight dan jumlah hasilnya basi.
+  if (el.chatSearch && !el.chatSearch.hidden) applyChatSearch();
 }
 
 function statusIcon(status) {
@@ -4235,6 +5198,92 @@ el.usernameLogout.addEventListener('click', async () => {
 /* ------------------------------------------------------------------ *
  * Login wiring
  * ------------------------------------------------------------------ */
+
+/** Satu kartu login, dua kotak: masuk atau daftar. */
+function showAuthPanel(panel) {
+  const register = panel === 'register';
+  el.loginPasswordForm.hidden = register;
+  el.registerForm.hidden = !register;
+  el.loginNotice.hidden = true;
+  el.loginError.hidden = true;
+}
+
+/** Satu pesan saja pada satu waktu: galat, atau kabar akun dibuat. */
+function authMessage(text, kind = 'error') {
+  el.loginNotice.hidden = true;
+  el.loginError.hidden = true;
+  const target = kind === 'notice' ? el.loginNotice : el.loginError;
+  target.textContent = text;
+  target.hidden = false;
+}
+
+el.loginToRegister.addEventListener('click', () => {
+  el.registerUsername.value = el.loginAccount.value.trim();
+  showAuthPanel('register');
+  el.registerPassword.focus();
+});
+
+el.registerToLogin.addEventListener('click', () => {
+  el.loginAccount.value = el.registerUsername.value.trim() || el.loginAccount.value;
+  showAuthPanel('login');
+  el.loginPasswordInput.focus();
+});
+
+el.loginPasswordForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  el.loginNotice.hidden = true;
+  el.loginError.hidden = true;
+  el.loginPasswordSubmit.disabled = true;
+  try {
+    await state.auth.signInWithPassword(el.loginAccount.value.trim(), el.loginPasswordInput.value);
+  } catch (err) {
+    authMessage(err.message || 'Gagal masuk.');
+  } finally {
+    el.loginPasswordSubmit.disabled = false;
+  }
+});
+
+el.registerForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  el.loginNotice.hidden = true;
+  el.loginError.hidden = true;
+
+  const username = el.registerUsername.value.trim();
+  const password = el.registerPassword.value;
+  const repeat = el.registerConfirm.value;
+
+  // Kotak sandi kedua cuma ada di sini, dan tugasnya satu: memastikan sandinya
+  // tidak salah ketik sebelum akunnya dibuat.
+  if (password !== repeat) {
+    authMessage('Kata sandi dan ulangannya belum sama.');
+    el.registerConfirm.focus();
+    return;
+  }
+  if (password.length < 6) {
+    authMessage('Kata sandi minimal 6 karakter.');
+    el.registerPassword.focus();
+    return;
+  }
+
+  el.registerSubmit.disabled = true;
+  try {
+    await state.auth.register(username, password);
+    // Berhasil berarti akunnya ada, bukan berarti sudah masuk: kembali ke
+    // kotak login dengan username terisi, sandinya diketik sekali lagi.
+    el.loginAccount.value = username;
+    el.loginPasswordInput.value = '';
+    el.registerPassword.value = '';
+    el.registerConfirm.value = '';
+    showAuthPanel('login');
+    authMessage('Akun dibuat. Masuk pakai username dan kata sandi kamu.', 'notice');
+    el.loginPasswordInput.focus();
+  } catch (err) {
+    authMessage(err.message || 'Gagal membuat akun.');
+  } finally {
+    el.registerSubmit.disabled = false;
+  }
+});
+
 el.btnGoogle.addEventListener('click', async () => {
   el.loginError.hidden = true;
   el.btnGoogle.disabled = true;
@@ -4377,6 +5426,9 @@ el.statusViewerMenu.addEventListener('click', async () => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (!el.chatOptions.hidden) return closeChatOptions();
+  if (!el.chatSearch.hidden) return closeChatSearch();
+  if (state.selection) return exitSelection();
   if (!el.chatMenu.hidden) return closeChatMenu();
   if (!el.msgMenu.hidden) return closeMessageMenu();
   if (!el.viewer.hidden) return closeViewer();
@@ -4428,6 +5480,57 @@ el.btnBack.addEventListener('click', () => {
   el.app.classList.remove('show-chat');
 });
 el.search.addEventListener('input', renderChatList);
+
+/* ---- Menu obrolan, pencarian di obrolan, dan pilih pesan ---- */
+el.btnChatMore.addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (el.chatOptions.hidden) openChatOptions();
+  else closeChatOptions();
+});
+el.chatOptionsCatcher.addEventListener('click', closeChatOptions);
+window.addEventListener('resize', closeChatOptions);
+
+el.chatSearchInput.addEventListener('input', () => {
+  state.searchQuery = el.chatSearchInput.value;
+  applyChatSearch();
+});
+el.chatSearchInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    stepChatSearch(event.shiftKey ? -1 : 1);
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeChatSearch();
+  }
+});
+el.chatSearchNext.addEventListener('click', () => stepChatSearch(1));
+el.chatSearchPrev.addEventListener('click', () => stepChatSearch(-1));
+el.chatSearchClose.addEventListener('click', closeChatSearch);
+
+el.selectClose.addEventListener('click', () => exitSelection());
+el.selectCopy.addEventListener('click', copySelected);
+el.selectForward.addEventListener('click', forwardSelected);
+el.selectDelete.addEventListener('click', deleteSelected);
+el.blockedUnblock.addEventListener('click', () => {
+  const room = state.rooms.get(state.activeRoomId);
+  if (room) toggleBlock(room);
+});
+
+// Mode pilih pesan: satu ketukan mencentang gelembung, bukan membuka menu.
+el.messages.addEventListener('click', (event) => {
+  if (!state.selection) return;
+  const bubble = event.target?.closest?.('.msg') || null;
+  if (!bubble) return;
+  event.preventDefault();
+  toggleSelected(bubble);
+});
+
+// Pesan sementara diperiksa berkala, bukan cuma saat chat dibuka: aplikasi
+// yang dibiarkan terbuka semalaman juga harus kehilangan pesan yang basi.
+setInterval(() => {
+  if (state.me) pruneDisappearing();
+}, 60_000);
 
 el.btnCallAudio.addEventListener('click', () => startCall(false));
 el.btnCallVideo.addEventListener('click', () => startCall(true));

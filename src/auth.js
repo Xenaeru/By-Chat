@@ -11,7 +11,14 @@
  *              NODE_ENV=production, so it can never be exposed by accident.
  *
  * `verify()` resolves to a profile: { uid, displayName, phone, email, photoURL }.
+ *
+ * Akun username+kata sandi (credentials.js) bukan milik Firebase maupun driver
+ * dev: servernya sendiri yang menerbitkan tokennya. Kalau pemanggil menyerahkan
+ * `verifySession`, token berawalan `sess.` diperiksa di sana dan sisanya tetap
+ * lewat driver di atas — jadi tidak ada driver ketiga yang harus diduplikasi.
  */
+
+import { SESSION_PREFIX } from './credentials.js';
 
 const UID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -103,9 +110,18 @@ function createDevVerifier() {
  * Factory
  * ------------------------------------------------------------------ */
 
-export async function createVerifier(config) {
-  if (config.auth.mode === 'firebase') return createFirebaseVerifier(config.auth);
-  return createDevVerifier();
+export async function createVerifier(config, { verifySession = null } = {}) {
+  const base = config.auth.mode === 'firebase' ? await createFirebaseVerifier(config.auth) : createDevVerifier();
+  if (!verifySession) return base;
+
+  return {
+    mode: base.mode,
+    async verify(token) {
+      const raw = String(token || '');
+      if (raw.startsWith(SESSION_PREFIX)) return normalizeProfile(await verifySession(raw));
+      return base.verify(raw);
+    },
+  };
 }
 
 /** The token the dev client should send. Exported so tests and the client agree. */

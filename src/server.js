@@ -29,6 +29,7 @@ import { createStorage, isSafePath, newBlobPath, resolveLocalPath, sniffImageTyp
 import { createUsernameRegistry, createUsernameStore } from './usernames.js';
 import { createModeration, createModerationStore, REPORT_REASONS } from './moderation.js';
 import { createAccountIndex, createAccountStore, looksLikeEmail, phoneDigits } from './accounts.js';
+import { createCredentialRegistry, createCredentialStore } from './credentials.js';
 import { createPushService } from './push.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +38,6 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 5e6 });
 
-const verifier = await createVerifier(config);
 const storage = await createStorage(config);
 
 // The username namespace outlives any single connection, so it is loaded once
@@ -58,6 +58,17 @@ const savedModeration = await moderation.load();
 const accountStore = await createAccountStore(config);
 const accounts = await createAccountIndex({ store: accountStore });
 const savedAccounts = await accounts.load();
+
+// Akun username + kata sandi. Dimuat sebelum verifier karena kunci tanda
+// tangan sesi ikut di file ini: tanpa itu token dari /api/auth/login tidak
+// bisa diperiksa, dan akun yang baru dibuat langsung tidak bisa dipakai.
+const credentialStore = await createCredentialStore(config);
+const credentials = await createCredentialRegistry({ store: credentialStore });
+const savedCredentials = await credentials.load();
+
+const verifier = await createVerifier(config, {
+  verifySession: (token) => credentials.verifySession(token),
+});
 
 // Web Push: satu-satunya jalan memberi tahu seseorang bahwa ada telepon masuk
 // saat halamannya belum terbuka. Kalau kuncinya tidak bisa dipakai, layanan ini
@@ -150,6 +161,7 @@ app.get('/healthz', (_req, res) => {
     users: directory.size,
     usernames: usernames.size(),
     accounts: accounts.size(),
+    credentials: credentials.size(),
     avatars: avatars.size,
     trackedMessages: sentMessages.size,
     statuses: statuses.size,
@@ -178,6 +190,52 @@ app.post(
 app.post('/api/push/unsubscribe', authenticateRequest, express.json({ limit: '8kb' }), async (req, res) => {
   await push.unsubscribe(req.profile.uid, req.body?.endpoint);
   res.json({ ok: true });
+});
+
+/* ---- Akun username + kata sandi --------------------------------- *
+ * Pendaftaran cuma membuat akun; token baru diterbitkan setelah orangnya
+ * benar-benar masuk lewat /api/auth/login. Itu sebabnya halaman Daftar
+ * berakhir di kotak login, bukan langsung di dalam aplikasi.
+ */
+app.post('/api/auth/register', express.json({ limit: '4kb' }), async (req, res) => {
+  const username = String(req.body?.username ?? '');
+  const password = String(req.body?.password ?? '');
+
+  // Nama yang sudah dipakai akun lain sebagai @username tidak boleh dipakai
+  // masuk: kalau boleh, dua orang akan tampil dengan nama yang sama.
+  if (usernames.ownerOf(username)) {
+    return res.status(409).json({ error: 'Username ini sudah dipakai akun lain.' });
+  }
+
+  const result = await credentials.register({ username, password });
+  if (!result.ok) return res.status(400).json({ error: result.error });
+
+  // Akun baru langsung punya @username, jadi tidak ada langkah "pilih nama"
+  // setelah masuk dan nama yang dipakai login tidak bisa direbut orang lain.
+  const claim = await usernames.claim(result.username, result.uid);
+  if (!claim.ok) console.warn(`⚠️  @${result.username} gagal diklaim: ${claim.error}`);
+
+  res.json({ ok: true, username: result.username });
+});
+
+app.post('/api/auth/login', express.json({ limit: '4kb' }), async (req, res) => {
+  const result = await credentials.login({
+    username: req.body?.username,
+    password: req.body?.password,
+  });
+  if (!result.ok) return res.status(401).json({ error: result.error });
+
+  // Blokir berlaku di sini juga, sebelum token diterbitkan.
+  const ban = moderation.banInfo(result.profile.uid);
+  if (ban) {
+    return res.status(403).json({
+      error: ban.reason ? `Akun ini diblokir: ${ban.reason}` : 'Akun ini diblokir.',
+      banned: true,
+      reason: ban.reason || '',
+    });
+  }
+
+  res.json({ token: credentials.issueSession(result.profile), profile: result.profile });
 });
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -1201,6 +1259,7 @@ if (!process.env.NO_LISTEN) {
     console.log(`   Storage : ${storage.driver}`);
     console.log(`   Username: ${savedUsernames} klaim tersimpan (${usernameStore.kind})`);
     console.log(`   Kontak  : ${savedAccounts} akun bisa dicari lewat email/nomor (${accountStore.kind})`);
+    console.log(`   Akun    : ${savedCredentials} akun username+kata sandi (${credentialStore.kind})`);
     console.log(
       `   Moderasi: ${savedModeration.bans} diblokir, ${savedModeration.reports} laporan (${moderationStore.kind})`
     );
@@ -1226,11 +1285,13 @@ export {
   usernames,
   moderation,
   accounts,
+  credentials,
   push,
   callLogs,
   savedUsernames,
   savedModeration,
   savedAccounts,
+  savedCredentials,
   isAdmin,
   adminUsers,
   avatarUrl,

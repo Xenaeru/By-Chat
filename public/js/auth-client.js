@@ -19,6 +19,9 @@ const FIREBASE_SDK = 'https://www.gstatic.com/firebasejs/13.0.0';
 
 const DEV_PROFILE_KEY = 'securechat.devprofile.v1';
 
+/** Token sesi akun username + kata sandi. Sandinya sendiri tidak disimpan. */
+const PASSWORD_SESSION_KEY = 'securechat.pwsession.v1';
+
 function b64urlUtf8(str) {
   const bytes = new TextEncoder().encode(str);
   let bin = '';
@@ -144,6 +147,108 @@ function createDevAuth() {
   };
 }
 
+/* ------------------------------------------------------------------ *
+ * Akun username + kata sandi
+ * ------------------------------------------------------------------ */
+
+/**
+ * Akun dibuat dan diperiksa oleh server ini sendiri (src/credentials.js), jadi
+ * driver ini tidak menyentuh Firebase sama sekali. Yang disimpan di perangkat
+ * hanya token sesi yang sudah ditandatangani server — sandi tidak pernah
+ * disimpan, dan tidak pernah ikut terkirim ke mana pun selain saat masuk.
+ */
+function createPasswordAuth() {
+  const listeners = new Set();
+  let session = null;
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(PASSWORD_SESSION_KEY) || 'null');
+    if (saved?.token && saved?.profile?.uid) session = saved;
+  } catch {
+    /* storage rusak atau dimatikan: mulai tanpa sesi */
+  }
+
+  const call = async (path, body) => {
+    let response;
+    try {
+      response = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      throw new Error('Server tidak bisa dihubungi. Coba lagi.');
+    }
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      /* balasan tanpa JSON — pesan di bawah tetap masuk akal */
+    }
+    if (!response.ok) throw new Error(data?.error || 'Permintaan gagal. Coba lagi.');
+    return data || {};
+  };
+
+  const emit = (profile) => {
+    for (const fn of listeners) fn(profile);
+  };
+
+  const save = () => {
+    try {
+      localStorage.setItem(PASSWORD_SESSION_KEY, JSON.stringify(session));
+    } catch {
+      /* storage penuh/dimatikan: sesi tetap jalan sampai tab ini ditutup */
+    }
+  };
+
+  return {
+    mode: 'password',
+
+    onUserChange(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+
+    restoreProfile: () => session?.profile || null,
+
+    async getIdToken() {
+      return session?.token || null;
+    },
+
+    async register(username, password) {
+      await call('/api/auth/register', { username, password });
+    },
+
+    async signInWithPassword(username, password) {
+      const data = await call('/api/auth/login', { username, password });
+      session = { token: data.token, profile: data.profile };
+      save();
+      emit(session.profile);
+      return session.profile;
+    },
+
+    async setDisplayName(name) {
+      if (!session) return;
+      session = {
+        ...session,
+        profile: { ...session.profile, displayName: String(name).slice(0, 40) },
+      };
+      save();
+    },
+
+    async signOut() {
+      const had = Boolean(session);
+      session = null;
+      try {
+        localStorage.removeItem(PASSWORD_SESSION_KEY);
+      } catch {
+        /* abaikan */
+      }
+      if (had) emit(null);
+    },
+  };
+}
+
 async function sha256Hex(text) {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -153,10 +258,97 @@ async function sha256Hex(text) {
  * Factory
  * ------------------------------------------------------------------ */
 
+/**
+ * Dua sumber identitas hidup berdampingan: penyedia login (Google, atau nama
+ * bebas di mode dev) dan akun username+kata sandi. Yang menang adalah yang
+ * terakhir dipakai, dan keduanya menghasilkan bentuk yang sama: profil +
+ * `getIdToken()` yang diverifikasi server. Karena itu sisa aplikasi tidak tahu
+ * (dan tidak perlu tahu) orangnya masuk lewat jalan yang mana.
+ */
 export async function createAuthClient(serverConfig) {
-  return serverConfig.auth.mode === 'firebase'
-    ? createFirebaseAuth(serverConfig.auth)
-    : createDevAuth();
+  const provider =
+    serverConfig.auth.mode === 'firebase'
+      ? await createFirebaseAuth(serverConfig.auth)
+      : createDevAuth();
+  const password = createPasswordAuth();
+
+  const listeners = new Set();
+  let current = password.restoreProfile();
+  let source = current ? 'password' : null;
+
+  const emit = (profile) => {
+    current = profile;
+    for (const fn of listeners) fn(profile);
+  };
+
+  provider.onUserChange((profile) => {
+    // Firebase mengirim null saat tidak ada sesi. Itu bukan alasan memutus
+    // sesi kata sandi yang memang sedang dipakai di tab ini.
+    if (!profile && source === 'password') return;
+    if (profile) source = 'provider';
+    emit(profile);
+  });
+
+  password.onUserChange((profile) => {
+    source = profile ? 'password' : null;
+    emit(profile);
+  });
+
+  return {
+    mode: provider.mode,
+
+    onUserChange(fn) {
+      listeners.add(fn);
+      if (current) fn(current);
+      return () => listeners.delete(fn);
+    },
+
+    resume() {
+      provider.resume?.();
+    },
+
+    getIdToken() {
+      return source === 'password' ? password.getIdToken() : provider.getIdToken();
+    },
+
+    register: (username, pass) => password.register(username, pass),
+
+    async signInWithPassword(username, pass) {
+      // Sesi penyedia yang masih hidup dilepas dulu, supaya tidak ada dua
+      // identitas aktif sekaligus.
+      try {
+        await provider.signOut?.();
+      } catch {
+        /* tidak ada sesi yang perlu dilepas */
+      }
+      await password.signInWithPassword(username, pass);
+    },
+
+    async signInWithGoogle() {
+      await password.signOut();
+      return provider.signInWithGoogle();
+    },
+
+    async signInAs(name) {
+      await password.signOut();
+      return provider.signInAs?.(name);
+    },
+
+    async setDisplayName(name) {
+      if (source === 'password') return password.setDisplayName(name);
+      return provider.setDisplayName?.(name);
+    },
+
+    async signOut() {
+      await password.signOut();
+      try {
+        await provider.signOut?.();
+      } catch {
+        /* abaikan */
+      }
+      emit(null);
+    },
+  };
 }
 
 export { FIREBASE_SDK };
