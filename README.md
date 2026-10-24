@@ -1,128 +1,89 @@
-# 🔒 By Chat
+# By Chat
 
-Aplikasi chat dengan **end-to-end encryption** yang beneran — pesan, **file**, **pesan suara**,
-**status 24 jam**, dan **panggilan suara/video**. Server cuma perantara buta: dia nggak punya
-private key siapa pun, nggak bisa baca isi pesan, nggak bisa buka isi file, dan nggak pernah
-menyentuh audio/video.
+By Chat adalah aplikasi pesan instan dengan enkripsi ujung ke ujung (end-to-end encryption). Aplikasi ini mendukung pesan teks, pengiriman file, pesan suara, status 24 jam, serta panggilan suara dan video. Server hanya berperan sebagai perantara: server tidak menyimpan private key pengguna, tidak dapat membaca isi pesan maupun file, dan tidak melewatkan audio atau video panggilan.
 
-Setiap akun harus **mengklaim satu username** setelah login. Huruf besar/kecil didukung dan
-tampil apa adanya (`XenaboutYou` tetap `XenaboutYou`), tapi nama itu unik dan dijaga server:
-`Andi` dan `andi` dianggap sama, dan begitu juga `a.n.d.i` — supaya nggak ada yang bisa nyamar
-mirip orang lain.
+## Ringkasan
 
-Chat baru nggak lahir dari daftar "siapa yang sedang online": tombol **＋** membuka halaman
-**tambah kontak**, dan di situ kamu mencari orangnya pakai **email, nomor HP, atau @username**.
-Baru setelah ketemu, percakapannya bisa dibuka — termasuk kalau orangnya sedang offline.
+- Setiap akun wajib memiliki satu username unik setelah login. Penulisan huruf besar dan kecil dipertahankan saat ditampilkan (`XenaboutYou` tetap `XenaboutYou`), tetapi keunikan dinilai setelah normalisasi: `Andi`, `andi`, dan `a.n.d.i` dianggap sama untuk mencegah peniruan identitas.
+- Percakapan baru dimulai dari halaman tambah kontak (tombol **+**). Pengguna dicari melalui email, nomor telepon, atau @username. Percakapan dapat dibuka meskipun pihak yang dicari sedang offline.
+- Halaman admin (`/admin.html`) digunakan untuk meninjau laporan pengguna dan memblokir akun. Daftar admin ditentukan di sisi server melalui variabel `ADMIN_EMAILS` atau `ADMIN_UIDS`.
 
-Ada juga **halaman admin** (`/admin.html`) buat membaca **laporan pengguna** dan **memblokir
-akun** yang bermasalah. Siapa yang jadi admin ditentukan server lewat `ADMIN_EMAILS`/`ADMIN_UIDS`,
-bukan lewat tombol di aplikasi.
+## Memulai (mode pengembangan)
 
-## Jalanin cepat (mode dev, tanpa akun apa pun)
-
-```
+```bash
 npm install
-npm start          # buka http://localhost:3000 di dua jendela berbeda
+npm start
 ```
 
-Tanpa file `.env`, aplikasi jalan di **mode dev**: login cukup ketik nama, file disimpan di
-disk lokal, dan panggilan pakai STUN publik. Cukup buat nyoba semuanya di lokal.
-**Mode dev nolak jalan kalau `NODE_ENV=production`** — lihat bagian Setup di bawah.
+Buka `http://localhost:3000` di dua jendela browser berbeda. Tanpa berkas `.env`, aplikasi berjalan dalam mode pengembangan: login hanya memerlukan nama, file disimpan di disk lokal, dan panggilan menggunakan server STUN publik.
+
+Mode pengembangan menolak berjalan ketika `NODE_ENV=production`.
 
 ## Fitur
 
-| | |
+| Fitur | Deskripsi |
 |---|---|
-| **Chat** | 1:1 dan grup, semua terenkripsi. Status online, indikator menulis, badge belum dibaca, ✓/✓✓, antrian pesan offline, pembatas hari. |
-| **Pilihan pesan** | Arahkan kursor ke gelembung → muncul **panah kecil di sudutnya** (ala WhatsApp Web) yang membuka menu; bisa juga klik kanan (mouse) atau tahan pesan (hp). Yang lain diblur, yang dipilih tetap tajam, lalu muncul reaksi cepat + **Balas, Teruskan, Salin, Beri bintang, Laporkan, Hapus untuk saya, Hapus untuk semua orang**. |
-| **Menu chat** | Arahkan kursor ke baris chat → **panah di sudutnya** (di hp: tahan barisnya). Isinya **Tandai sudah/belum dibaca**, **Bersihkan chat** (semua pesannya dihapus, chatnya tetap ada), dan **Hapus chat** (chatnya dibuang dari perangkat ini). Dua terakhir selalu minta konfirmasi. |
-| **File** | Enkripsi di browser sebelum dikirim, chunked AES-GCM, progress bar. Foto/video dibuka **selayar penuh** di dalam aplikasi (bukan diunduh, bukan tab blob: baru); dokumen lain baru diunduh. Nama file dan kuncinya cuma ada di dalam pesan terenkripsi. |
-| **Pesan suara** | Kolom kosong mengubah tombol kirim jadi **mikrofon**. Ketuk untuk merekam (maksimal 5 menit), lalu **kirim** atau **buang** dari bar rekaman yang menampilkan timer dan gelombang berjalan. Rekamannya masuk jalur lampiran yang sama: **dienkripsi di browser** sebelum diunggah, jadi server cuma melihat ciphertext. Di bubble, penerima mendapat tombol putar, gelombang yang ikut terisi, durasi, dan **kecepatan 1x / 1,5x / 2x**; suaranya baru diunduh + didekripsi saat benar-benar diputar. Bisa dibalas, diteruskan, diberi bintang, dan dihapus seperti pesan lain. |
-| **Menu ala WhatsApp** | Rail ikon di desktop (Chat, Status, Panggilan, Pengaturan) dan **navbar bawah oval yang melayang + berkaca di hp**. Perpindahan panelnya dianimasikan halus, dan di hp percakapan dibuka sebagai halaman penuh (navbar ikut menghilang). |
-| **Panggilan** | Suara, video, dan bagikan layar lewat WebRTC — **1:1 maupun grup sampai 8 orang**, dan peserta lain bisa **ditambahkan di tengah panggilan**. Nyalakan kamera di tengah panggilan suara tanpa renegosiasi. Hasilnya tercatat di **chat** dan panel Panggilan: **panggilan tidak terjawab**, **panggilan terjawab + durasinya**, atau **panggilan sedang berlangsung** dengan detik berjalan. Kalau orang yang ditelepon sedang di panggilan lain, pemanggilnya diberi tahu **ada panggilan yang sedang berlangsung**. Suara lawan bicara keluar dari elemen `<audio>` sendiri (bukan dari petak video), ada **meter mikrofon** di layar panggilan, dan kalau browser menahan suaranya muncul tombol **"Suara belum keluar — ketuk untuk menyalakan"**. |
-| **Status** | Teks atau foto, hilang sendiri setelah 24 jam. Isinya tetap terenkripsi end-to-end, dan yang sudah dilihat ditandai cincin. **Status cuma bisa dilihat orang yang sudah pernah chat** — kuncinya nggak pernah dibungkus buat orang lain, dan sisi penerimanya juga menyaring. |
-| **Pengaturan** | Satu panel berisi profil (foto + username), **dropdown tema Terang / Gelap / Otomatis**, sakelar notifikasi, dan tombol **Keluar** — bukan lagi modal terpisah atau tombol di header chat. |
-| **Mode gelap** | Palet kedua yang lengkap, bukan inversi otomatis: permukaan berlapis, teks terang, dan aksen biru yang naik kontrasnya. Pilihannya disimpan per perangkat dan dipasang **sebelum CSS dilukis**, jadi nggak ada kilatan putih saat aplikasi dibuka. "Otomatis" ikut `prefers-color-scheme` dan langsung berubah saat perangkatnya berganti mode. |
-| **Profil** | Username unik + foto profil yang bisa diganti dari Pengaturan. Foto profil **nggak** dienkripsi (memang buat dilihat orang) — lihat catatan di bawah. |
-| **Kontak** | Chat cuma bisa dibuka setelah kontaknya dicari lewat email, nomor HP, atau @username. Pencocokan dikerjakan server, dan hasilnya tetap ketemu walau orangnya offline. Nomor HP **nggak** lagi disiarkan ke semua klien. |
-| **Laporan** | Dari header chat: pilih alasan (spam, pelecehan, penipuan, akun palsu, lainnya) + catatan. Yang terkirim cuma yang kamu tulis — isi chat nggak ikut. |
-| **Halaman admin** | `/admin.html`: baca laporan, tandai selesai/abaikan, cari pengguna, **blokir** dan **buka blokir**. Blokir ditegakkan server: sesi yang sedang jalan langsung ditendang. |
-| **Login** | Google lewat Firebase Authentication. (Login nomor HP/OTP SMS dibuang: itu paket berbayar Firebase, jadi nggak pernah jalan di project free.) |
-| **Verifikasi** | Safety number ala WhatsApp buat mastiin nggak ada kunci yang disisipin. |
-| **Notifikasi** | Pesan baru muncul sebagai notifikasi sistem plus **balas langsung dari notifikasi** (kolom balas di notifikasi didukung Chrome Android; di desktop klik notifikasi membuka chatnya dan langsung fokus ke kolom ketik). Dinyalakan dari **Pengaturan → Notifikasi pesan**, dan cuma muncul kalau percakapannya memang nggak sedang dibaca. **Panggilan masuk juga dikirim lewat Web Push** walau tab-nya sudah ditutup, lengkap dengan tombol Terima/Tolak. |
-| **Tampilan** | Mengikuti **`DESIGN.md`** (sistem desain By Chat): permukaan putih `#ffffff` di atas kanvas `#f7f8fa`, satu warna aksi By Chat Blue `#2563eb`, tombol & input 8px, kartu dan gelembung 16px, huruf Inter. Lihat bagian [Tampilan](#tampilan-mengikuti-designmd). |
+| Pesan | Percakapan personal dan grup yang terenkripsi. Mendukung status online, indikator mengetik, penanda belum dibaca, status terkirim/dibaca, antrean pesan offline, dan pemisah hari. |
+| Aksi pesan | Menu pada setiap gelembung pesan (panah di sudut, klik kanan, atau tekan lama di perangkat sentuh): reaksi cepat, Balas, Teruskan, Salin, Beri bintang, Laporkan, Hapus untuk saya, dan Hapus untuk semua orang. |
+| Menu percakapan | Menu pada baris chat untuk menandai sudah/belum dibaca, membersihkan isi chat, atau menghapus chat dari perangkat. Dua aksi terakhir meminta konfirmasi. |
+| File | Dienkripsi di browser sebelum diunggah (AES-GCM per bagian) dengan indikator progres. Foto dan video dibuka dalam penampil layar penuh di dalam aplikasi; dokumen lain diunduh. Nama file dan kuncinya hanya berada di dalam pesan terenkripsi. |
+| Pesan suara | Perekaman hingga 5 menit dengan pengatur waktu dan visualisasi gelombang. Rekaman dikirim melalui jalur lampiran terenkripsi yang sama. Pemutaran mendukung kecepatan 1x, 1,5x, dan 2x. |
+| Panggilan | Suara, video, dan berbagi layar melalui WebRTC. Mendukung panggilan 1:1 maupun grup hingga 8 peserta, serta penambahan peserta di tengah panggilan. Riwayat panggilan (tidak terjawab, terjawab beserta durasi, sedang berlangsung) tercatat di chat dan panel Panggilan. |
+| Status | Teks atau foto yang hilang otomatis setelah 24 jam, terenkripsi end-to-end. Status hanya dapat dilihat oleh pengguna yang pernah bertukar pesan dengan pemilik status. |
+| Pengaturan | Profil (foto dan username), tema Terang/Gelap/Otomatis, notifikasi pesan, dan tombol Keluar. |
+| Mode gelap | Palet warna gelap tersendiri. Preferensi disimpan per perangkat dan diterapkan sebelum CSS dimuat sehingga tidak terjadi kilatan layar putih. Mode Otomatis mengikuti `prefers-color-scheme`. |
+| Kontak | Pencocokan email, nomor telepon, dan username dilakukan oleh server. Hasil pencarian hanya mengembalikan uid, nama, dan status online, tanpa menampilkan email atau nomor telepon. |
+| Pelaporan | Pengguna dapat melaporkan akun dari header chat dengan memilih alasan dan menulis catatan. Isi percakapan tidak ikut terkirim. |
+| Administrasi | Peninjauan laporan, penandaan selesai/diabaikan, pencarian pengguna, serta pemblokiran dan pembukaan blokir. Pemblokiran ditegakkan server dan langsung mengakhiri sesi yang sedang berjalan. |
+| Autentikasi | Login Google melalui Firebase Authentication. |
+| Verifikasi | Safety number untuk memastikan tidak ada penyisipan kunci. |
+| Notifikasi | Notifikasi sistem untuk pesan baru dengan opsi balas langsung (Chrome Android), serta notifikasi panggilan masuk melalui Web Push dengan tombol Terima dan Tolak, termasuk saat aplikasi ditutup. |
 
-## Setup buat server beneran
+## Konfigurasi untuk lingkungan produksi
 
 ```bash
-cp .env.example .env      # lalu isi
-npm run check-env         # cek: mana yang masih kosong / salah
-npm run check-env -- --live   # plus tes kunci Supabase ke project aslinya
+cp .env.example .env
+npm run check-env
+npm run check-env -- --live
 ```
 
-`check-env` nggak pernah menampilkan nilai rahasia — cuma status dan alasannya. Dia keluar
-kode 1 selama masih ada kunci wajib yang belum benar.
+`check-env` memeriksa kelengkapan dan validitas konfigurasi tanpa menampilkan nilai rahasia. Perintah ini keluar dengan kode 1 selama masih ada variabel wajib yang belum benar. Opsi `--live` menambahkan pengujian kunci Supabase terhadap project yang sebenarnya.
 
-### 1. Login — Firebase Authentication
+### 1. Autentikasi (Firebase)
 
-1. Bikin project di <https://console.firebase.google.com>.
-2. **Authentication → Sign-in method**: aktifkan **Google**. Login nomor HP/OTP SMS nggak dipakai —
-   itu fitur berbayar Firebase (butuh upgrade plan + reCAPTCHA), jadi jalurnya sudah dibuang dari
-   UI maupun klien dan yang tersisa cuma Google (atau mode dev untuk lokal).
-3. **Project settings → Your apps** → daftarkan Web app, salin config-nya ke
-   `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID`,
-   `FIREBASE_MESSAGING_SENDER_ID`.
-4. **Project settings → Service accounts → Generate new private key**. Kamu dapat file
-   `.json`. Pilih salah satu:
-   - **Paling gampang** — biarkan file itu di mana saja, lalu isi path-nya di `.env`:
-     `GOOGLE_APPLICATION_CREDENTIALS=C:/path/ke/firebase-adminsdk-xxxx.json`
-   - **Satu baris** — jalanin helper, dia yang ngisi `.env` (nol copy-paste):
-     ```bash
-     node scripts/set-service-account.mjs "C:/path/ke/firebase-adminsdk-xxxx.json"
-     ```
-   - Manual: `node -e "console.log(JSON.stringify(require('C:/path/ke/key.json')))"`, lalu
-     tempel outputnya ke `FIREBASE_SERVICE_ACCOUNT=`. Jangan pakai kutip, jangan ada spasi.
-     Perlu satu baris karena parser `.env` berhenti di akhir baris — JSON yang masih ada
-     indentasinya bakal kebaca cuma `{`.
-5. **Authentication → Settings → Authorized domains**: tambahkan domainmu. Tanpa ini,
-   login bakal gagal dengan `auth/unauthorized-domain`.
+1. Buat project di [Firebase Console](https://console.firebase.google.com).
+2. Pada **Authentication > Sign-in method**, aktifkan **Google**. Login nomor telepon (OTP SMS) tidak didukung karena memerlukan paket berbayar Firebase.
+3. Pada **Project settings > Your apps**, daftarkan aplikasi web, lalu salin konfigurasinya ke `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID`, dan `FIREBASE_MESSAGING_SENDER_ID`.
+4. Pada **Project settings > Service accounts**, buat private key baru (berkas `.json`). Pilih salah satu cara berikut:
+   - Isi `GOOGLE_APPLICATION_CREDENTIALS` dengan path berkas tersebut.
+   - Jalankan skrip bantu: `node scripts/set-service-account.mjs "C:/path/ke/firebase-adminsdk-xxxx.json"`.
+   - Isi `FIREBASE_SERVICE_ACCOUNT` secara manual dengan JSON satu baris, misalnya dari keluaran `node -e "console.log(JSON.stringify(require('C:/path/ke/key.json')))"`. Nilai harus berada dalam satu baris, tanpa tanda kutip dan tanpa spasi tambahan, karena parser `.env` berhenti di akhir baris.
+5. Pada **Authentication > Settings > Authorized domains**, tambahkan domain aplikasi. Tanpa langkah ini, login gagal dengan galat `auth/unauthorized-domain`.
 
-`FIREBASE_SERVICE_ACCOUNT` cuma dipakai server buat ngecek ID token. **Jangan pernah taruh
-di kode client.**
+`FIREBASE_SERVICE_ACCOUNT` hanya digunakan server untuk memverifikasi ID token dan tidak boleh ditempatkan pada kode sisi klien.
 
-### 2. Kirim file — Supabase Storage
+### 2. Penyimpanan file (Supabase Storage)
 
-1. Bikin project di <https://supabase.com/dashboard>.
-2. **Storage → New bucket**, bikin bucket bernama `attachments`. Biarkan PRIVATE.
-3. **Project settings → API keys**: salin Project URL ke `SUPABASE_URL`, lalu salin kunci
-   **rahasia** ke `SUPABASE_SERVICE_ROLE_KEY`.
+1. Buat project di [Supabase](https://supabase.com/dashboard).
+2. Pada **Storage**, buat bucket bernama `attachments` dan biarkan bersifat private.
+3. Pada **Project settings > API keys**, salin Project URL ke `SUPABASE_URL` dan kunci rahasia ke `SUPABASE_SERVICE_ROLE_KEY`.
 
-   ⚠️ Supabase punya beberapa kunci dan namanya mirip. Yang benar cuma satu:
+| Kunci di dashboard | Dapat digunakan |
+|---|---|
+| `sb_secret_...` (Secret key, format baru) | Ya |
+| `service_role` JWT (diawali `eyJ...`) | Ya (format lama) |
+| `sb_publishable_...` (Publishable key) | Tidak, unggahan akan ditolak |
+| `anon` JWT | Tidak, unggahan akan ditolak |
 
-   | Kunci di dashboard | Boleh dipakai? |
-   |---|---|
-   | `sb_secret_…` (Secret key, format baru) | ✅ ini yang dipakai |
-   | `service_role` JWT (mulai `eyJ…`) | ✅ sama saja, versi lama |
-   | `sb_publishable_…` (Publishable key) | ❌ kunci publik, upload bakal ditolak |
-   | `anon` JWT | ❌ sama, kunci publik |
+Penggunaan kunci yang salah menghasilkan galat `new row violates row-level security policy` saat mengunggah.
 
-   Kalau kunci yang salah dipakai, errornya `new row violates row-level security policy`
-   waktu upload — bukan pesan yang jelas menyebut kunci salah.
+Service role key bersifat rahasia dan hanya digunakan server untuk membuat signed URL. Kunci ini tidak pernah dikirim ke browser. Klien mengunggah dan mengunduh langsung ke Supabase melalui signed URL, sehingga data file tidak melewati server aplikasi.
 
-Service role key itu kunci rahasia — dia cuma dipakai server buat bikin signed URL, dan
-nggak pernah dikirim ke browser. Klien upload/download langsung ke Supabase lewat signed URL,
-jadi byte-nya nggak lewat server kita.
+**Batas ukuran file.** Supabase membatasi ukuran per objek, dan setiap file disimpan sebagai satu objek. Paket gratis dibatasi 50 MB (unggahan 51 MiB ditolak dengan `413 EntityTooLarge`). Oleh karena itu `.env.example` menetapkan `MAX_UPLOAD_BYTES=47185920` (45 MiB) agar penolakan terjadi di aplikasi dengan pesan yang jelas. Naikkan nilai ini hanya jika paket Supabase yang digunakan memiliki batas objek lebih besar.
 
-**Batas ukuran file.** Supabase membatasi ukuran **per objek**, dan satu file = satu objek
-(chunking cuma buat integritas AES-GCM, bukan buat upload). Free plan mentok 50 MB — sudah
-dites, 51 MiB ditolak `413 EntityTooLarge`. Karena itu `.env.example` menyetel
-`MAX_UPLOAD_BYTES=47185920` (45 MiB), biar ditolak di aplikasi dengan pesan yang jelas,
-bukan gagal di tengah upload. Naikkan hanya kalau paket Supabase-mu menaikkan batas objek.
+### 3. Panggilan (TURN)
 
-### 3. Panggilan — TURN
-
-STUN publik udah dipakai otomatis, tapi STUN doang **gagal di NAT ketat dan CGNAT operator
-seluler** (~10-20% panggilan). Kalau aplikasinya buat dipakai orang banyak, isi TURN:
+Server STUN publik digunakan secara otomatis, tetapi STUN saja tidak memadai pada NAT yang ketat maupun CGNAT operator seluler (sekitar 10-20% panggilan). Untuk penggunaan oleh banyak pengguna, konfigurasikan TURN:
 
 ```
 TURN_URLS=turn:global.turn.twilio.com:3478?transport=udp,turn:global.turn.twilio.com:3478?transport=tcp
@@ -130,395 +91,219 @@ TURN_USERNAME=...
 TURN_CREDENTIAL=...
 ```
 
-Sumbernya bisa [Twilio Network Traversal](https://console.twilio.com), Vonage, atau
-[coturn](https://github.com/coturn/coturn) yang di-host sendiri.
+Layanan TURN dapat berasal dari [Twilio Network Traversal](https://console.twilio.com), Vonage, atau [coturn](https://github.com/coturn/coturn) yang dikelola sendiri.
 
-Tanpa TURN, "panggilan tersambung tapi tidak ada suara" hampir selalu berarti jalur P2P-nya
-sendiri yang gagal di jaringan itu. Aplikasinya sekarang bilang terus terang — pesannya
-menyebut relay TURN — dan mencoba menyusun ulang jalur ICE sekali sebelum menyerah. Suara
-lawan bicara juga diputar dari elemen `<audio>` tersendiri (bukan dari petak video), dan
-meter mikrofon di layar panggilan menunjukkan apakah mikrofonnya benar-benar menangkap suara.
+Tanpa TURN, kondisi "panggilan tersambung tetapi tidak ada suara" umumnya disebabkan kegagalan jalur P2P pada jaringan tersebut. Aplikasi menampilkan pesan yang merujuk pada kebutuhan relay TURN dan mencoba menyusun ulang jalur ICE satu kali sebelum menyerah. Audio lawan bicara diputar melalui elemen `<audio>` tersendiri, dan layar panggilan menampilkan meter mikrofon. Jika browser menahan pemutaran suara, tombol untuk mengaktifkannya akan muncul.
 
-### 4. Panggilan saat aplikasi tertutup — Web Push
+### 4. Panggilan saat aplikasi tertutup (Web Push)
 
-Dering nggak menunggu aplikasinya dibuka. Browser yang sudah memberi izin notifikasi
-mendaftarkan endpoint push-nya ke server, dan server mengirim notifikasi panggilan lewat
-endpoint itu (Web Push). Kunci VAPID **dibuat sendiri sekali** lalu disimpan seperti
-registry lain — `registry/push.json` di bucket Supabase, atau `data/push.json` di driver
-local — jadi nggak ada env yang wajib diisi. Kalau mau memakai kunci tetap (misalnya
-beberapa instance berbagi langganan yang sama), isi `VAPID_PUBLIC_KEY`,
-`VAPID_PRIVATE_KEY`, dan `VAPID_SUBJECT`.
+Browser yang telah memberi izin notifikasi mendaftarkan endpoint push ke server, dan server mengirim notifikasi panggilan melalui endpoint tersebut. Kunci VAPID dibuat otomatis satu kali dan disimpan pada `registry/push.json` di bucket Supabase atau `data/push.json` pada driver `local`, sehingga tidak ada variabel lingkungan yang wajib diisi. Untuk menggunakan kunci tetap (misalnya ketika beberapa instance berbagi langganan yang sama), isi `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, dan `VAPID_SUBJECT`.
 
-Ini batas jujur web: notifikasi panggilan **muncul dan berbunyi saat aplikasi tertutup**,
-tapi yang berbunyi adalah nada notifikasi sistem — bukan dering berulang seperti WhatsApp,
-karena browser nggak mengizinkan service worker memutar audio sendiri. Menekan **Terima**
-membuka aplikasi dan langsung menjawab panggilannya.
+Keterbatasan: notifikasi panggilan muncul dan berbunyi ketika aplikasi tertutup, tetapi menggunakan nada notifikasi sistem, bukan dering berulang, karena browser tidak mengizinkan service worker memutar audio sendiri. Menekan **Terima** membuka aplikasi dan langsung menjawab panggilan.
 
-### 6. HTTPS
+### 5. HTTPS
 
-**Wajib kalau diakses lewat domain atau IP LAN.** `crypto.subtle` (dipakai semua enkripsi)
-dan `getUserMedia` (kamera/mikrofon) cuma jalan di *secure context*. `localhost` sudah
-dianggap aman; selain itu kamu perlu TLS — taruh di belakang nginx/Caddy, atau pakai
-Cloudflare Tunnel.
+HTTPS wajib jika aplikasi diakses melalui domain atau alamat IP jaringan lokal. `crypto.subtle` (digunakan untuk seluruh enkripsi) dan `getUserMedia` (kamera dan mikrofon) hanya tersedia pada secure context. `localhost` dianggap aman; untuk akses lain diperlukan TLS, misalnya melalui reverse proxy nginx atau Caddy, atau Cloudflare Tunnel.
 
-### 7. Deploy ke Render (gratis)
+## Deploy ke Render
 
-Butuh host yang bisa jalanin proses Node terus-menerus **dan** mendukung WebSocket — Render
-masuk kriteria itu (Vercel, Netlify, dan Cloudflare Workers **tidak**, karena servernya nggak
-punya proses panjang). `render.yaml` di repo ini sudah menyiapkan setelannya sendiri: region
-`singapore` (~20 ms dari Jakarta), health check `/healthz`, `NODE_ENV=production`,
-`AUTH_MODE=firebase`, `STORAGE_DRIVER=supabase`. Jadi yang perlu kamu tempel cuma 9 nilai rahasia.
+Aplikasi memerlukan host yang menjalankan proses Node secara terus-menerus dan mendukung WebSocket. Render memenuhi syarat ini, sedangkan Vercel, Netlify, dan Cloudflare Workers tidak. Berkas `render.yaml` sudah menetapkan region `singapore`, health check `/healthz`, `NODE_ENV=production`, `AUTH_MODE=firebase`, dan `STORAGE_DRIVER=supabase`. Yang perlu diisi hanya sembilan nilai rahasia.
 
-**a. Push dulu** — remote `origin` dan branch `main` sudah siap di repo ini:
+**a. Push kode ke repositori.**
 
 ```bash
 git push -u origin main
 ```
 
-**b. Siapkan 9 nilainya tanpa mengetik manual** (ini bagian yang paling sering salah kalau
-diketik tangan):
+**b. Siapkan nilai variabel lingkungan.**
 
 ```bash
-npm run check-env               # pastikan semua isi .env sudah benar
-npm run render-env -- --copy    # tulis render-env.txt + salin ke clipboard
+npm run check-env
+npm run render-env -- --copy
 ```
 
-`render-env.txt` berisi rahasia asli, jadi: sudah masuk `.gitignore`, dan hapus setelah dipakai
-(`rm render-env.txt`). Isinya sengaja **tidak** memuat `NODE_ENV`, `PORT`, atau `STORAGE_DRIVER`
-supaya setelan dari `render.yaml` nggak ketimpa nilai dev seperti `development`/`3000`.
+Perintah kedua menulis `render-env.txt` dan menyalinnya ke clipboard. Berkas ini berisi rahasia sebenarnya; berkas sudah tercantum di `.gitignore` dan sebaiknya dihapus setelah digunakan. Isinya sengaja tidak memuat `NODE_ENV`, `PORT`, dan `STORAGE_DRIVER` agar setelan dari `render.yaml` tidak tertimpa.
 
-**c. Di Render:** **New → Blueprint** → pilih repo-nya (repo privat: kamu perlu memberi izin
-akses repo itu ke GitHub App milik Render dulu) → Render membaca `render.yaml` dan menampilkan
-form variabel → tekan **Add from .env**, tempel isi clipboard → **Deploy web service**.
+**c. Buat service di Render.** Pilih **New > Blueprint**, pilih repositori (untuk repositori privat, berikan akses terlebih dahulu kepada GitHub App Render), lalu pada form variabel pilih **Add from .env**, tempel isi clipboard, dan jalankan **Deploy web service**.
 
-Kalau lebih suka mengisi satu per satu, ini asal tiap nilainya:
+Jika variabel diisi satu per satu:
 
-| Yang ditanya Render | Ambil dari |
+| Variabel | Sumber |
 |---|---|
-| `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID`, `FIREBASE_MESSAGING_SENDER_ID` | Firebase Console → Project settings → Your apps |
-| `FIREBASE_SERVICE_ACCOUNT` | nilai satu baris di `.env` (lihat langkah 1 di atas) |
-| `SUPABASE_URL` | Supabase → Project settings → API |
-| `SUPABASE_SERVICE_ROLE_KEY` | Secret key Supabase (bukan publishable) |
-| `ADMIN_EMAILS` | Email kamu (akun Google buat buka `/admin.html`). Boleh beberapa, pisahkan dengan koma. `ADMIN_UIDS` tetap ada kalau mau menunjuk admin lewat uid (mis. akun mode dev). |
+| `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID`, `FIREBASE_MESSAGING_SENDER_ID` | Firebase Console > Project settings > Your apps |
+| `FIREBASE_SERVICE_ACCOUNT` | Nilai satu baris di `.env` (lihat bagian Autentikasi) |
+| `SUPABASE_URL` | Supabase > Project settings > API |
+| `SUPABASE_SERVICE_ROLE_KEY` | Secret key Supabase (bukan publishable key) |
+| `ADMIN_EMAILS` | Email akun Google yang berhak membuka `/admin.html`; beberapa alamat dipisahkan koma. `ADMIN_UIDS` dapat digunakan untuk menunjuk admin berdasarkan uid. |
 
-Sesudah jalan, server ini menyimpan beberapa hal di luar memori: **blob lampiran** terenkripsi
-(lewat Supabase), **daftar username**, **foto profil**, **daftar blokir + laporan**, dan
-**indeks email/nomor HP**. Dengan `STORAGE_DRIVER=supabase`, username jadi objek
-`registry/usernames.json`, laporan + blokir jadi `registry/moderation.json`, indeks kontak jadi
-`registry/accounts.json`, dan foto profil masuk folder `avatars/` — semua di bucket yang sama,
-jadi tetap ada walau service-nya tidur atau di-deploy ulang. Kalau kamu pakai driver `local` di
-host yang disk-nya ephemeral, semuanya ikut hilang tiap restart.
+Dengan `STORAGE_DRIVER=supabase`, data berikut disimpan pada bucket yang sama sehingga tetap ada saat service tidur atau di-deploy ulang: blob lampiran terenkripsi, `registry/usernames.json` (daftar username), `registry/moderation.json` (laporan dan blokir), `registry/accounts.json` (indeks kontak), dan folder `avatars/` (foto profil). Pada driver `local` di host dengan disk ephemeral, seluruh data ini hilang setiap restart.
 
-`render.yaml` sengaja **tidak** menyetel `PORT` — Render yang menentukan port dan
-menyuntikkannya lewat variabel `PORT`, dan `src/config.js` sudah membacanya. Health check
-memakai `/healthz` yang sudah ada di server.
+`render.yaml` tidak menetapkan `PORT`; Render menyuntikkannya sendiri dan `src/config.js` membacanya.
 
-⚠️ Dua kesalahan yang paling gampang terjadi kalau form itu diisi manual: menambah baris
-`PORT` (service-nya lalu mendengarkan port yang salah), dan mengubah `NODE_ENV` jadi
-`development` — di mode dev server mempercayai uid apa pun yang diklaim browser, jadi siapa pun
-bisa mengaku sebagai akun siapa saja.
+Dua kesalahan yang sering terjadi saat mengisi form secara manual:
 
-**d. Wajib setelah dapat domain:** di dashboard Render, buka service-mu dan salin
-`https://<nama-service>.onrender.com`, lalu tambahkan domain itu (tanpa `https://`) ke
-**Firebase → Authentication → Settings → Authorized domains**. Tanpa ini login Google gagal
-dengan `auth/unauthorized-domain`. HTTPS dari Render otomatis, jadi `crypto.subtle` dan
-kamera langsung jalan.
+- Menambahkan variabel `PORT`, sehingga service mendengarkan port yang salah.
+- Mengubah `NODE_ENV` menjadi `development`. Pada mode pengembangan, server mempercayai uid apa pun yang diklaim browser, sehingga siapa pun dapat mengaku sebagai akun lain.
 
-**e. Buktikan hasil deploy-nya bekerja:**
+**d. Daftarkan domain.** Salin URL service (`https://<nama-service>.onrender.com`) dan tambahkan domain tersebut (tanpa `https://`) ke **Firebase > Authentication > Settings > Authorized domains**. HTTPS disediakan otomatis oleh Render.
+
+**e. Verifikasi deployment.**
 
 ```bash
-npm run verify-token -- https://nama-app-mu.onrender.com
+npm run verify-token -- https://nama-app.onrender.com
 ```
 
-Script itu bikin ID token asli bertanda tangan Google, menyambung ke server, dan
-memastikan token palsu ditolak — tanpa kamu perlu login manual di browser.
+Skrip ini membuat ID token asli yang ditandatangani Google, menyambung ke server, dan memastikan token palsu ditolak.
 
-**f. Biar nggak tidur (opsional, tetap gratis).** Service gratis Render **tidur setelah 15 menit
-tanpa trafik** — termasuk trafik WebSocket — dan bangunnya sekitar satu menit. Ping
-`https://<nama-service>.onrender.com/healthz` tiap 10–14 menit lewat cron-job.org atau
-UptimeRobot, dan service-nya terus bangun. Hitungannya masih masuk: 31 hari × 24 jam = 744 jam,
-di bawah jatah 750 jam-instance per bulan.
+**f. Mencegah service tidur (opsional).** Service gratis Render tidur setelah 15 menit tanpa trafik, termasuk trafik WebSocket, dan memerlukan sekitar satu menit untuk aktif kembali. Melakukan ping ke `/healthz` setiap 10-14 menit melalui cron-job.org atau UptimeRobot menjaga service tetap aktif dan masih berada dalam kuota 750 jam instance per bulan. Jika service dibiarkan tidur, file tetap aman di Supabase, tetapi state yang hanya ada di memori (direktori pengguna dan antrean pesan offline) hilang sehingga pengguna perlu login ulang.
 
-Kalau dibiarkan tidur pun nggak masalah: disk-nya ephemeral (file ada di Supabase, jadi aman),
-tapi semua state (direktori user, antrian pesan offline) cuma di memori — restart = orang harus
-login ulang.
+## Arsitektur enkripsi
 
-## Cara enkripsinya bekerja
-
-| Langkah | Yang terjadi |
+| Langkah | Proses |
 |---|---|
-| 1 | Tiap akun punya key pair **ECDH P-256** yang dibuat di browser. Private key disimpan di `localStorage`, **nggak pernah dikirim ke server**. |
-| 2 | Ke server cuma dikirim **public key** — itu yang jadi daftar kontak. |
-| 3 | Dua orang nurunin shared secret lewat ECDH → HKDF-SHA256 → kunci AES-256-GCM. |
-| 4 | Tiap pesan pakai **kunci acak sekali pakai**. Teksnya dienkripsi sekali, lalu kuncinya dibungkus terpisah buat tiap anggota grup. |
-| 5 | Server cuma lihat blob: ciphertext + bungkusan kunci. |
+| 1 | Setiap akun memiliki key pair ECDH P-256 yang dibuat di browser. Private key disimpan di `localStorage` dan tidak pernah dikirim ke server. |
+| 2 | Hanya public key yang dikirim ke server dan dipakai sebagai daftar kontak. |
+| 3 | Dua pengguna menurunkan shared secret melalui ECDH, kemudian HKDF-SHA256, menghasilkan kunci AES-256-GCM. |
+| 4 | Setiap pesan menggunakan kunci acak sekali pakai. Teks dienkripsi satu kali, lalu kunci tersebut dibungkus terpisah untuk setiap anggota grup. |
+| 5 | Server hanya menerima ciphertext dan bungkusan kunci. |
 
-**File** ikut jalur yang sama. File dienkripsi per 4 MiB dengan kuncinya sendiri, dan
-**kunci + nama file ditaruh di dalam pesan terenkripsi** — jadi penyimpanan dan server
-dua-duanya nggak pernah lihat kuncinya. Nomor chunk dan jumlah totalnya masuk sebagai
-*additional authenticated data*, jadi blob yang diacak urutannya atau dipotong bakal
-ketahuan, bukan diterima diam-diam.
+**File.** File dienkripsi per bagian 4 MiB dengan kunci tersendiri. Kunci dan nama file ditempatkan di dalam pesan terenkripsi sehingga server maupun penyimpanan tidak pernah mengetahuinya. Nomor bagian dan jumlah total disertakan sebagai additional authenticated data (AAD), sehingga blob yang urutannya diubah atau yang dipotong akan terdeteksi.
 
-**Pesan suara** nggak punya jalur enkripsi sendiri: rekaman `MediaRecorder` dibungkus jadi
-file, lalu ikut jalur di atas. Yang ditambahkan cuma penanda `voice` + durasi **di dalam**
-payload terenkripsi, jadi server nggak tahu sebuah lampiran itu suara atau dokumen biasa.
+**Pesan suara.** Rekaman `MediaRecorder` dikemas menjadi file dan menggunakan jalur enkripsi file. Penanda `voice` dan durasi disimpan di dalam payload terenkripsi sehingga server tidak dapat membedakan pesan suara dari dokumen biasa.
 
-**Panggilan** pakai WebRTC, jadi medianya dienkripsi **DTLS-SRTP** langsung antar
-browser — di grup pun setiap pasangan punya koneksinya sendiri (mesh). Server cuma
-meneruskan SDP dan ICE. Kalau pakai TURN, relay-nya juga cuma meneruskan paket yang sudah
-terenkripsi — TURN lihat ciphertext, sama kayak server chat. Notifikasi panggilan (Web
-Push) cuma membawa nama pemanggil dan id panggilan; tidak ada media yang lewat situ.
+**Panggilan.** Media dienkripsi dengan DTLS-SRTP langsung antar browser. Pada panggilan grup, setiap pasangan peserta memiliki koneksi sendiri (topologi mesh). Server hanya meneruskan SDP dan ICE. Bila TURN digunakan, relay hanya meneruskan paket yang sudah terenkripsi. Notifikasi panggilan melalui Web Push hanya memuat nama pemanggil dan id panggilan.
 
-## Apa yang bisa dan nggak bisa dilihat server
+## Data yang dapat dan tidak dapat diakses server
 
-| Bisa | Nggak bisa |
+| Dapat diakses | Tidak dapat diakses |
 |---|---|
-| uid, username, email, nomor HP, dan **public** key | private key siapa pun |
-| Pesan terenkripsi selama penerima offline | isi pesan |
-| Nama acak blob file dan isinya yang terenkripsi | nama file asli, tipe, kunci, atau isinya |
-| Siapa menelepon siapa dan kapan | audio/video panggilan |
-| Siapa memasang status dan kapan | isi status (teks maupun fotonya) |
-| Laporan yang **diketik pelapornya** + siapa diblokir dan alasannya | isi percakapan yang dilaporkan |
-| Siapa yang mengirim sebuah id pesan (buat "hapus untuk semua orang") | isi pesan itu sendiri |
-| **Foto profil** apa adanya | — |
+| uid, username, email, nomor telepon, dan public key | Private key pengguna |
+| Pesan terenkripsi selama penerima offline | Isi pesan |
+| Nama acak blob file dan isi terenkripsinya | Nama file asli, tipe, kunci, dan isi file |
+| Informasi siapa menelepon siapa dan waktunya | Audio dan video panggilan |
+| Informasi siapa memasang status dan waktunya | Isi status (teks maupun foto) |
+| Laporan yang ditulis pelapor serta daftar akun terblokir beserta alasannya | Isi percakapan yang dilaporkan |
+| Pengirim sebuah id pesan (untuk fitur "hapus untuk semua orang") | Isi pesan tersebut |
+| Foto profil (tidak dienkripsi) | - |
 
-Email dan nomor HP tetap ada di server (dari penyedia login yang sudah memverifikasinya), tapi
-sekarang **nggak lagi disiarkan ke setiap klien** seperti sebelumnya. Yang dikirim ke klien cuma
-nama, foto, dan public key. Email dan nomor cuma keluar lewat dua jalur: hasil pencarian kontak
-(yang **tidak** mengembalikan nilainya, cuma uid + nama + status online) dan halaman admin.
+Email dan nomor telepon disimpan di server (diperoleh dari penyedia login yang telah memverifikasinya), tetapi tidak disiarkan ke klien. Klien hanya menerima nama, foto, dan public key. Kedua data tersebut hanya muncul melalui dua jalur: hasil pencarian kontak (yang tidak mengembalikan nilainya) dan halaman admin.
 
-Foto profil adalah satu-satunya unggahan yang **tidak** dienkripsi. Ini disengaja: foto profil
-memang untuk dilihat semua orang yang melihat namamu, jadi kalau dienkripsi pun kuncinya harus
-terbuka buat mereka. Ukuran (maks 2 MB) dan jenis gambarnya diperiksa server dari byte aslinya,
-bukan dari header yang dikirim browser. Kalau itu mengganggu, hapus fotonya — aplikasinya jalan
-normal tanpa foto profil.
+Foto profil adalah satu-satunya unggahan yang tidak dienkripsi, karena memang ditujukan untuk dilihat oleh siapa pun yang melihat nama pengguna. Server memeriksa ukuran (maksimal 2 MB) dan jenis gambar dari byte aslinya, bukan dari header yang dikirim browser. Pengguna dapat menghapus foto profil tanpa mengganggu fungsi aplikasi.
 
-## Struktur
+## Struktur proyek
 
 ```
 src/
-  server.js        Entry point: relay + direktori kunci + lampiran + signaling + admin.
-  config.js        Baca .env, pilih driver, pisah config publik vs rahasia.
-  auth.js          Verifikasi ID token. Driver: firebase | dev (dev diblokir di production).
-  storage.js       Driver blob: supabase | local. Path selalu dibuat server.
-  usernames.js     Namespace @nama (normalisasi, nama sistem, simpan permanen).
-  moderation.js    Laporan pengguna + daftar blokir, disimpan permanen.
-  accounts.js      Indeks email/nomor HP buat mencari kontak yang belum pernah online.
-  push.js          Web Push server: kunci VAPID, langganan per akun, pengiriman notifikasi.
+  server.js          Entry point: relay, direktori kunci, lampiran, signaling, admin
+  config.js          Pembacaan .env, pemilihan driver, pemisahan konfigurasi publik dan rahasia
+  auth.js            Verifikasi ID token (driver: firebase | dev; dev diblokir di production)
+  storage.js         Driver blob (supabase | local); path selalu dibuat server
+  usernames.js       Namespace username (normalisasi, nama sistem, penyimpanan permanen)
+  moderation.js      Laporan pengguna dan daftar blokir
+  accounts.js        Indeks email dan nomor telepon untuk pencarian kontak
+  push.js            Web Push: kunci VAPID, langganan per akun, pengiriman notifikasi
 
 public/
-  index.html       Kerangka halaman chat.
-  admin.html       Halaman admin (laporan + blokir).
-  manifest.webmanifest  Identitas aplikasi (nama, ikon, warna) buat notifikasi & pemasangan.
-  sw.js            Service worker: notifikasi pesan/panggilan + aksi balas/buka/terima/tolak.
+  index.html         Kerangka halaman chat
+  admin.html         Halaman admin (laporan dan pemblokiran)
+  manifest.webmanifest
+  sw.js              Service worker: notifikasi pesan/panggilan dan aksi balas/buka/terima/tolak
   js/
-    app.js         UI + orkestrasi.
-    admin.js       Ambil data admin lewat REST dan render; nggak buka socket.
-    auth-client.js Login Google / dev.
-    crypto.js      Semua primitif E2EE. Pakai WebCrypto, jalan di browser dan Node.
-    files.js       Enkripsi, upload, unduh, dekripsi lampiran.
-    voice.js       Perekam pesan suara (MediaRecorder); hasilnya masuk jalur lampiran.
-    call.js        WebRTC mesh (1:1 & grup): suara, video, layar, tambah peserta.
-    notifications.js  Izin + tampilan notifikasi, dan pengambilan balasan yang dititipkan.
+    app.js           Antarmuka dan orkestrasi
+    admin.js         Pengambilan data admin melalui REST dan rendering
+    auth-client.js   Login Google / dev
+    crypto.js        Seluruh primitif E2EE (WebCrypto; berjalan di browser dan Node)
+    files.js         Enkripsi, unggah, unduh, dan dekripsi lampiran
+    voice.js         Perekam pesan suara
+    call.js          WebRTC mesh (1:1 dan grup): suara, video, layar, tambah peserta
+    notifications.js Izin dan tampilan notifikasi, pengambilan balasan yang dititipkan
   css/
-    style.css      Seluruh tampilan; nilainya diambil dari DESIGN.md.
-  assets/
-    logo.svg, logo-lockup.svg, icon-192.png, icon-512.png
+    style.css        Seluruh tampilan, mengacu pada token di DESIGN.md
+  assets/            Logo dan ikon aplikasi
 
 docs/
-  STRUCTURE.md     Peta folder, alur HTTP, dan alur event Socket.IO.
-scripts/           Alat bantu: cek env, deploy, screenshot, tes browser.
-test/              Test otomatis (node --test).
-DESIGN.md          Sistem desain yang dipakai UI (warna, huruf, bentuk).
+  STRUCTURE.md       Peta folder, alur HTTP, dan alur event Socket.IO
+scripts/             Alat bantu: cek env, deploy, screenshot, tes browser
+test/                Pengujian otomatis (node --test)
+DESIGN.md            Sistem desain (warna, tipografi, bentuk)
 ```
 
-Alur request HTTP dan event Socket.IO selengkapnya ada di
-[`docs/STRUCTURE.md`](docs/STRUCTURE.md).
+Alur request HTTP dan event Socket.IO dijelaskan lebih lengkap di [`docs/STRUCTURE.md`](docs/STRUCTURE.md).
 
-## Tampilan (mengikuti `DESIGN.md`)
+## Desain antarmuka
 
-UI-nya sengaja nggak punya bahasa desain sendiri: semua warna, bentuk, dan hurufnya diambil dari
-`DESIGN.md`, dan token itu dipasang sebagai CSS custom property di `public/style.css` supaya
-cuma ada satu sumber nilai.
+Antarmuka mengikuti `DESIGN.md`. Seluruh token warna, bentuk, dan tipografi dipasang sebagai CSS custom property di `public/css/style.css` sehingga hanya ada satu sumber nilai.
 
-| Token `DESIGN.md` | Nilai | Dipakai untuk |
+| Token | Nilai | Penggunaan |
 |---|---|---|
-| `{colors.primary}` | `#2563eb` | satu-satunya tombol biru, tautan, indikator aktif, baris terpilih |
-| `{colors.primary-soft}` | `#e8f0ff` | gelembung pesan sendiri (biru pucat, teks tetap ink) |
-| `{colors.primary-tint}` | `#eff6ff` | baris chat terpilih, latar kutipan balasan, strip balas |
-| `{colors.ink}` / `{colors.text-muted}` | `#17202a` / `#687385` | teks utama, lalu jam dan label sekunder |
-| `{colors.canvas}` / `{colors.paper}` | `#ffffff` | sidebar, header chat, area percakapan, kartu |
-| `{colors.cloud}` / `{colors.fog}` | `#f7f8fa` / `#eef1f5` | latar aplikasi, halaman login, hover netral |
-| `{colors.border}` | `#e4e8ef` | garis rambut 1px: pembatas panel, kolom isian, kolom ketik |
-| `{colors.danger}` / `{colors.success}` / `{colors.warning}` | `#dc2626` / `#15803d` / `#b45309` | hapus–laporkan–tolak, online/berhasil, laporan menunggu |
-| `{rounded.md}` / `{rounded.lg}` / `{rounded.xl}` | `8px` / `12px` / `16px` | tombol & input, panel & menu, kartu & gelembung pesan |
+| `primary` | `#2563eb` | Tombol utama, tautan, indikator aktif |
+| `primary-soft` | `#e8f0ff` | Gelembung pesan sendiri |
+| `primary-tint` | `#eff6ff` | Baris chat terpilih, kutipan balasan |
+| `ink` / `text-muted` | `#17202a` / `#687385` | Teks utama / teks sekunder |
+| `canvas` / `paper` | `#ffffff` | Sidebar, header, area percakapan, kartu |
+| `cloud` / `fog` | `#f7f8fa` / `#eef1f5` | Latar aplikasi dan halaman login / hover netral |
+| `border` | `#e4e8ef` | Garis pemisah 1px |
+| `danger` / `success` / `warning` | `#dc2626` / `#15803d` / `#b45309` | Aksi destruktif / berhasil / menunggu |
+| `rounded.md` / `lg` / `xl` | `8px` / `12px` / `16px` | Tombol dan input / panel dan menu / kartu dan gelembung |
 
-Hurufnya **Inter** dari Google Fonts. Kalau fontnya gagal dimuat, rangkaian fallback di
-`style.css` tetap menampilkan halaman dengan benar; nggak ada tata letak yang bergantung pada
-font itu.
+Tipografi menggunakan Inter (Google Fonts) dengan rangkaian fallback sehingga tata letak tidak bergantung pada pemuatan font. Permukaan gelap hanya digunakan pada layar panggilan, penampil media, dan status layar penuh. Gradasi dekoratif, efek glow, dan bayangan berlebihan sengaja tidak digunakan. Satu penyimpangan yang disengaja dari `DESIGN.md` adalah avatar berbentuk lingkaran penuh.
 
-Yang dipakai sebagai satu-satunya permukaan gelap cuma `{colors.ink-surface}` — layar panggilan,
-penampil media, dan status selayar penuh. Sidebar, header chat, halaman admin, dan kartu login
-semuanya permukaan putih dengan garis rambut, sesuai `DESIGN.md` yang bilang biru dan ink itu
-warna aksi/aksen, bukan latar besar.
+### Navigasi
 
-Satu penyimpangan yang disengaja dari `DESIGN.md`: **avatar bulat penuh**. Bentuk bulat memang yang
-diminta produk, jadi itulah yang dipakai (dan itulah yang diperiksa tes browser). Sisa tokennya —
-warna, huruf, ukuran sudut tombol/kartu, cincin status — tetap ikut `DESIGN.md`.
-
-Yang **sengaja nggak ada**, karena `DESIGN.md` melarangnya: gradasi dekoratif, glow, blob latar
-beranimasi, bayangan di setiap panel, dan warna saturasi kedua di layar. Chevron biru yang
-sebelumnya mengapit kartu login sudah dibuang: `DESIGN.md` bilang aplikasi chat nggak butuh
-grafik hero dekoratif.
-
-### Menu & perpindahan panel
-
-Bagian **App Shell** di `DESIGN.md` yang mengatur rail dan navbar bawah ini; nilainya tetap dari
-token yang sama. Susunannya mengikuti pola aplikasi pesan yang sudah dikenal orang:
-
-| Bagian | Desktop (>=761px) | HP (<=760px) |
+| Komponen | Desktop (lebar 761 px ke atas) | Ponsel (lebar 760 px ke bawah) |
 |---|---|---|
-| Menu utama | **rail** 76px di kolom paling kiri: logo, Chat, Status, Panggilan, Pengaturan, lalu avatar | **navbar bawah oval** yang melayang di atas isi |
-| Kolom daftar | satu kolom untuk panel yang aktif, dipisahkan garis rambut 1px | panelnya penuh layar, satu panel per layar |
-| Percakapan | kolom paling kanan, selalu terlihat | halaman penuh; navbar ikut menghilang dan tombol kembali mengembalikan ke daftar |
-| Keluar & pengaturan | panel Pengaturan | panel Pengaturan |
+| Menu utama | Rail 76 px di sisi kiri: logo, Chat, Status, Panggilan, Pengaturan, avatar | Navbar bawah berbentuk oval yang melayang |
+| Daftar | Satu kolom untuk panel aktif | Satu panel per layar |
+| Percakapan | Kolom kanan, selalu terlihat | Halaman penuh; navbar disembunyikan, tombol kembali menuju daftar |
 
-Yang aktif ditandai permukaan putih (rail) atau `{colors.primary-tint}` (navbar), dan tiap
-perpindahan panel memakai animasi masuk yang singkat (`view-in`, 240ms) plus transisi warna di
-tombol menu. Navbar bawahnya satu-satunya tempat yang memakai efek kaca —
-`backdrop-filter: blur(20px)`, latar putih transparan, sudut `{rounded.pill}`, dan bayangan
-melayang: itu yang bikin kelihatan seperti navbar WhatsApp di iPhone. Kalau browsernya nggak
-mendukung `backdrop-filter`, yang terlihat cuma latar putih semi-transparan — tetap terbaca,
-cuma tanpa efek buram.
+Menu aktif ditandai dengan permukaan putih (rail) atau `primary-tint` (navbar). Perpindahan panel menggunakan animasi masuk 240 ms. Navbar bawah menggunakan `backdrop-filter: blur(20px)` dengan latar putih transparan; pada browser yang tidak mendukungnya, navbar tampil sebagai latar putih semi-transparan.
 
-## Testing
+## Pengujian
 
-```
-npm test              # 104 test: kripto, file, auth, storage, username, status, kontak, moderasi, relay, signaling (termasuk grup & sibuk), aset notifikasi, tooling
-npm run test:browser  # 307 cek: UI asli di Chrome, termasuk panggilan WebRTC, notifikasi, pesan suara, navbar hp, mode gelap, panah menu, dan Bersihkan/Hapus chat
-CALL_DEBUG=1 npm run test:browser   # nyalain jejak negosiasi WebRTC di console
+```bash
+npm test                              # Pengujian unit dan integrasi (node --test)
+npm run test:browser                  # Pengujian UI end-to-end di Chrome
+CALL_DEBUG=1 npm run test:browser     # Dengan log negosiasi WebRTC
 ```
 
-Alat bantu setup (semuanya nggak pernah menampilkan nilai rahasia):
+`test:browser` memerlukan Chrome. Jika Chrome tidak berada di lokasi default, atur variabel `CHROME_PATH`. Pengujian panggilan menggunakan perangkat kamera dan mikrofon virtual bawaan Chrome.
 
+**Cakupan `npm test`:** kriptografi, file, autentikasi, penyimpanan, username, status, kontak, moderasi, relay, signaling (termasuk panggilan grup dan kondisi sibuk), aset notifikasi, dan alat bantu.
+
+**Cakupan `npm run test:browser`:**
+
+- Pesan dan file: login dua profil, pencarian kontak, pengiriman pesan dan file, pembukaan foto dan video pada penampil layar penuh (dimensi dan byte hasil dekripsi diverifikasi).
+- Aksi pesan: menu klik kanan dan tekan lama, efek blur pada pesan lain, balas dengan kutipan, teruskan, salin, bintang, reaksi, hapus untuk saya, dan hapus untuk semua orang.
+- Pesan suara: perekaman, pengiriman terenkripsi, pemutaran di sisi penerima, kesesuaian durasi dan jumlah batang gelombang, serta pengubahan kecepatan.
+- Panggilan: koneksi suara, pengaktifan kamera di tengah panggilan, penutupan di kedua sisi, pengukuran energi audio melalui `AnalyserNode`, dan pemeriksaan bahwa elemen audio benar-benar berjalan dan tidak dibisukan. Riwayat panggilan diperiksa setelah panggilan sungguhan.
+- Moderasi: pelaporan dari header chat, pembacaan laporan di halaman admin, pemblokiran (sesi korban langsung berhenti dan menampilkan alasan), dan pembukaan blokir.
+- Status: penerima status hanya mencakup pengguna yang pernah bertukar pesan, dan klien mentah yang mengirim status dari akun asing diabaikan oleh sisi penerima.
+- Notifikasi: pengaktifan dari Pengaturan, pemasangan service worker, kemunculan notifikasi (nama pengirim, isi, id percakapan, tombol balas), aksi balas pada service worker yang berjalan, dan tidak adanya notifikasi saat percakapan sedang dibaca.
+- Navigasi dan desain: `checkShell` menguji rail dan navbar melalui interaksi nyata, dan `verifyDesignSystem` membandingkan gaya hasil komputasi browser dengan `DESIGN.md` pada halaman pengirim dan penerima, termasuk halaman login.
+- Keamanan: server tidak memegang private key, token tidak valid ditolak, dan pihak ketiga tidak dapat menyusup ke signaling panggilan pengguna lain.
+
+Perekaman video pada pengujian diulang hingga tiga kali jika hasilnya hanya berisi header WebM, karena `captureStream()` pada Chrome headless kadang hanya mengirim satu frame saat mesin sibuk. Kriteria lulus tetap sama (ukuran lebih dari 2000 karakter base64).
+
+### Alat bantu
+
+```bash
+npm run check-env                                  # Periksa .env (kode keluar 1 jika ada yang salah)
+npm run check-env -- --live                        # Termasuk uji kunci Supabase
+npm run render-env -- --copy                       # Sembilan nilai variabel untuk Render
+npm run set-service-account -- "C:/path/key.json"  # Isi FIREBASE_SERVICE_ACCOUNT satu baris
+npm run verify-token -- https://app.onrender.com   # Verifikasi pemeriksaan ID token pada deployment
+npm run screenshots                                # Ambil tangkapan layar UI ke screenshots/ (butuh Chrome)
 ```
-npm run check-env            # cek .env: mana yang kosong/salah, keluar kode 1 kalau ada
-npm run check-env -- --live  # plus tes kunci Supabase ke project aslinya
-npm run render-env -- --copy # 9 nilai Render dalam satu file siap tempel (berisi rahasia!)
-npm run set-service-account -- "C:/path/key.json"   # isi FIREBASE_SERVICE_ACCOUNT 1 baris
-npm run verify-token -- https://app.onrender.com    # buktikan verifikasi ID token jalan
-npm run screenshots          # ambil gambar layar UI ke screenshots/ (butuh Chrome)
-```
 
-`test:browser` butuh Chrome. Kalau nggak di lokasi default, set `CHROME_PATH`.
-Panggilan diuji pakai perangkat kamera/mikrofon palsu bawaan Chrome.
-
-Yang diverifikasi antara lain: envelope nggak mengandung plaintext (dicek dari memori
-server), blob di disk benar-benar ciphertext dan byte hasil dekripsi identik dengan
-aslinya, chunk file yang diubah/dipotong/diacak urutannya kedeteksi, server nggak
-pernah pegang private key, token ngawur ditolak, pihak ketiga nggak bisa nyusup ke
-signaling panggilan orang lain, dan di browser: dua profil login, mencari kontak lewat halaman
-**tambah kontak** (＋), kirim pesan, kirim file, lalu **panggilan suara tersambung, kamera
-dinyalakan di tengah panggilan terlihat lawan bicara, dan hangup menutup di dua sisi**.
-Di jalur yang sama juga diuji: melaporkan orang dari header chat, halaman admin membaca
-laporannya, memblokir akun itu (sesi yang sedang jalan di sisi korban langsung berhenti dan
-menampilkan alasannya), lalu membuka blokirnya lagi dan akunnya jalan seperti semula.
-
-Yang juga diuji di browser: klik kanan **dan** tahan di hp membuka menu yang sama, pesan lain
-benar-benar diblur (filter CSS-nya diperiksa, bukan cuma class-nya), balasan membawa kutipan
-beserta nama pengirim yang benar di tiap sisi, teruskan mengirim ulang ke chat tujuan, salin
-menaruh teksnya di clipboard (termasuk saat Clipboard API ditolak), bintang, reaksi sampai ke
-sisi lain, **hapus untuk saya** cuma menghilangkan di perangkat itu, **hapus untuk semua orang**
-mengubah gelembung di kedua sisi jadi "Pesan ini sudah dihapus", dan foto dibuka selayar penuh
-tanpa pindah tab (dimensi + byte hasil dekripsi dicek di dalam penampilnya).
-
-Pesan suara diuji pakai mikrofon palsu Chrome yang memang menghasilkan audio: tombol kirim
-berubah jadi mikrofon saat kolom kosong, timer rekaman berjalan, rekaman dikirim lewat jalur
-lampiran terenkripsi, dan penerima bisa **memutarnya** — tombolnya berubah jadi jeda dan
-batang gelombangnya terisi. Durasi dan jumlah batangnya harus sama di dua sisi, dan tombol
-kecepatan harus berpindah ke `1,5x`. Jadi yang diperiksa bukan cuma "bubble-nya muncul".
-
-Video ikut diuji dengan file asli: browser di jalur tes ini merekam sendiri video WebM dari
-canvas, lalu memastikan penerimanya bisa membukanya di pemutar selayar penuh — dengan kontrol,
-ter-dekode (`videoWidth > 0`), dan tanpa berpindah halaman atau membuka tab baru.
-Rekamannya diulang sampai tiga kali kalau hasilnya cuma header WebM: `captureStream()` di Chrome
-headless kadang hanya mengirim satu frame ketika mesin sedang sibuk (ukurannya lompat antara
-~2.000 dan ~11.000 karakter base64). Syarat lulusnya tetap `> 2000`; yang diulang alat rekamnya,
-bukan pemeriksaannya.
-
-Soal panggilan, yang diperiksa bukan cuma "track-nya ada": energinya diukur pakai `AnalyserNode`
-— mikrofon sendiri dan suara lawan bicara — plus elemen pemutarnya harus benar-benar berjalan
-(bukan `paused`) dan tidak dalam keadaan mute. Keberadaan track saja pernah menyembunyikan bug
-"panggilan tersambung tapi senyap": elemen audionya berhenti di keadaan paused, jadi tidak ada
-suara yang keluar walau semua track hidup.
-
-Yang juga diperiksa di jalur yang sama: jalur login nomor HP benar-benar hilang dari DOM (nggak
-cuma disembunyikan) sementara tombol Google tetap ada, dan panel **Pengaturan** nggak lagi
-memampangkan uid, driver penyimpanan, relay panggilan, atau peringatan private key.
-
-Aturan status juga diuji dari dua sisi dalam satu jalur: sebelum Andi dan Budi pernah chat, daftar
-penerima statusnya harus cuma berisi dirinya sendiri, sidebar Budi harus tetap kosong, dan satu
-klien mentah (socket.io tanpa UI) sengaja mengirim status ke Budi dari akun asing — sisi penerima
-harus tetap mengabaikannya. Sesudah mereka bertukar pesan, status yang baru harus sampai dan bisa
-dibuka Budi. Jadi "status cuma buat yang sudah pernah chat" bukan cuma niat di kode.
-
-Notifikasi diuji sebagai alur yang utuh, bukan cuma keberadaan tombolnya: tesnya menyalakan
-sakelarnya dari **Pengaturan** (izinnya diberikan di level browser, karena dialog izin nggak bisa
-diklik otomatis), memastikan service workernya terpasang di scope `/`, lalu membuat Andi pindah ke
-percakapan lain supaya pesan Budi yang masuk benar-benar **muncul sebagai notifikasi** —
-dicek langsung di daftar notifikasi Chrome (`registration.getNotifications()`), lengkap dengan
-nama pengirim, isi pesan, id percakapan yang harus dibuka, pemilik notifikasinya, dan tombol balas.
-Aksi balas itu lalu dipanggil pada **service worker yang sedang jalan**
-(`self.bychatNotificationClick`, jalur yang sama dengan klik notifikasi di OS), dan hasilnya harus
-sampai ke Budi lewat jalur enkripsi biasa — dicek dari sisi yang benar: gelembung keluar di layar
-Andi, gelembung masuk di layar Budi.
-Terakhir, pesan berikutnya dikirim saat Andi **sedang membaca** percakapan itu — di situ nggak
-boleh ada notifikasi baru.
-
-Menunya juga diuji sebagai perilaku, bukan cuma keberadaan tombolnya: `checkShell` menekan tiap
-menu lewat jalur yang benar-benar dipakai orang (rail di desktop, navbar di hp), lalu memastikan
-panelnya terbuka, cuma panel itu yang tampil, tombolnya bertanda aktif, dan animasi masuknya
-benar-benar terpasang. Di layar hp, navbar bawahnya diperiksa dengan angka dari browser:
-`border-radius: 9999px`, `position: fixed`, `backdrop-filter: blur(...)` dengan latar putih
-transparan, masih di dalam layar, dan menyisakan jarak dari tepi bawah (jadi memang melayang,
-bukan menempel). Riwayat panggilan juga diperiksa setelah panggilan sungguhan: entrinya muncul di
-panel Panggilan dengan arah dan durasinya.
-
-Tampilannya juga ikut diuji, bukan cuma dijelaskan di dokumen: `verifyDesignSystem` di
-`browser-check.mjs` membaca **gaya yang benar-benar dihitung browser** di dua halaman sekaligus
-(pengirim dan penerima) dan mencocokkannya dengan `DESIGN.md` — token warna, latar aplikasi
-`#f7f8fa` yang permukaannya rata tanpa gradasi, huruf Inter, CTA `#2563eb` bersudut 8px dengan label huruf
-biasa (bukan kapital), input 8px setinggi 44px, sidebar & kakinya permukaan putih dengan garis
-rambut (bukan slab gelap), permukaan percakapan putih, baris terpilih `#eff6ff`, kartu 16px dengan
-bayangan melayang, avatar bulat penuh, dan gelembung pesan sendiri yang biru pucat `#e8f0ff`
-dengan teks ink sementara gelembung lawan tetap putih — dua-duanya dengan ekor 4px. Halaman login
-juga ikut diperiksa: kartu putih 16px di atas kanvas `#f7f8fa`, tanpa strip gelap atau chevron, dan
-label tombolnya bukan kapital lagi. Jadi kalau ada
-yang mengembalikan tema gelap bergradasi atau label kapital, jalur tes ini yang gagal lebih dulu.
+Seluruh alat bantu tidak menampilkan nilai rahasia.
 
 ## Notifikasi
 
-Notifikasi dinyalakan dari **Pengaturan → Notifikasi pesan**. Izinnya diminta ke browser saat kamu
-menekan tombolnya, dan pilihannya disimpan per perangkat, jadi sehabis muat ulang halaman tinggal
-jalan lagi (tanpa nanya dua kali). Tidak perlu konfigurasi server sama sekali.
+Notifikasi diaktifkan dari **Pengaturan > Notifikasi pesan**. Izin diminta ke browser saat tombol ditekan, dan pilihan disimpan per perangkat. Tidak diperlukan konfigurasi server.
 
-Cara kerjanya:
+1. Pesan yang sudah didekripsi di halaman diperiksa terlebih dahulu: jika percakapannya sedang dibuka dan jendela aktif, notifikasi tidak ditampilkan.
+2. Jika tidak, halaman mengirim judul dan cuplikan teks ke service worker (`public/sw.js`) untuk ditampilkan. Kunci enkripsi tidak pernah diberikan kepada service worker; service worker hanya menerima teks yang sudah jadi.
+3. Mengklik notifikasi membuka percakapan terkait, baik melalui jendela aplikasi yang sudah berjalan maupun dengan membuka `/?chat=<id>`.
+4. Balasan langsung dari notifikasi didukung pada browser yang mengizinkan aksi bertipe `text` (Chrome Android). Teks balasan dienkripsi di halaman dan dikirim seperti pesan biasa. Jika jendela aplikasi tertutup, teks disimpan sementara di Cache Storage (maksimal 10 menit) dan dikirim setelah aplikasi tersambung. Pada Chrome desktop, kolom balas pada notifikasi belum didukung; mengklik notifikasi akan membuka chat dan memfokuskan kolom ketik.
 
-1. Pesan yang sudah **didekripsi di halaman** dicek: kalau percakapannya sedang kamu buka dan
-   jendelanya aktif, nggak ada notifikasi sama sekali.
-2. Kalau nggak, halaman mengirim judul + cuplikan ke service worker (`public/sw.js`), dan service
-   worker yang menampilkannya. **Kuncinya nggak pernah masuk ke service worker** — dia cuma
-   memegang teks yang sudah jadi.
-3. Klik notifikasi → service worker mengirim pesan ke jendela aplikasi (atau membukanya di
-   `/?chat=<id>` kalau aplikasinya belum jalan), lalu chatnya terbuka.
-4. Balasan: kalau browsernya mendukung kolom balas di notifikasi (Chrome Android, lewat
-   `actions` bertipe `text`), teks yang kamu ketik diteruskan ke halaman, dienkripsi di sana, dan
-   dikirim seperti pesan biasa. Kalau jendela aplikasinya sedang tertutup, teks itu dititipkan
-   dulu di Cache Storage (maksimal 10 menit) dan dikirim begitu aplikasinya tersambung — jadi
-   balasan nggak hilang. Di **Chrome desktop** kolom balas di notifikasi belum didukung browser,
-   jadi klik notifikasinya yang membuka chat dan langsung memfokuskan kolom ketik.
-
-Catatan: notifikasi butuh *secure context*, jadi jalan di `localhost` atau di domain HTTPS (lihat
-bagian [HTTPS](#4-https)). Kalau izinnya pernah kamu blokir, tombol di Pengaturan berubah jadi
-"Diblokir browser" — izinnya harus dibuka lagi dari pengaturan situs di browser, bukan dari
-aplikasi ini.
+Notifikasi memerlukan secure context (`localhost` atau domain HTTPS; lihat bagian [HTTPS](#5-https)). Jika izin sebelumnya diblokir, tombol di Pengaturan menampilkan "Diblokir browser", dan izin harus dibuka kembali melalui pengaturan situs pada browser.
