@@ -105,6 +105,16 @@ Keterbatasan: notifikasi panggilan muncul dan berbunyi ketika aplikasi tertutup,
 
 HTTPS wajib jika aplikasi diakses melalui domain atau alamat IP jaringan lokal. `crypto.subtle` (digunakan untuk seluruh enkripsi) dan `getUserMedia` (kamera dan mikrofon) hanya tersedia pada secure context. `localhost` dianggap aman; untuk akses lain diperlukan TLS, misalnya melalui reverse proxy nginx atau Caddy, atau Cloudflare Tunnel.
 
+## Deploy di VPS sendiri
+
+VPS kecil (2 vCPU / 2 GB RAM / 4 GB disk) sudah cukup: satu proses Node di belakang Caddy dengan HTTPS otomatis, semuanya di satu origin. `deploy/setup-vps.sh` memasang Node 22, user sistem, unit systemd, dan Caddyfile; `deploy/update.sh` menarik kode baru lalu restart.
+
+```bash
+sudo bash deploy/setup-vps.sh bychat.my.id
+```
+
+Panduan lengkap (DNS `.my.id`, `.env` produksi, Firebase Authorized domains, kapasitas disk, pemecahan masalah): [`docs/DEPLOY-VPS.md`](docs/DEPLOY-VPS.md).
+
 ## Deploy ke Render
 
 Aplikasi memerlukan host yang menjalankan proses Node secara terus-menerus dan mendukung WebSocket. Render memenuhi syarat ini, sedangkan Vercel, Netlify, dan Cloudflare Workers tidak. Berkas `render.yaml` sudah menetapkan region `singapore`, health check `/healthz`, `NODE_ENV=production`, `AUTH_MODE=firebase`, dan `STORAGE_DRIVER=supabase`. Yang perlu diisi hanya sembilan nilai rahasia.

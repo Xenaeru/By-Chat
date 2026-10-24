@@ -1,0 +1,27 @@
+# Caddyfile.in — template. deploy/setup-vps.sh sudah mengganti domain dan port
+# di bawah, lalu memasangnya ke /etc/caddy/Caddyfile.
+#
+# Caddy mengambil sertifikat Let's Encrypt otomatis, jadi domain harus sudah
+# mengarah ke IP VPS ini (record A) dan port 80 + 443 harus terbuka SEBELUM
+# service ini dijalankan.
+#
+# reverse_proxy meneruskan header Upgrade apa adanya, jadi handshake WebSocket
+# Socket.IO tidak butuh konfigurasi tambahan.
+
+@DOMAIN@ {
+	encode zstd gzip
+
+	# Aplikasi mendengarkan di 0.0.0.0:PORT; port itu tidak perlu dibuka di
+	# firewall karena hanya Caddy di mesin yang sama yang boleh menghubunginya.
+	reverse_proxy 127.0.0.1:@APP_PORT@
+
+	header {
+		# HSTS: browser selalu memakai HTTPS setelah kunjungan pertama.
+		# Jangan pasang ini kalau domainnya masih dipakai untuk uji HTTP.
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	# Access log ikut ke journald (systemctl -u caddy), bukan file sendiri,
+	# supaya disk 4 GB tidak penuh oleh log yang tidak pernah dirotasi.
+}

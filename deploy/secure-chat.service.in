@@ -1,0 +1,53 @@
+# secure-chat.service.in — template unit systemd.
+# Dipasang oleh deploy/setup-vps.sh menjadi /etc/systemd/system/secure-chat.service
+# dengan placeholder di bawah sudah diganti. Jangan copas ke /etc apa adanya.
+
+[Unit]
+Description=By Chat — relay E2EE (Node + Socket.IO)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@APP_USER@
+Group=@APP_USER@
+WorkingDirectory=@APP_DIR@
+
+# Sengaja TIDAK memakai EnvironmentFile: FIREBASE_SERVICE_ACCOUNT berisi JSON
+# satu baris, dan parser EnvironmentFile systemd memperlakukan tanda kutip
+# sebagai sintaks. Aplikasi membaca .env sendiri lewat process.loadEnvFile()
+# di src/config.js, yang mem-parse nilainya apa adanya.
+# NODE_ENV ditegakkan di sini supaya server menolak jalan di mode dev walaupun
+# ada yang salah mengedit .env.
+Environment=NODE_ENV=production
+
+ExecStart=@NODE_BIN@ @APP_DIR@/src/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+# Banyak koneksi Socket.IO = banyak file descriptor.
+LimitNOFILE=65535
+
+# ---- Pengerasan ----
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# AF_NETLINK ikut diizinkan: gcp-metadata (dipakai firebase-admin) memanggil
+# os.networkInterfaces(), dan glibc meng-enumerasi antarmuka lewat netlink.
+# Tanpa ini verifikasi ID token bisa gagal di VPS.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictSUIDSGID=yes
+# ProtectSystem=strict membuat seluruh filesystem read-only. Satu-satunya
+# folder yang boleh ditulis adalah data/ (blob driver local, registry JSON,
+# kunci VAPID, avatar). Dengan STORAGE_DRIVER=supabase isinya nyaris kosong,
+# tapi tetap dibutuhkan untuk kunci VAPID bila env-nya tidak diisi.
+ReadWritePaths=@APP_DIR@/data
+
+[Install]
+WantedBy=multi-user.target
