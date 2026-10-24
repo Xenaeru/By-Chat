@@ -236,7 +236,6 @@ const el = {
   peerSub: $('#peer-sub'),
   btnCallAudio: $('#btn-call-audio'),
   btnCallVideo: $('#btn-call-video'),
-  btnVerify: $('#btn-verify'),
   btnBack: $('#btn-back'),
   messages: $('#messages'),
   typing: $('#typing'),
@@ -345,8 +344,6 @@ const el = {
   statusViewerClose: $('#status-viewer-close'),
   statusPrev: $('#status-prev'),
   statusNext: $('#status-next'),
-
-  btnReport: $('#btn-report'),
 
   contactPage: $('#contact-page'),
   contactBack: $('#contact-back'),
@@ -2254,8 +2251,6 @@ function renderPeerHeader() {
   const canCall = isDm && state.config.calls.enabled;
   el.btnCallAudio.hidden = !canCall;
   el.btnCallVideo.hidden = !canCall;
-  el.btnVerify.hidden = !isDm;
-  el.btnReport.hidden = !isDm;
 
   // Blokir berlaku di perangkat ini saja: kolom ketik dikunci dan pesan dari
   // kontak itu tidak dimunculkan (lihat receiveMessage).
@@ -5389,7 +5384,6 @@ el.panelSettings.querySelector('[data-notify-toggle]').addEventListener('click',
 });
 // `+` membuka halaman tambah kontak, bukan daftar orang yang sedang online.
 el.btnNewChat.addEventListener('click', openContactPage);
-el.btnReport.addEventListener('click', openReportModal);
 el.btnAdmin.addEventListener('click', () => window.open('/admin.html', '_blank', 'noopener'));
 el.contactForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -5474,7 +5468,6 @@ el.viewerStage.addEventListener('click', (event) => {
   if (event.target === el.viewerStage) closeViewer();
 });
 el.btnNewGroup.addEventListener('click', openNewGroup);
-el.btnVerify.addEventListener('click', openSafetyNumber);
 el.btnBack.addEventListener('click', () => {
   // Kembali ke daftar chat menutup percakapan: rekaman dan suara yang sedang
   // berjalan ikut berhenti, bukan terus hidup di layar yang sudah hilang.

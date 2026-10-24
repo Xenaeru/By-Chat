@@ -1082,11 +1082,23 @@ async function checkPhotoAndStatus(andi, budi) {
  * lalu memblokir dan membuka blokir lagi — dan sisi Budi ikut diperiksa.
  */
 async function checkReportAndAdmin(andi, budi) {
-  /* ---- Laporkan dari header chat ---- */
+  /* ---- Laporkan lewat menu titik tiga ---- */
   await andi.page.waitForSelector('#chat-view:not([hidden])');
-  check('Tombol lapor ada di chat pribadi', (await andi.page.$eval('#btn-report', (e) => !e.hidden)) === true);
+  check(
+    'Tombol lapor dan safety number tidak lagi menempel di header',
+    (await andi.page.$('#btn-report')) === null && (await andi.page.$('#btn-verify')) === null
+  );
 
-  await andi.page.click('#btn-report');
+  if (await andi.page.$eval('#chat-options', (node) => node.hidden)) await andi.page.click('#btn-chat-more');
+  await andi.page.waitForSelector('#chat-options:not([hidden])', { timeout: 5000 });
+  const openedReport = await andi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('#chat-options-list .chat-option')].find(
+      (node) => node.querySelector('span')?.textContent.trim() === 'Laporkan'
+    );
+    row?.click();
+    return Boolean(row);
+  });
+  check('Laporkan tersedia di menu titik tiga', openedReport);
   await andi.page.waitForSelector('#report-reason', { timeout: 10000 });
   const reasonCount = await andi.page.$$eval('#report-reason option', (nodes) => nodes.length);
   check('Alasan laporan datang dari server', reasonCount >= 4, `${reasonCount} pilihan`);
@@ -2250,6 +2262,42 @@ try {
     'Di dalam percakapan, navbar bawah menghilang dan chatnya penuh layar',
     chatDocked.tabbar === 'none' && chatDocked.chatVisible,
     JSON.stringify(chatDocked)
+  );
+
+  // Header hp: nama kontak harus dapat tempat. Dulu tombol tambahan memakan
+  // seluruh lebarnya, judulnya menyusut jadi nol, dan status "online" tumpah ke
+  // bawah tombol telepon.
+  const headerFit = await budi.page.evaluate(() => {
+    const title = document.querySelector('.chat-title');
+    const name = document.querySelector('#peer-name');
+    const sub = document.querySelector('#peer-sub');
+    const buttons = [...document.querySelectorAll('.chat-header .icon-btn:not([hidden])')];
+    const nameRect = name.getBoundingClientRect();
+    const subRect = sub.getBoundingClientRect();
+    const titleRect = title.getBoundingClientRect();
+    // Tombol yang dihitung cuma yang ada di kanan judul; tombol kembali duduk di
+    // kiri dan bukan pembanding yang benar.
+    const rightButtons = buttons.filter((node) => node.getBoundingClientRect().left >= titleRect.right - 1);
+    const firstButtonLeft = Math.min(...rightButtons.map((node) => node.getBoundingClientRect().left));
+    return {
+      titleWidth: Math.round(titleRect.width),
+      nameWidth: Math.round(nameRect.width),
+      nameClipped: name.scrollWidth > name.clientWidth + 1,
+      subInside: subRect.right <= firstButtonLeft + 0.5,
+      rightButtons: rightButtons.length,
+      buttons: buttons.length,
+    };
+  });
+  check(
+    'Di hp nama kontak terbaca, bukan tergencet tombol header',
+    headerFit.nameWidth >= 60 && headerFit.titleWidth >= 90 && !headerFit.nameClipped,
+    JSON.stringify(headerFit)
+  );
+  check('Status di header hp tidak tumpah menimpa tombol', headerFit.subInside, JSON.stringify(headerFit));
+  check(
+    'Header hp cuma punya tombol kembali, telepon, video, dan menu',
+    headerFit.buttons === 4,
+    JSON.stringify(headerFit)
   );
 
   // Emulasi sentuh dinyalakan lebih dulu: mengaktifkannya bisa menggeser tata

@@ -250,8 +250,15 @@ try {
   await andi.page.keyboard.press('Escape');
   await andi.page.waitForSelector('#msg-menu[hidden]');
 
-  /* 7. Laporan dari header chat */
-  await andi.page.click('#btn-report');
+  /* 7. Laporan lewat menu titik tiga */
+  await andi.page.click('#btn-chat-more');
+  await andi.page.waitForSelector('#chat-options:not([hidden])');
+  await andi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('#chat-options-list .chat-option')].find(
+      (node) => node.querySelector('span')?.textContent.trim() === 'Laporkan'
+    );
+    row?.click();
+  });
   await andi.page.waitForSelector('#report-reason');
   await andi.page.type('#report-detail', 'kirim link iklan terus-terusan');
   await sleep(400);
