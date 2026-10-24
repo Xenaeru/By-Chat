@@ -2787,6 +2787,46 @@ function chatMenuItems(room) {
   ];
 }
 
+/* Di layar hp daftar 15 pilihan itu menutupi hampir seluruh percakapan, jadi
+   yang sering dipakai saja yang tampil dan sisanya masuk submenu "Lainnya" —
+   susunannya mengikuti menu WhatsApp. Di desktop semuanya tetap terlihat. */
+const MOBILE_MENU_IDS = ['info', 'search', 'report', 'block', 'mute', 'disappear', 'theme'];
+const MOBILE_MORE_IDS = ['select', 'favorite', 'lists', 'call-link', 'group-call', 'close', 'clear', 'delete'];
+
+function narrowMenu() {
+  return window.matchMedia('(max-width: 760px)').matches;
+}
+
+function chatMenuEntries(room) {
+  const items = chatMenuItems(room);
+  if (!narrowMenu()) return items;
+
+  const byId = new Map(items.filter((item) => item.id).map((item) => [item.id, item]));
+  const top = MOBILE_MENU_IDS.map((id) => byId.get(id)).filter((item) => item && !item.hidden);
+  const rest = MOBILE_MORE_IDS.map((id) => byId.get(id)).filter((item) => item && !item.hidden);
+
+  if (rest.length) {
+    top.push({
+      id: 'more',
+      label: 'Lainnya',
+      // Isinya dibangun dari item aslinya, jadi label yang berubah (favorit,
+      // bisukan) dan status nonaktifnya ikut apa adanya.
+      submenu: () => ({
+        title: 'Lainnya',
+        items: rest.map((item) => ({
+          label: item.label,
+          danger: item.danger,
+          disabled: item.disabled,
+          submenuId: item.submenu ? item.id : null,
+          run: () => runChatOption(item.id, room),
+        })),
+      }),
+    });
+  }
+
+  return top;
+}
+
 function optionRow({ label, icon, danger, disabled, arrow, active, onSelect }) {
   const button = document.createElement('button');
   button.type = 'button';
@@ -2811,8 +2851,12 @@ function renderChatOptions(room, submenuId = null) {
 
   // Submenu dibangun ulang dari definisinya tiap kali digambar, jadi tanda
   // centangnya selalu mengikuti nilai yang tersimpan sekarang.
+  // "Lainnya" cuma ada di menu hp, sementara submenu lain (seperti "Tambah ke
+  // daftar") cuma ada di daftar penuh — jadi dua-duanya dicari.
+  const entries = chatMenuEntries(room);
   const submenu = submenuId
-    ? chatMenuItems(room).find((entry) => entry.id === submenuId)?.submenu?.()
+    ? (entries.find((entry) => entry.id === submenuId) ??
+        chatMenuItems(room).find((entry) => entry.id === submenuId))?.submenu?.()
     : null;
 
   if (submenu) {
@@ -2835,8 +2879,14 @@ function renderChatOptions(room, submenuId = null) {
       list.appendChild(
         optionRow({
           label: item.label,
+          danger: item.danger,
+          disabled: item.disabled,
           active: item.active,
+          // Item yang punya submenu sendiri (misal "Tambah ke daftar" di dalam
+          // "Lainnya") membuka submenu itu, bukan menjalankan aksi.
+          arrow: Boolean(item.submenuId),
           onSelect: () => {
+            if (item.submenuId) return renderChatOptions(room, item.submenuId);
             // Item bertanda keepOpen tetap membuka submenu ini supaya orang bisa
             // mencentang beberapa daftar berturut-turut.
             if (!item.keepOpen) closeChatOptions();
@@ -2850,7 +2900,7 @@ function renderChatOptions(room, submenuId = null) {
     return;
   }
 
-  for (const item of chatMenuItems(room)) {
+  for (const item of entries) {
     if (item.sep) {
       const sep = document.createElement('div');
       sep.className = 'chat-option-sep';

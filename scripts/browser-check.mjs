@@ -2300,6 +2300,65 @@ try {
     JSON.stringify(headerFit)
   );
 
+  const zoom = await budi.page.evaluate(() => ({
+    viewportMeta: document.querySelector('meta[name="viewport"]').content,
+    touchAction: getComputedStyle(document.documentElement).touchAction,
+  }));
+  check(
+    'Halaman hp tidak bisa dicubit atau di-double-tap untuk zoom',
+    /user-scalable=no/.test(zoom.viewportMeta) &&
+      /maximum-scale=1/.test(zoom.viewportMeta) &&
+      zoom.touchAction.includes('pan-x') &&
+      !zoom.touchAction.includes('pinch'),
+    JSON.stringify(zoom)
+  );
+
+  // Menu titik tiga di hp: cuma pilihan yang sering dipakai, sisanya di
+  // "Lainnya" seperti WhatsApp — supaya menunya tidak menutupi percakapan.
+  await budi.page.click('#btn-chat-more');
+  await budi.page.waitForSelector('#chat-options:not([hidden])', { timeout: 5000 });
+  const mobileMenu = await budi.page.evaluate(() => {
+    const list = document.querySelector('#chat-options-list');
+    const rows = [...list.querySelectorAll('.chat-option')];
+    const labels = rows.map((node) => node.querySelector('span')?.textContent.trim());
+    const more = rows.find((node) => node.querySelector('span')?.textContent.trim() === 'Lainnya');
+    return {
+      labels,
+      height: Math.round(list.getBoundingClientRect().height),
+      viewport: window.innerHeight,
+      moreHasArrow: Boolean(more?.querySelector('.chat-option-arrow')),
+    };
+  });
+  check(
+    'Menu titik tiga di hp cuma memuat pilihan utama plus Lainnya',
+    mobileMenu.labels.join('|') ===
+      ['Info kontak', 'Cari', 'Laporkan', 'Blokir', 'Bisukan notifikasi', 'Pesan sementara', 'Tema obrolan', 'Lainnya'].join('|'),
+    mobileMenu.labels.join(' | ')
+  );
+  check('Lainnya ditandai panah submenu', mobileMenu.moreHasArrow, JSON.stringify(mobileMenu));
+  check(
+    'Menu titik tiga di hp tidak menutupi seluruh layar',
+    mobileMenu.height <= mobileMenu.viewport * 0.72 + 1,
+    JSON.stringify(mobileMenu)
+  );
+
+  const moreRows = await budi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('#chat-options-list .chat-option')].find(
+      (node) => node.querySelector('span')?.textContent.trim() === 'Lainnya'
+    );
+    row?.click();
+    return [...document.querySelectorAll('#chat-options-list .chat-option > span')].map((node) =>
+      node.textContent.trim()
+    );
+  });
+  check(
+    'Submenu Lainnya memuat aksi obrolan yang jarang dipakai',
+    moreRows.join('|') ===
+      ['Pilih pesan', 'Tambah ke favorit', 'Tambah ke daftar', 'Kirim tautan menelepon', 'Telepon grup baru', 'Tutup obrolan', 'Bersihkan obrolan', 'Hapus obrolan'].join('|'),
+    moreRows.join(' | ')
+  );
+  await budi.page.evaluate(() => document.querySelector('#chat-options-catcher').click());
+
   // Emulasi sentuh dinyalakan lebih dulu: mengaktifkannya bisa menggeser tata
   // letak sedikit, dan titik yang dihitung sebelum itu kadang mendarat di
   // gelembung lain yang menumpuk di bawah pesan yang dituju.

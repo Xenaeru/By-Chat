@@ -147,7 +147,9 @@
    milik UA, jadi tanpa ini .app / .login / .modal tetap tampil walau hidden. */
 [hidden] { display: none !important; }
 
-html, body { height: 100%; margin: 0; }
+/* `pan-x pan-y` = boleh menggeser, tidak boleh mencubit untuk zoom. Ini
+   jaring pengaman untuk browser yang mengabaikan `user-scalable=no`. */
+html, body { height: 100%; margin: 0; touch-action: pan-x pan-y; }
 
 body {
   background: var(--cloud);

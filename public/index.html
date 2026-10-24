@@ -2,7 +2,11 @@
 <html lang="id">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<!-- Zoom browser dimatikan: aplikasi ini memakai gestur sendiri (tahan pesan,
+     geser panel) dan zoom tidak diperlukan di aplikasi chat. `maximum-scale` dan
+     `user-scalable` menanganinya di Android/modern iOS, `touch-action` di
+     style.css menutup sisa browser yang mengabaikan keduanya. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#f7f8fa" />
 <title>By Chat</title>
 <!-- Inter, keluarga huruf yang ditulis DESIGN.md. Kalau font ini gagal
