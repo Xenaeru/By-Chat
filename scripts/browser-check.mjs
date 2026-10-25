@@ -1478,6 +1478,19 @@ try {
   const fileInput = await andi.page.$('#file-input');
   await fileInput.uploadFile(sample.file);
 
+  await andi.page.waitForSelector('.media-preview-card .media-preview-item img', { timeout: 10000 });
+  const previewed = await andi.page.$eval('.media-preview-card', (card) => ({
+    title: card.querySelector('h3')?.textContent.trim(),
+    file: card.querySelector('figcaption span')?.textContent.trim(),
+    sent: document.querySelectorAll('.msg.out .attach-media').length,
+  }));
+  check(
+    'Foto berhenti di pratinjau sebelum dikirim',
+    previewed.title === 'Pratinjau' && previewed.file === sample.name,
+    JSON.stringify(previewed)
+  );
+
+  await andi.page.click('.media-preview-card [data-send]');
   await andi.page.waitForFunction(() => document.querySelector('.msg.out .attach-media img')?.naturalWidth > 0, {
     timeout: 20000,
   });
@@ -1650,6 +1663,10 @@ try {
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }, videoBase64);
 
+  await andi.page.waitForSelector('.media-preview-card .media-preview-item video', { timeout: 10000 });
+  check('Video juga berhenti di pratinjau sebelum dikirim', true);
+  await andi.page.click('.media-preview-card [data-send]');
+
   await andi.page.waitForFunction(
     () => [...document.querySelectorAll('.msg.out .attach-video')].some((node) => node.querySelector('.attach-badge')),
     { timeout: 30000 }
@@ -1690,7 +1707,78 @@ try {
   await budi.page.click('#viewer-close');
   await budi.page.waitForSelector('#viewer[hidden]', { timeout: 5000 });
 
-  /* ---- 3c. Pilihan pesan: klik kanan, tahan, balas, teruskan, hapus ---- */
+  /* ---- 3c. Status video: pratinjau, kirim, lalu diputar penerima ---- */
+  await andi.page.bringToFront();
+  await goView(andi.page, 'status');
+  await andi.page.click('#status-me-add');
+  await andi.page.waitForSelector('#status-photo', { timeout: 10000 });
+  await andi.page.evaluate((base64) => {
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const file = new File([bytes], 'status-video.webm', { type: 'video/webm' });
+    const input = document.querySelector('#status-photo');
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, videoBase64);
+  await andi.page.waitForSelector('#status-draft video', { timeout: 10000 });
+  check('Video status tampil di pratinjau sebelum dibagikan', true);
+
+  await andi.page.click('.modal-card [data-publish]');
+  await andi.page.waitForFunction(
+    () => (document.querySelector('#status-stage .status-video')?.readyState || 0) >= 1,
+    { timeout: 30000 }
+  );
+  const ownVideoStatus = await andi.page.evaluate(() => {
+    const video = document.querySelector('#status-stage .status-video');
+    return {
+      blob: video?.src.startsWith('blob:') || false,
+      controls: video?.controls === true,
+      width: video?.videoWidth || 0,
+    };
+  });
+  check(
+    'Status video sendiri tampil dengan pemutar',
+    ownVideoStatus.blob && ownVideoStatus.controls && ownVideoStatus.width > 0,
+    JSON.stringify(ownVideoStatus)
+  );
+  await andi.page.click('#status-viewer-close');
+  await andi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
+
+  await goView(budi.page, 'status');
+  await budi.page.waitForSelector('.status-item', { timeout: 15000 });
+  await budi.page.click('.status-item');
+  const videoStatusShown = () =>
+    budi.page.waitForFunction(
+      () => (document.querySelector('#status-stage .status-video')?.readyState || 0) >= 1,
+      { timeout: 8000 }
+    );
+  const straightToVideoStatus = await videoStatusShown().then(
+    () => true,
+    () => false
+  );
+  if (!straightToVideoStatus) {
+    await budi.page.click('#status-next');
+    await videoStatusShown();
+  }
+  const receivedVideoStatus = await budi.page.evaluate(() => {
+    const video = document.querySelector('#status-stage .status-video');
+    return { controls: video?.controls === true, width: video?.videoWidth || 0 };
+  });
+  check(
+    'Status video sampai ke Budi dan siap diputar',
+    receivedVideoStatus.controls && receivedVideoStatus.width > 0,
+    JSON.stringify(receivedVideoStatus)
+  );
+
+  await budi.page.evaluate(() => {
+    document.querySelector('#status-stage .status-video')?.dispatchEvent(new Event('ended'));
+  });
+  await budi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
+  check('Setelah video status selesai, penampil lanjut sendiri', true);
+  await goView(budi.page, 'chats');
+
+  /* ---- 3d. Pilihan pesan: klik kanan, tahan, balas, teruskan, hapus ---- */
   // Tahan di pesan (jalur layar sentuh) membuka baris reaksi + daftar pilihan.
   await openMenu(budi.page, '.msg:not(.out)', { longPress: true });
   const quickReactions = await budi.page.$$eval('#msg-menu-quick button', (nodes) =>
@@ -2340,6 +2428,23 @@ try {
     'Menekan menu di navbar membuka panelnya dan menutup percakapan',
     afterTab.panel === 'settings' && afterTab.tabActive === 'settings' && afterTab.chatVisible === false,
     JSON.stringify(afterTab)
+  );
+
+  await goView(budi.page, 'status');
+  await budi.page.waitForSelector('.status-item', { timeout: 10000 });
+  const statusCard = await budi.page.$eval('.status-item', (card) => {
+    const rect = card.getBoundingClientRect();
+    return {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      meta: getComputedStyle(card.querySelector('.status-item-text .muted')).display,
+      sectionLabel: getComputedStyle(document.querySelector('.status-label-mobile')).display,
+    };
+  });
+  check(
+    'Kartu status di hp berbentuk portrait dan tanpa teks penjelas',
+    statusCard.height >= statusCard.width * 1.25 && statusCard.meta === 'none' && statusCard.sectionLabel === 'none',
+    JSON.stringify(statusCard)
   );
   await goView(budi.page, 'chats');
 

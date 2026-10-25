@@ -31,7 +31,7 @@ Mode pengembangan menolak berjalan ketika `NODE_ENV=production`.
 | File | Dienkripsi di browser sebelum diunggah (AES-GCM per bagian) dengan indikator progres. Foto dan video dibuka dalam penampil layar penuh di dalam aplikasi; dokumen lain diunduh. Nama file dan kuncinya hanya berada di dalam pesan terenkripsi. |
 | Pesan suara | Perekaman hingga 5 menit dengan pengatur waktu dan visualisasi gelombang. Rekaman dikirim melalui jalur lampiran terenkripsi yang sama. Pemutaran mendukung kecepatan 1x, 1,5x, dan 2x. |
 | Panggilan | Suara, video, dan berbagi layar melalui WebRTC. Mendukung panggilan 1:1 maupun grup hingga 8 peserta, serta penambahan peserta di tengah panggilan. Riwayat panggilan (tidak terjawab, terjawab beserta durasi, sedang berlangsung) tercatat di chat dan panel Panggilan. |
-| Status | Teks atau foto yang hilang otomatis setelah 24 jam. Profil publik memakai envelope dengan kunci sendiri sehingga siapa pun bisa membuka; profil privat tetap terenkripsi per kontak dan hanya sampai ke orang yang pernah bertukar pesan. |
+| Status | Teks, foto, atau video yang hilang otomatis setelah 24 jam. Profil publik memakai envelope dengan kunci sendiri sehingga siapa pun bisa membuka; profil privat tetap terenkripsi per kontak dan hanya sampai ke orang yang pernah bertukar pesan. |
 | Profil | Kartu profil bergaya WhatsApp: banner, foto, nama, ID pengguna, status teks, tahun lahir, tombol Edit status, dan sakelar Profil Publik. |
 | Saluran | Siaran satu arah yang bisa dibuat siapa pun: nama, deskripsi, foto opsional, jelajah saluran lain, ikuti/berhenti ikuti. Hanya admin saluran yang bisa mengirim; pengikut tidak melihat nama penulis, dan daftar pengikut hanya untuk admin saluran. |
 | Panel info | Ketuk nama di header obrolan untuk membuka info orang, grup, atau saluran: tentang, media, anggota/pengikut, bisukan, favorit, blokir, laporkan, keluar grup, dan (untuk staf) pengaturan jabatan. |
@@ -197,7 +197,7 @@ Skrip ini membuat ID token asli yang ditandatangani Google, menyambung ke server
 | Pesan terenkripsi selama penerima offline | Isi pesan |
 | Nama acak blob file dan isi terenkripsinya | Nama file asli, tipe, kunci, dan isi file |
 | Informasi siapa menelepon siapa dan waktunya | Audio dan video panggilan |
-| Informasi siapa memasang status dan waktunya | Isi status (teks maupun foto) |
+| Informasi siapa memasang status dan waktunya | Isi status (teks, foto, maupun video) |
 | Laporan yang ditulis pelapor serta daftar akun terblokir beserta alasannya | Isi percakapan yang dilaporkan |
 | Pengirim sebuah id pesan (untuk fitur "hapus untuk semua orang") | Isi pesan tersebut |
 | Foto profil dan foto saluran (tidak dienkripsi) | - |

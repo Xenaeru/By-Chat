@@ -129,6 +129,11 @@ const state = {
   incoming: null,
   blobUrls: new Map(),
   uploadToken: 0,
+  mediaPreviewUrls: [],
+  /** Object URL pratinjau media di pembuat status. */
+  statusDraftUrl: null,
+  /** Object URL media status yang sedang diputar. */
+  statusMediaUrl: null,
   /** Pemutar pesan suara yang sedang aktif; cuma satu yang boleh berbunyi. */
   voice: { id: null, audio: null, speed: 1, loading: null },
   /** Node pemutar di DOM sekarang, dipakai buat memperbarui progres. */
@@ -2197,6 +2202,73 @@ el.msgMenuCatcher.addEventListener('click', () => {
 /* ------------------------------------------------------------------ *
  * Attachments
  * ------------------------------------------------------------------ */
+function clearMediaPreview() {
+  for (const url of state.mediaPreviewUrls) URL.revokeObjectURL(url);
+  state.mediaPreviewUrls = [];
+  el.modalCard.classList.remove('media-preview-card');
+  el.modal.classList.remove('media-preview-open');
+}
+
+function openMediaPreview(files) {
+  const media = files.filter((file) => ['image', 'video'].includes(fileKind(file.type)));
+  if (!media.length) return sendFiles(files);
+
+  clearMediaPreview();
+  const urls = media.map((file) => URL.createObjectURL(file));
+  state.mediaPreviewUrls = urls;
+  const extra = files.length - media.length;
+
+  openModal(`
+    <header class="media-preview-head">
+      <div>
+        <h3>Pratinjau</h3>
+        <p class="sub">Cek dulu sebelum dikirim.</p>
+      </div>
+      <button type="button" class="icon-btn" data-close title="Tutup" aria-label="Tutup">
+        <svg class="ico"><use href="#i-close" /></svg>
+      </button>
+    </header>
+    <div class="media-preview-stage">
+      ${media
+        .map((file, index) => {
+          const kind = fileKind(file.type);
+          const preview =
+            kind === 'video'
+              ? `<video src="${urls[index]}" controls playsinline preload="metadata" aria-label="${esc(file.name)}"></video>`
+              : `<img src="${urls[index]}" alt="${esc(file.name)}" />`;
+          return `
+            <figure class="media-preview-item">
+              ${preview}
+              <figcaption>
+                <span>${esc(file.name)}</span>
+                <small>${formatBytes(file.size)}</small>
+              </figcaption>
+            </figure>
+          `;
+        })
+        .join('')}
+    </div>
+    ${extra ? `<p class="media-preview-more">${extra} file lain ikut terkirim.</p>` : ''}
+    <div class="modal-actions">
+      <button type="button" data-close>Batal</button>
+      <button type="button" class="primary" data-send>Kirim</button>
+    </div>
+  `);
+  el.modalCard.classList.add('media-preview-card');
+  el.modal.classList.add('media-preview-open');
+
+  for (const button of el.modalCard.querySelectorAll('[data-close]')) {
+    button.addEventListener('click', closeModal);
+  }
+  const sendButton = el.modalCard.querySelector('[data-send]');
+  sendButton.addEventListener('click', () => {
+    sendButton.disabled = true;
+    sendButton.textContent = 'Mengirim…';
+    closeModal();
+    sendFiles(files);
+  });
+}
+
 async function sendFiles(files) {
   const room = state.rooms.get(state.activeRoomId);
   if (!room || !files?.length) return;
@@ -2439,6 +2511,10 @@ function selectRoom(roomId) {
   renderMessages();
   renderChatList();
   paintComposerAction();
+  // Di desktop, transisi ini menandai percakapan benar-benar berganti.
+  el.chatView.classList.remove('chat-in');
+  void el.chatView.offsetWidth;
+  el.chatView.classList.add('chat-in');
   el.input.focus();
 }
 
@@ -4709,6 +4785,8 @@ function openModal(html) {
 }
 
 function closeModal() {
+  clearMediaPreview();
+  clearStatusDraftPreview();
   el.modal.hidden = true;
   el.modalCard.innerHTML = '';
 }
@@ -6513,9 +6591,11 @@ function renderStatuses() {
   el.statusMeAvatar.textContent = initials(state.username || state.profile.displayName);
   el.statusMeAvatar.dataset.uid = state.me.uid;
   el.statusMeAvatar.classList.toggle('ring', mine.length > 0);
+  el.statusMe.classList.toggle('has-status', mine.length > 0);
+  el.statusMeOpen.setAttribute('aria-label', mine.length ? 'Lihat status saya' : 'Buat status');
   el.statusMeSub.textContent = mine.length
     ? `${mine.length} status · terakhir ${formatListTime(mine.at(-1).at)}`
-    : 'Ketuk buat tambah status';
+    : 'Buat status';
 
   const owners = statusOwnerList().filter((uid) => uid !== state.me.uid);
   el.statusList.innerHTML = '';
@@ -6539,7 +6619,7 @@ function renderStatuses() {
         : '';
 
     const li = document.createElement('li');
-    li.className = 'status-item';
+    li.className = `status-item${unseen ? ' unseen' : ''}`;
     li.dataset.uid = uid;
     li.innerHTML = `
       <span class="avatar ${unseen ? 'ring' : 'ring-seen'}${photo && !peerByUid(uid) ? ' has-photo' : ''}" ${avatarAttrs}>${esc(initials(name))}</span>
@@ -6727,6 +6807,23 @@ const STATUS_SHOW_MS = 5000;
 let statusToken = 0;
 let statusAdvance = null;
 
+function clearStatusDraftPreview() {
+  if (state.statusDraftUrl) URL.revokeObjectURL(state.statusDraftUrl);
+  state.statusDraftUrl = null;
+}
+
+function clearStatusMedia() {
+  if (state.statusMediaUrl) URL.revokeObjectURL(state.statusMediaUrl);
+  state.statusMediaUrl = null;
+}
+
+function setStatusProgress(duration = null, paused = true) {
+  const bar = el.statusProgress.querySelector('i.now');
+  if (!bar) return;
+  if (duration) bar.style.setProperty('--status-duration', `${Math.max(300, Math.round(duration))}ms`);
+  bar.classList.toggle('paused', paused);
+}
+
 async function openStatusViewer(uid, at = null) {
   const list = statusesFrom(uid);
   if (!list.length) return;
@@ -6741,6 +6838,7 @@ function closeStatusViewer() {
   state.statusView = null;
   statusToken++;
   clearTimeout(statusAdvance);
+  clearStatusMedia();
   if (el.statusViewer) el.statusViewer.hidden = true;
   if (el.statusStage) el.statusStage.innerHTML = '';
   if (state.me) renderStatuses();
@@ -6798,46 +6896,103 @@ async function renderStatusView() {
   el.statusProgress.innerHTML = list
     .map((_, i) => `<i class="${i < view.index ? 'done' : i === view.index ? 'now' : ''}"></i>`)
     .join('');
+  setStatusProgress(STATUS_SHOW_MS, true);
 
+  clearStatusMedia();
   el.statusStage.innerHTML = '<div class="status-note">Membuka…</div>';
   const decoded = await decodeStatus(status);
   // Kabur kalau pembukanya sudah pindah atau ditutup selagi menunggu.
   if (!state.statusView || state.statusView.token !== view.token) return;
 
   markStatusSeen(status.id);
-  await paintStatusStage(decoded, mine ? 'Ketuk ikon tempat sampah buat menghapus ini' : '');
+  const painted = await paintStatusStage(
+    decoded,
+    mine ? 'Ketuk ikon tempat sampah buat menghapus ini' : '',
+    view.token
+  );
+  if (painted.kind === 'stale') return;
+  // Video punya progres sendiri: baru lanjut setelah videonya selesai diputar.
+  if (painted.kind === 'video') return;
+  setStatusProgress(STATUS_SHOW_MS, false);
   scheduleStatusAdvance();
 }
 
-async function paintStatusStage(decoded, hint = '') {
+async function paintStatusStage(decoded, hint = '', token = null) {
   if (decoded.error) {
     el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#5a1313">⚠️ ${esc(decoded.error)}</div>`;
-    return;
+    return { kind: 'text' };
   }
 
   if (decoded.attachment) {
-    el.statusStage.innerHTML = '<div class="status-note">Membuka gambar…</div>';
+    const kind = fileKind(decoded.attachment.mime);
+    if (!['image', 'video'].includes(kind)) {
+      el.statusStage.innerHTML =
+        '<div class="status-text" style="--status-bg:#7f1d1d">Lampiran status ini tidak didukung.</div>';
+      return { kind: 'text' };
+    }
+
+    el.statusStage.innerHTML = `<div class="status-note">Membuka ${kind === 'video' ? 'video' : 'gambar'}…</div>`;
     try {
       const url = await fetchAttachment({
         attachment: decoded.attachment,
         getIdToken: () => state.auth.getIdToken(),
       });
+      if (token !== null && state.statusView?.token !== token) {
+        URL.revokeObjectURL(url);
+        return { kind: 'stale' };
+      }
+
+      clearStatusMedia();
+      state.statusMediaUrl = url;
+      if (kind === 'video') {
+        el.statusStage.innerHTML = `
+          <video class="status-video" controls playsinline preload="metadata" aria-label="Status video"></video>
+          ${decoded.text ? `<span class="status-caption">${esc(decoded.text)}</span>` : ''}
+          ${hint ? `<span class="status-hint">${esc(hint)}</span>` : ''}
+        `;
+        const video = el.statusStage.querySelector('video');
+        const durationOf = () =>
+          Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : null;
+        video.addEventListener('loadedmetadata', () => {
+          if (state.statusView?.token !== token) return;
+          setStatusProgress(durationOf(), video.paused);
+        });
+        video.addEventListener('play', () => {
+          if (state.statusView?.token !== token) return;
+          setStatusProgress(durationOf(), false);
+        });
+        video.addEventListener('pause', () => {
+          if (state.statusView?.token !== token || video.ended) return;
+          setStatusProgress(null, true);
+        });
+        video.addEventListener('ended', () => {
+          if (state.statusView?.token === token) nextStatus(1);
+        });
+        video.src = url;
+        video.play().catch(() => {
+          /* Autoplay bisa ditolak; kontrol tetap ada untuk memulai manual. */
+        });
+        return { kind: 'video' };
+      }
+
       el.statusStage.innerHTML = `
         <img class="status-image" alt="Status" />
         ${decoded.text ? `<span class="status-caption">${esc(decoded.text)}</span>` : ''}
         ${hint ? `<span class="status-hint">${esc(hint)}</span>` : ''}
       `;
       el.statusStage.querySelector('img').src = url;
+      return { kind: 'image' };
     } catch (err) {
       el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#7f1d1d">⚠️ ${esc(err.message)}</div>`;
+      return { kind: 'text' };
     }
-    return;
   }
 
   el.statusStage.innerHTML = `
     <div class="status-text" style="--status-bg:${decoded.color || STATUS_BACKGROUNDS[0]}">${esc(decoded.text)}</div>
     ${hint ? `<span class="status-hint">${esc(hint)}</span>` : ''}
   `;
+  return { kind: 'text' };
 }
 
 async function publishStatus({ text, color, attachment }) {
@@ -6898,6 +7053,7 @@ async function deleteStatus(id) {
 }
 
 function openStatusComposer() {
+  clearStatusDraftPreview();
   openModal(`
     <h3>Buat status</h3>
     <p class="sub">Hilang sendiri setelah 24 jam. Isinya terenkripsi end-to-end — server cuma lihat blob.</p>
@@ -6915,11 +7071,12 @@ function openStatusComposer() {
           `<button type="button" class="swatch${index === 0 ? ' active' : ''}" data-color="${color}" style="--swatch:${color}" aria-label="Warna ${index + 1}"></button>`
       ).join('')}
     </div>
-    <p class="sub" id="status-note">Pilih warna latar, atau lampirkan foto.</p>
-    <input type="file" id="status-photo" accept="image/*" hidden />
+    <div class="status-draft" id="status-draft" hidden></div>
+    <p class="sub" id="status-note">Pilih warna latar, atau lampirkan foto/video.</p>
+    <input type="file" id="status-photo" accept="image/*,video/*" hidden />
     <div class="modal-actions">
       <button data-close>Batal</button>
-      <button data-photo>Lampirkan foto</button>
+      <button data-photo>Lampirkan foto/video</button>
       <button class="primary" data-publish>Bagikan</button>
     </div>
   `);
@@ -6927,6 +7084,7 @@ function openStatusComposer() {
   let chosenFile = null;
   let color = STATUS_BACKGROUNDS[0];
   const note = () => el.modalCard.querySelector('#status-note');
+  const draft = () => el.modalCard.querySelector('#status-draft');
 
   el.modalCard.querySelector('#status-colors').addEventListener('click', (event) => {
     const button = event.target.closest('[data-color]');
@@ -6940,13 +7098,39 @@ function openStatusComposer() {
   });
 
   el.modalCard.querySelector('#status-photo').addEventListener('change', (event) => {
-    [chosenFile] = event.target.files || [];
-    note().textContent = chosenFile ? `Siap dibagikan: ${chosenFile.name}` : 'Pilih warna latar, atau lampirkan foto.';
+    const [file] = event.target.files || [];
+    event.target.value = '';
+    clearStatusDraftPreview();
+    chosenFile = null;
+    const preview = draft();
+    preview.hidden = true;
+    preview.innerHTML = '';
+
+    if (!file) {
+      note().textContent = 'Pilih warna latar, atau lampirkan foto/video.';
+      return;
+    }
+
+    const kind = fileKind(file.type);
+    if (!['image', 'video'].includes(kind)) {
+      note().textContent = 'Pilih file foto atau video.';
+      return;
+    }
+
+    chosenFile = file;
+    const url = URL.createObjectURL(file);
+    state.statusDraftUrl = url;
+    preview.innerHTML =
+      kind === 'video'
+        ? `<video src="${url}" controls playsinline preload="metadata" aria-label="Pratinjau ${esc(file.name)}"></video>`
+        : `<img src="${url}" alt="Pratinjau ${esc(file.name)}" />`;
+    preview.hidden = false;
+    note().textContent = `Siap dibagikan: ${file.name} (${formatBytes(file.size)})`;
   });
 
   el.modalCard.querySelector('[data-publish]').addEventListener('click', async () => {
     const text = el.modalCard.querySelector('#status-text').value.trim();
-    if (!text && !chosenFile) return showToast('Tulis sesuatu atau lampirkan foto dulu.');
+    if (!text && !chosenFile) return showToast('Tulis sesuatu atau lampirkan foto/video dulu.');
 
     const publish = el.modalCard.querySelector('[data-publish]');
     publish.disabled = true;
@@ -7320,6 +7504,7 @@ el.statusViewerMenu.addEventListener('click', async () => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  if (!el.modal.hidden) return closeModal();
   if (!el.chatOptions.hidden) return closeChatOptions();
   if (!el.chatSearch.hidden) return closeChatSearch();
   if (state.selection) return exitSelection();
@@ -7454,10 +7639,10 @@ el.modal.addEventListener('click', (event) => {
 });
 
 el.btnAttach.addEventListener('click', () => el.fileInput.click());
-el.fileInput.addEventListener('change', async () => {
+el.fileInput.addEventListener('change', () => {
   const files = [...el.fileInput.files];
   el.fileInput.value = '';
-  await sendFiles(files);
+  openMediaPreview(files);
 });
 el.uploadCancel.addEventListener('click', () => {
   state.uploadToken++;
