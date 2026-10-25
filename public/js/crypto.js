@@ -253,3 +253,82 @@ export async function decryptFile(ciphertext, meta) {
 
   return new Blob(parts);
 }
+
+/**
+ * Decrypt a ReadableStream of ciphertext as it arrives. Each yielded value is
+ * one decrypted chunk, so callers can start playing a video or showing an
+ * image before the whole download has finished.
+ */
+export async function* decryptFileChunks(stream, meta) {
+  const fileKey = await crypto.subtle.importKey('raw', unb64(meta.key), 'AES-GCM', false, ['decrypt']);
+  const sealedChunk = FILE_CHUNK_SIZE + GCM_TAG_BYTES;
+  const reader = stream.getReader();
+  const parts = [];
+  let pendingLength = 0;
+  let index = 0;
+
+  // Ambil tepat `size` byte dari antrean tanpa menyalin seluruh sisa unduhan
+  // setiap kali potongan jaringan datang. Satu chunk yang utuh bisa langsung
+  // dipakai sebagai subarray; potongan kecil baru digabung saat perlu.
+  const take = (size) => {
+    if (parts[0].length >= size) {
+      const bytes = parts[0].subarray(0, size);
+      parts[0] = parts[0].subarray(size);
+      if (!parts[0].length) parts.shift();
+      pendingLength -= size;
+      return bytes;
+    }
+
+    const bytes = new Uint8Array(size);
+    let filled = 0;
+    while (filled < size) {
+      const part = parts[0];
+      const needed = size - filled;
+      if (part.length <= needed) {
+        bytes.set(part, filled);
+        filled += part.length;
+        parts.shift();
+      } else {
+        bytes.set(part.subarray(0, needed), filled);
+        parts[0] = part.subarray(needed);
+        filled += needed;
+      }
+    }
+    pendingLength -= size;
+    return bytes;
+  };
+
+  try {
+    while (index < meta.totalChunks) {
+      const { done, value } = await reader.read();
+      if (value?.length) {
+        parts.push(value);
+        pendingLength += value.length;
+      }
+
+      while (index < meta.totalChunks && (pendingLength >= sealedChunk || done)) {
+        const size = Math.min(pendingLength, sealedChunk);
+        if (!size) throw new Error('Lampiran terpotong.');
+        const bytes = take(size);
+        const plain = await crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: chunkIv(index),
+            additionalData: chunkAad(meta.fileId, index, meta.totalChunks),
+          },
+          fileKey,
+          bytes
+        );
+        index++;
+        yield new Uint8Array(plain);
+      }
+
+      if (done) {
+        if (index < meta.totalChunks) throw new Error('Lampiran terpotong.');
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+}

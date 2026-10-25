@@ -8,7 +8,7 @@
  * both never see it.
  */
 
-import { encryptFile, decryptFile } from './crypto.js';
+import { encryptFile, decryptFile, decryptFileChunks } from './crypto.js';
 
 const authHeaders = (token) => ({ authorization: `Bearer ${token}` });
 
@@ -112,6 +112,30 @@ export async function fetchAttachment({ attachment, getIdToken, onStage }) {
   // Hasil dekripsi tidak membawa tipe mime, dan tanpa itu <video>/<audio> di
   // penampil ragu-ragu memutar isinya. Tipe aslinya sudah ikut di attachment.
   return URL.createObjectURL(new Blob([plain], { type: attachment.mime || 'application/octet-stream' }));
+}
+
+/**
+ * Open the ciphertext as a stream and decrypt it chunk by chunk. Nothing is
+ * held back until the whole file arrives: the caller can paint or play the
+ * first chunk while the rest is still on the wire.
+ */
+export async function streamAttachment({ attachment, getIdToken, signal }) {
+  const token = await getIdToken();
+  if (!token) throw new Error('Belum login');
+
+  const { url } = await postJson('/api/attachments/link', token, { path: attachment.path });
+  const response = await fetch(url, {
+    signal,
+    headers: isLocalUrl(url) ? authHeaders(token) : {},
+  });
+  if (!response.ok) throw new Error(`Gagal membuka lampiran (${response.status}).`);
+  if (!response.body) throw new Error('Browser ini belum mendukung pemutaran langsung.');
+
+  return decryptFileChunks(response.body, {
+    fileId: attachment.fileId,
+    totalChunks: attachment.totalChunks,
+    key: attachment.key,
+  });
 }
 
 export function formatBytes(bytes) {

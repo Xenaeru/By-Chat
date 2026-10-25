@@ -63,6 +63,7 @@
   --bloom-coral: var(--danger);
   --primary-bright: #60a5fa;  /* indikator di atas permukaan ink */
   --storm-deep: #334155;
+  --status-ring: #25d366;     /* cincin status, hijau khas pembaruan */
 
   /* ── Bentuk: {rounded.*} ────────────────────────────────────────── */
   --r-xs: 4px;    /* ekor gelembung, label kecil */
@@ -1452,6 +1453,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* ── Status (panel sendiri) ────────────────────────────────────────── */
 .status-label-mobile, .panel-title-mobile { display: none; }
+/* Elemen khusus kartu hp; di desktop barisnya tetap memakai avatar + teks. */
+.status-me-bg, .status-item-bg, .status-me-note, .status-item-note, .status-fab { display: none; }
 .status-strip { display: contents; }
 .status-me {
   display: flex;
@@ -1515,7 +1518,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   inset: 0;
   z-index: 55;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto 1fr auto;
   background: var(--ink-surface);
   color: var(--on-ink);
 }
@@ -1571,13 +1574,76 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   word-break: break-word;
 }
 
+.status-media-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  max-width: min(760px, 92%);
+  max-height: 72vh;
+}
 .status-image,
 .status-video {
-  max-width: min(760px, 92%);
+  max-width: 100%;
   max-height: 72vh;
   border-radius: var(--r-xl);
 }
 .status-video { display: block; background: #000; }
+.status-preview { filter: saturate(.9); }
+.status-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: var(--r-xl);
+  background: rgba(13, 20, 28, .38);
+  color: var(--on-ink);
+  font-size: 13px;
+  pointer-events: none;
+}
+.status-loading .spinner { width: 20px; height: 20px; border-width: 2px; }
+
+/* Balasan status: satu kolom ketik di bawah, terkirim sebagai DM. */
+.status-reply {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 16px;
+  background: linear-gradient(180deg, transparent, rgba(13, 20, 28, .55));
+}
+.status-reply[hidden] { display: none; }
+.status-reply input {
+  flex: 1;
+  min-width: 0;
+  height: 42px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, .1);
+  color: var(--on-ink);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.status-reply input::placeholder { color: rgba(255, 255, 255, .6); }
+.status-reply input:focus { border-color: var(--primary-bright); background: rgba(255, 255, 255, .14); }
+.status-reply-send {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--on-primary);
+  cursor: pointer;
+}
+.status-reply-send:hover { background: var(--primary-deep); }
+.status-reply-send:disabled { opacity: .55; cursor: default; }
 
 .status-caption {
   position: absolute;
@@ -2520,16 +2586,24 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
   .app.show-chat .tabbar { display: none; }
   .app:not(.show-chat) .chat { display: none; }
 
-  /* Status di hp: kartu portrait penuh warna, nama menimpa bagian bawah.
-     Teks penjelas dihilangkan supaya deretan kartu tetap ringkas. */
-  #panel-status .status-label-mobile { display: none; }
+  /* Status di hp: kartu portrait, isi status jadi latar, avatar kecil di
+     pojok kiri atas, dan nama menimpa bagian bawah — seperti tab Pembaruan. */
+  #panel-status .status-label-mobile {
+    display: block;
+    margin: 2px 16px 10px;
+    color: var(--ink);
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -.2px;
+  }
   #panel-status .status-label-desktop { display: none; }
   #panel-status .panel-title-desktop { display: none; }
   #panel-status .panel-title-mobile { display: inline; }
+  #panel-status .panel-head { padding-bottom: 4px; }
   .status-strip {
     display: flex;
     gap: 10px;
-    padding: 4px 16px 14px;
+    padding: 0 16px 14px;
     overflow-x: auto;
     overscroll-behavior-x: contain;
     scroll-snap-type: x proximity;
@@ -2539,8 +2613,8 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
   .status-strip .status-me,
   .status-strip .status-item {
     position: relative;
-    flex: 0 0 128px;
-    height: 178px;
+    flex: 0 0 132px;
+    height: 188px;
     margin: 0;
     padding: 0;
     overflow: hidden;
@@ -2564,29 +2638,92 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
   .status-strip .status-me-main { background: none; }
   .status-strip .status-me-main:hover,
   .status-strip .status-item:hover { background: none; }
+
+  /* Latar kartu = isi status (foto/video) atau warna teksnya. */
+  .status-strip .status-me-bg,
+  .status-strip .status-item-bg {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+  .status-strip .status-me-bg.is-text,
+  .status-strip .status-item-bg.is-text,
+  .status-strip .status-item-bg.is-video {
+    background-image: linear-gradient(145deg, #243040, #0d141c);
+  }
+  .status-strip .status-item-bg.is-video::after {
+    content: "▶";
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: rgba(255, 255, 255, .72);
+    font-size: 26px;
+  }
+  .status-strip .status-me::after,
+  .status-strip .status-item::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(10, 16, 24, .16), transparent 34%, rgba(10, 16, 24, .78));
+  }
+
+  .status-strip .status-me-note,
+  .status-strip .status-item-note {
+    display: block;
+    position: absolute;
+    inset: 50% 12px auto;
+    z-index: 2;
+    max-height: 96px;
+    overflow: hidden;
+    transform: translateY(-50%);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.35;
+    text-align: center;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, .55);
+  }
+  .status-strip .status-me-note:empty,
+  .status-strip .status-item-note:empty { display: none; }
+
+  /* Profil cuma bulat kecil di pojok kiri kotak. */
   .status-strip .status-me .avatar,
   .status-strip .status-item .avatar {
     position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    border-radius: 0;
-    font-size: 34px;
+    top: 8px;
+    left: 8px;
+    inset: 8px auto auto 8px;
+    z-index: 3;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    font-size: 14px;
+    box-shadow: 0 0 0 2px rgba(10, 16, 24, .4), 0 0 0 4px var(--status-ring);
   }
-  .status-strip .status-me .avatar.ring,
-  .status-strip .status-item .avatar.ring,
-  .status-strip .status-item .avatar.ring-seen { box-shadow: none; }
-  .status-strip .status-item.unseen { box-shadow: inset 0 0 0 2px var(--primary); }
+  .status-strip .status-item .avatar.ring-seen {
+    box-shadow: 0 0 0 2px rgba(10, 16, 24, .4), 0 0 0 4px rgba(255, 255, 255, .5);
+  }
+  .status-strip .status-me:not(.has-status) .avatar {
+    box-shadow: 0 0 0 2px rgba(10, 16, 24, .4), 0 0 0 4px rgba(255, 255, 255, .55);
+  }
+  .status-strip .status-item.unseen { box-shadow: inset 0 0 0 1px var(--border); }
   .status-strip .status-list { display: contents; }
   .status-strip .status-item { cursor: pointer; }
   .status-strip .status-item-text,
   .status-strip .status-me-text {
     position: absolute;
     inset: auto 0 0;
-    z-index: 1;
+    z-index: 4;
     flex: none;
-    padding: 30px 10px 10px;
-    background: linear-gradient(180deg, transparent, rgba(10, 16, 24, .8));
+    padding: 34px 10px 10px;
+    background: linear-gradient(180deg, transparent, rgba(10, 16, 24, .82));
   }
   .status-strip .status-item-text strong,
   .status-strip .status-me-text strong {
@@ -2604,18 +2741,46 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
   .status-strip .status-me:not(.has-status) .avatar::after {
     content: "+";
     position: absolute;
-    right: 9px;
-    bottom: 48px;
+    right: -3px;
+    bottom: -3px;
     display: grid;
     place-items: center;
-    width: 26px;
-    height: 26px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, .94);
-    color: var(--primary-deep);
-    font-size: 18px;
-    font-weight: 600;
+    background: var(--status-ring);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
     line-height: 1;
+  }
+
+  /* Tombol kamera bulat di kanan bawah, seperti WhatsApp. */
+  .status-fab {
+    display: grid;
+    place-items: center;
+    position: fixed;
+    right: 18px;
+    bottom: 92px;
+    z-index: 30;
+    width: 56px;
+    height: 56px;
+    padding: 0;
+    border: 0;
+    border-radius: 18px;
+    background: var(--status-ring);
+    color: #fff;
+    box-shadow: 0 8px 20px rgba(10, 16, 24, .28);
+    cursor: pointer;
+  }
+  .status-fab .ico { width: 24px; height: 24px; }
+  .status-fab-plus {
+    position: absolute;
+    top: 9px;
+    right: 9px;
+    width: 12px !important;
+    height: 12px !important;
+    stroke-width: 2.6;
   }
 
   /* Tombol pratinjau memakai kaca supaya medianya tetap terlihat di baliknya.
@@ -3241,6 +3406,18 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
 .channels-head .panel-label { margin: 0; }
 .channels-head-actions { display: flex; align-items: center; gap: 4px; }
 .ghost.tiny { padding: 5px 10px; min-height: 0; font-size: 12px; }
+.explore-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border-radius: var(--r-pill);
+  background: var(--fog);
+  color: var(--ink);
+  font-weight: 600;
+}
+.explore-pill:hover { background: var(--border); }
+.explore-pill .ico { width: 14px; height: 14px; }
 
 .channel-list {
   list-style: none;

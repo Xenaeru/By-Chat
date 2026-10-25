@@ -10,7 +10,7 @@ import {
   unb64,
 } from './crypto.js';
 import { createAuthClient } from './auth-client.js';
-import { uploadAttachment, fetchAttachment, formatBytes } from './files.js';
+import { uploadAttachment, fetchAttachment, streamAttachment, formatBytes } from './files.js';
 import { MAX_VOICE_SECONDS, startVoiceRecording } from './voice.js';
 import { createCallManager } from './call.js';
 import { createNotifier } from './notifications.js';
@@ -134,6 +134,12 @@ const state = {
   statusDraftUrl: null,
   /** Object URL media status yang sedang diputar. */
   statusMediaUrl: null,
+  /** Pembatalan unduhan status yang sedang berjalan. */
+  statusMediaAbort: null,
+  /** MediaSource video status (pemutaran langsung, bukan unduh dulu). */
+  statusMediaSource: null,
+  /** Naik tiap render kartu status, supaya pratinjau lama tidak menimpa baru. */
+  statusRenderToken: 0,
   /** Pemutar pesan suara yang sedang aktif; cuma satu yang boleh berbunyi. */
   voice: { id: null, audio: null, speed: 1, loading: null },
   /** Node pemutar di DOM sekarang, dipakai buat memperbarui progres. */
@@ -373,7 +379,10 @@ const el = {
   statusMe: $('#status-me'),
   statusMeOpen: $('#status-me-open'),
   statusMeAdd: $('#status-me-add'),
+  statusFab: $('#status-fab'),
   statusMeAvatar: $('#status-me-avatar'),
+  statusMeBg: $('#status-me-bg'),
+  statusMeNote: $('#status-me-note'),
   statusMeSub: $('#status-me-sub'),
   statusList: $('#status-list'),
   statusViewer: $('#status-viewer'),
@@ -385,6 +394,8 @@ const el = {
   statusViewerCount: $('#status-viewer-count'),
   statusViewerMenu: $('#status-viewer-menu'),
   statusViewerClose: $('#status-viewer-close'),
+  statusReply: $('#status-reply'),
+  statusReplyInput: $('#status-reply-input'),
   statusPrev: $('#status-prev'),
   statusNext: $('#status-next'),
 
@@ -4060,7 +4071,7 @@ function quoteNode(message) {
   const quote = document.createElement('button');
   quote.type = 'button';
   quote.className = 'msg-quote';
-  quote.title = 'Buka pesan yang dibalas';
+  quote.title = message.replyTo.status ? 'Lihat status yang dibalas' : 'Buka pesan yang dibalas';
 
   const name = document.createElement('span');
   name.className = 'msg-quote-name';
@@ -4072,6 +4083,14 @@ function quoteNode(message) {
 
   quote.addEventListener('click', (event) => {
     event.stopPropagation();
+    if (message.replyTo.status) {
+      const list = statusesFrom(message.replyTo.uid);
+      const index = list.findIndex((status) => status.id === message.replyTo.id);
+      if (index !== -1) openStatusViewer(message.replyTo.uid, index);
+      else if (list.length) openStatusViewer(message.replyTo.uid);
+      else showToast('Status itu sudah tidak ada.');
+      return;
+    }
     scrollToMessage(message.replyTo.id);
   });
   return quote;
@@ -6584,9 +6603,52 @@ function markStatusSeen(id) {
   renderChatList();
 }
 
+/** Teks pendek yang mewakili sebuah status di kartu pratinjau. */
+function statusPreviewText(decoded) {
+  if (!decoded) return '';
+  if (decoded.text) return decoded.text;
+  if (decoded.attachment) return KIND_LABEL[fileKind(decoded.attachment.mime)] || 'Status';
+  return '';
+}
+
+/**
+ * Isi kartu: gambar pratinjau kalau ada, warna kalau statusnya teks, dan
+ * gradasi gelap kalau medianya belum punya thumbnail (status lama).
+ */
+function paintStatusCard(node, decoded) {
+  if (!node) return;
+  node.classList.remove('has-preview', 'is-video', 'is-text');
+  node.style.removeProperty('background-image');
+  node.style.removeProperty('background');
+
+  const note = node.parentElement?.querySelector('.status-item-note, .status-me-note');
+  if (note) note.textContent = '';
+
+  if (decoded?.preview) {
+    node.classList.add('has-preview');
+    node.style.backgroundImage = `url("${decoded.preview}")`;
+    return;
+  }
+  if (decoded?.attachment) {
+    const kind = fileKind(decoded.attachment.mime);
+    node.classList.add(kind === 'video' ? 'is-video' : 'is-text');
+    if (note) note.textContent = kind === 'video' ? 'Video' : 'Foto';
+    return;
+  }
+  if (decoded) {
+    if (decoded.color) {
+      node.style.background = decoded.color;
+    } else {
+      node.classList.add('is-text');
+    }
+    if (note) note.textContent = statusPreviewText(decoded);
+  }
+}
+
 function renderStatuses() {
   if (!state.me) return;
 
+  const renderToken = ++state.statusRenderToken;
   const mine = statusesFrom(state.me.uid);
   el.statusMeAvatar.textContent = initials(state.username || state.profile.displayName);
   el.statusMeAvatar.dataset.uid = state.me.uid;
@@ -6596,6 +6658,20 @@ function renderStatuses() {
   el.statusMeSub.textContent = mine.length
     ? `${mine.length} status · terakhir ${formatListTime(mine.at(-1).at)}`
     : 'Buat status';
+
+  // Kartu "Status saya" memakai status terakhir sebagai latar. Kalau belum
+  // punya status, foto profilnya yang dipakai supaya kartunya tetap hidup.
+  const lastMine = mine.at(-1);
+  if (lastMine) {
+    decodeStatus(lastMine).then((decoded) => {
+      if (renderToken === state.statusRenderToken) paintStatusCard(el.statusMeBg, decoded);
+    });
+  } else {
+    if (el.statusMeNote) el.statusMeNote.textContent = '';
+    const ownPhoto = peerByUid(state.me.uid)?.photoURL || state.profile.photoURL;
+    if (ownPhoto) el.statusMeBg.style.backgroundImage = `url("${ownPhoto}")`;
+    else el.statusMeBg.style.background = 'var(--primary-tint)';
+  }
 
   const owners = statusOwnerList().filter((uid) => uid !== state.me.uid);
   el.statusList.innerHTML = '';
@@ -6622,6 +6698,8 @@ function renderStatuses() {
     li.className = `status-item${unseen ? ' unseen' : ''}`;
     li.dataset.uid = uid;
     li.innerHTML = `
+      <span class="status-item-bg" aria-hidden="true"></span>
+      <span class="status-item-note" aria-hidden="true"></span>
       <span class="avatar ${unseen ? 'ring' : 'ring-seen'}${photo && !peerByUid(uid) ? ' has-photo' : ''}" ${avatarAttrs}>${esc(initials(name))}</span>
       <span class="status-item-text">
         <strong>${esc(name)}</strong>
@@ -6630,22 +6708,37 @@ function renderStatuses() {
     `;
     li.addEventListener('click', () => openStatusViewer(uid));
     el.statusList.appendChild(li);
+
+    const bg = li.querySelector('.status-item-bg');
+    decodeStatus(last).then((decoded) => {
+      if (renderToken !== state.statusRenderToken || !li.isConnected) return;
+      paintStatusCard(bg, decoded);
+    });
   }
 
   paintAvatars();
 }
 
-/** Status baru: { text, color, attachment }. Teks lama tetap terbaca. */
+/** Status baru: { text, color, attachment, preview }. Teks lama tetap terbaca. */
 function unpackStatus(raw) {
   try {
     const parsed = JSON.parse(raw);
     if (typeof parsed?.text === 'string') {
-      return { text: parsed.text, color: parsed.color || null, attachment: parsed.attachment || null };
+      const preview =
+        typeof parsed.preview === 'string' && parsed.preview.startsWith('data:image/')
+          ? parsed.preview
+          : null;
+      return {
+        text: parsed.text,
+        color: parsed.color || null,
+        attachment: parsed.attachment || null,
+        preview,
+      };
     }
   } catch {
     /* payload teks biasa */
   }
-  return { text: String(raw ?? ''), color: null, attachment: null };
+  return { text: String(raw ?? ''), color: null, attachment: null, preview: null };
 }
 
 async function decodeStatus(status) {
@@ -6666,7 +6759,7 @@ async function decodeStatus(status) {
     }
     decoded.error = null;
   } catch (err) {
-    decoded = { text: '', color: null, attachment: null, error: err.message };
+    decoded = { text: '', color: null, attachment: null, preview: null, error: err.message };
   }
 
   state.statusDecoded.set(status.id, decoded);
@@ -6813,6 +6906,18 @@ function clearStatusDraftPreview() {
 }
 
 function clearStatusMedia() {
+  if (state.statusMediaAbort) {
+    state.statusMediaAbort.abort();
+    state.statusMediaAbort = null;
+  }
+  if (state.statusMediaSource) {
+    try {
+      if (state.statusMediaSource.readyState === 'open') state.statusMediaSource.endOfStream();
+    } catch {
+      /* sudah ditutup */
+    }
+    state.statusMediaSource = null;
+  }
   if (state.statusMediaUrl) URL.revokeObjectURL(state.statusMediaUrl);
   state.statusMediaUrl = null;
 }
@@ -6841,6 +6946,10 @@ function closeStatusViewer() {
   clearStatusMedia();
   if (el.statusViewer) el.statusViewer.hidden = true;
   if (el.statusStage) el.statusStage.innerHTML = '';
+  if (el.statusReply) {
+    el.statusReply.hidden = true;
+    el.statusReplyInput.value = '';
+  }
   if (state.me) renderStatuses();
 }
 
@@ -6893,6 +7002,9 @@ async function renderStatusView() {
   el.statusViewerTime.textContent = formatListTime(status.at);
   el.statusViewerCount.textContent = `${view.index + 1} dari ${list.length}`;
   el.statusViewerMenu.hidden = !mine;
+  el.statusReply.hidden = mine;
+  if (mine) el.statusReplyInput.value = '';
+  else el.statusReplyInput.placeholder = `Balas status ${name}…`;
   el.statusProgress.innerHTML = list
     .map((_, i) => `<i class="${i < view.index ? 'done' : i === view.index ? 'now' : ''}"></i>`)
     .join('');
@@ -6917,6 +7029,229 @@ async function renderStatusView() {
   scheduleStatusAdvance();
 }
 
+function statusVideoMimeCandidates(mime) {
+  const list = [mime];
+  if (mime === 'video/mp4') {
+    list.push('video/mp4; codecs="avc1.42E01E, mp4a.40.2"', 'video/mp4; codecs="avc1.42E01E"');
+  }
+  if (mime === 'video/webm') {
+    list.push(
+      'video/webm; codecs="vp8"',
+      'video/webm; codecs="vp9"',
+      'video/webm; codecs="vp8, vorbis"',
+      'video/webm; codecs="vp9, opus"'
+    );
+  }
+  return list;
+}
+
+function setStatusLoading(text) {
+  const node = el.statusStage.querySelector('.status-loading span:last-child');
+  if (node) node.textContent = text;
+}
+
+function hideStatusLoading() {
+  el.statusStage.querySelector('.status-loading')?.remove();
+}
+
+/** Progres dan lanjut-otomatis untuk video, baik yang di-stream maupun utuh. */
+function attachStatusVideoEvents(video, token) {
+  const durationOf = () =>
+    Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : null;
+  video.addEventListener('loadedmetadata', () => {
+    if (state.statusView?.token !== token) return;
+    setStatusProgress(durationOf(), video.paused);
+  });
+  video.addEventListener('play', () => {
+    if (state.statusView?.token !== token) return;
+    setStatusProgress(durationOf(), false);
+  });
+  video.addEventListener('pause', () => {
+    if (state.statusView?.token !== token || video.ended) return;
+    setStatusProgress(null, true);
+  });
+  video.addEventListener('ended', () => {
+    if (state.statusView?.token === token) nextStatus(1);
+  });
+}
+
+/** Unduh + dekripsi potongan gambar sambil jalan; hasilnya satu blob URL. */
+async function streamStatusImage(decoded, token) {
+  const controller = new AbortController();
+  state.statusMediaAbort = controller;
+  const parts = [];
+  let received = 0;
+  const total = Math.max(1, Number(decoded.attachment.totalChunks) || 1);
+
+  const chunks = await streamAttachment({
+    attachment: decoded.attachment,
+    getIdToken: () => state.auth.getIdToken(),
+    signal: controller.signal,
+  });
+  for await (const part of chunks) {
+    if (state.statusView?.token !== token || controller.signal.aborted) return null;
+    parts.push(part);
+    received++;
+    setStatusLoading(`Memuat gambar… ${Math.min(99, Math.round((received / total) * 100))}%`);
+  }
+  if (state.statusView?.token !== token) return null;
+  return URL.createObjectURL(new Blob(parts, { type: decoded.attachment.mime || 'image/jpeg' }));
+}
+
+/**
+ * Putar video selagi ciphertext-nya masih datang. Setiap potongan yang sudah
+ * didekripsi langsung dimasukkan ke MediaSource, jadi tidak perlu menunggu
+ * unduhan selesai seperti file biasa.
+ */
+async function streamStatusVideo(decoded, video, token) {
+  const MSE = window.MediaSource || window.WebKitMediaSource;
+  const mime = decoded.attachment.mime || 'video/mp4';
+  const supported = MSE
+    ? statusVideoMimeCandidates(mime).find((type) => MSE.isTypeSupported(type))
+    : null;
+  if (!supported) return 'fallback';
+
+  const controller = new AbortController();
+  state.statusMediaAbort = controller;
+
+  const mediaSource = new MSE();
+  state.statusMediaSource = mediaSource;
+  state.statusMediaUrl = URL.createObjectURL(mediaSource);
+  video.src = state.statusMediaUrl;
+
+  let sourceBuffer = null;
+  const opened = await Promise.race([
+    new Promise((resolve) => {
+      const onAbort = () => resolve(false);
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+      mediaSource.addEventListener(
+        'sourceopen',
+        () => {
+          controller.signal.removeEventListener('abort', onAbort);
+          try {
+            sourceBuffer = mediaSource.addSourceBuffer(supported);
+            resolve(true);
+          } catch {
+            resolve(false);
+          }
+        },
+        { once: true }
+      );
+    }),
+    new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+  ]);
+  if (controller.signal.aborted || state.statusView?.token !== token) return 'stale';
+  if (!opened || !sourceBuffer) {
+    clearStatusMedia();
+    return 'fallback';
+  }
+
+  const queue = [];
+  let failed = false;
+  let ended = false;
+  let started = false;
+
+  sourceBuffer.addEventListener('error', () => {
+    failed = true;
+  });
+
+  const flush = () => {
+    if (failed || !sourceBuffer || sourceBuffer.updating || !queue.length) return;
+    try {
+      sourceBuffer.appendBuffer(queue.shift());
+    } catch {
+      failed = true;
+    }
+  };
+
+  sourceBuffer.addEventListener('updateend', () => {
+    if (failed) return;
+    flush();
+    if (!started && (sourceBuffer.buffered.length || video.readyState >= 2)) {
+      started = true;
+      hideStatusLoading();
+      video.play().catch(() => {
+        /* Autoplay bisa ditolak; kontrol tetap ada untuk memulai manual. */
+      });
+    }
+    if (ended && !queue.length && mediaSource.readyState === 'open') {
+      try {
+        mediaSource.endOfStream();
+      } catch {
+        /* sudah ditutup */
+      }
+    }
+  });
+
+  try {
+    const chunks = await streamAttachment({
+      attachment: decoded.attachment,
+      getIdToken: () => state.auth.getIdToken(),
+      signal: controller.signal,
+    });
+    for await (const chunk of chunks) {
+      if (failed || state.statusView?.token !== token || controller.signal.aborted) break;
+      queue.push(chunk);
+      flush();
+      while (queue.length > 6 && !failed && !controller.signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+    }
+    ended = true;
+    flush();
+  } catch {
+    if (!controller.signal.aborted) failed = true;
+  }
+
+  if (state.statusView?.token !== token) return 'stale';
+
+  // Kalau potongan sudah habis tapi video belum juga mulai (misalnya codec
+  // MediaRecorder yang tidak cocok dengan MediaSource), jangan biarkan layar
+  // kosong: unduh utuh sebagai jalur cadangan.
+  if (!failed && !started) {
+    await new Promise((resolve) => {
+      const began = Date.now();
+      const timer = setInterval(() => {
+        if (started || failed || Date.now() - began > 3000) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 100);
+    });
+  }
+
+  if (state.statusView?.token !== token) return 'stale';
+  if (failed || !started) {
+    clearStatusMedia();
+    return 'fallback';
+  }
+  return 'ok';
+}
+
+async function fallbackStatusVideo(decoded, video, token) {
+  setStatusLoading('Mengunduh video…');
+  const url = await fetchAttachment({
+    attachment: decoded.attachment,
+    getIdToken: () => state.auth.getIdToken(),
+    onStage: (stage, fraction) => {
+      if (state.statusView?.token !== token) return;
+      setStatusLoading(`${stage === 'decrypt' ? 'Mendekripsi' : 'Mengunduh'} video… ${Math.round(fraction * 100)}%`);
+    },
+  });
+  if (state.statusView?.token !== token) {
+    URL.revokeObjectURL(url);
+    return 'stale';
+  }
+  clearStatusMedia();
+  state.statusMediaUrl = url;
+  video.src = url;
+  hideStatusLoading();
+  video.play().catch(() => {
+    /* kontrol manual tetap tersedia */
+  });
+  return 'ok';
+}
+
 async function paintStatusStage(decoded, hint = '', token = null) {
   if (decoded.error) {
     el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#5a1313">⚠️ ${esc(decoded.error)}</div>`;
@@ -6931,60 +7266,89 @@ async function paintStatusStage(decoded, hint = '', token = null) {
       return { kind: 'text' };
     }
 
-    el.statusStage.innerHTML = `<div class="status-note">Membuka ${kind === 'video' ? 'video' : 'gambar'}…</div>`;
-    try {
-      const url = await fetchAttachment({
-        attachment: decoded.attachment,
-        getIdToken: () => state.auth.getIdToken(),
-      });
-      if (token !== null && state.statusView?.token !== token) {
-        URL.revokeObjectURL(url);
-        return { kind: 'stale' };
-      }
+    const poster = decoded.preview ? ` poster="${decoded.preview}"` : '';
+    const preview = decoded.preview
+      ? `<img class="status-image status-preview" src="${decoded.preview}" alt="" />`
+      : '';
+    const caption = decoded.text ? `<span class="status-caption">${esc(decoded.text)}</span>` : '';
+    const hintNode = hint ? `<span class="status-hint">${esc(hint)}</span>` : '';
 
-      clearStatusMedia();
-      state.statusMediaUrl = url;
-      if (kind === 'video') {
-        el.statusStage.innerHTML = `
-          <video class="status-video" controls playsinline preload="metadata" aria-label="Status video"></video>
-          ${decoded.text ? `<span class="status-caption">${esc(decoded.text)}</span>` : ''}
-          ${hint ? `<span class="status-hint">${esc(hint)}</span>` : ''}
-        `;
-        const video = el.statusStage.querySelector('video');
-        const durationOf = () =>
-          Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : null;
-        video.addEventListener('loadedmetadata', () => {
-          if (state.statusView?.token !== token) return;
-          setStatusProgress(durationOf(), video.paused);
-        });
-        video.addEventListener('play', () => {
-          if (state.statusView?.token !== token) return;
-          setStatusProgress(durationOf(), false);
-        });
-        video.addEventListener('pause', () => {
-          if (state.statusView?.token !== token || video.ended) return;
-          setStatusProgress(null, true);
-        });
-        video.addEventListener('ended', () => {
-          if (state.statusView?.token === token) nextStatus(1);
-        });
-        video.src = url;
-        video.play().catch(() => {
-          /* Autoplay bisa ditolak; kontrol tetap ada untuk memulai manual. */
-        });
-        return { kind: 'video' };
-      }
-
+    if (kind === 'video') {
       el.statusStage.innerHTML = `
-        <img class="status-image" alt="Status" />
-        ${decoded.text ? `<span class="status-caption">${esc(decoded.text)}</span>` : ''}
-        ${hint ? `<span class="status-hint">${esc(hint)}</span>` : ''}
+        <div class="status-media-wrap">
+          <video class="status-video" controls playsinline preload="auto"${poster} aria-label="Status video"></video>
+          <div class="status-loading"><span class="spinner"></span><span>Menyiapkan video…</span></div>
+          ${caption}
+          ${hintNode}
+        </div>
       `;
-      el.statusStage.querySelector('img').src = url;
+      const video = el.statusStage.querySelector('video');
+      attachStatusVideoEvents(video, token);
+      try {
+        let result = await streamStatusVideo(decoded, video, token);
+        if (result === 'stale') return { kind: 'stale' };
+        if (result === 'fallback') result = await fallbackStatusVideo(decoded, video, token);
+        if (result === 'stale') return { kind: 'stale' };
+        return { kind: 'video' };
+      } catch (err) {
+        el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#7f1d1d">⚠️ ${esc(err.message)}</div>`;
+        return { kind: 'text' };
+      }
+    }
+
+    el.statusStage.innerHTML = `
+      <div class="status-media-wrap">
+        ${preview}
+        <div class="status-loading"><span class="spinner"></span><span>Memuat gambar…</span></div>
+        ${caption}
+        ${hintNode}
+      </div>
+    `;
+    try {
+      const url = await streamStatusImage(decoded, token);
+      if (!url) return { kind: 'stale' };
+      state.statusMediaUrl = url;
+      const img = el.statusStage.querySelector('.status-preview');
+      if (img) {
+        img.src = url;
+      } else {
+        const full = document.createElement('img');
+        full.className = 'status-image';
+        full.alt = 'Status';
+        full.src = url;
+        el.statusStage.querySelector('.status-media-wrap').prepend(full);
+      }
+      hideStatusLoading();
       return { kind: 'image' };
     } catch (err) {
-      el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#7f1d1d">⚠️ ${esc(err.message)}</div>`;
-      return { kind: 'text' };
+      if (state.statusView?.token !== token) return { kind: 'stale' };
+      try {
+        const url = await fetchAttachment({
+          attachment: decoded.attachment,
+          getIdToken: () => state.auth.getIdToken(),
+        });
+        if (state.statusView?.token !== token) {
+          URL.revokeObjectURL(url);
+          return { kind: 'stale' };
+        }
+        state.statusMediaUrl = url;
+        const img = el.statusStage.querySelector('.status-preview');
+        if (img) img.src = url;
+        else {
+          const full = document.createElement('img');
+          full.className = 'status-image';
+          full.alt = 'Status';
+          full.src = url;
+          el.statusStage.querySelector('.status-media-wrap').prepend(full);
+        }
+        hideStatusLoading();
+        return { kind: 'image' };
+      } catch (fallbackError) {
+        el.statusStage.innerHTML = `<div class="status-text" style="--status-bg:#7f1d1d">⚠️ ${esc(
+          fallbackError.message
+        )}</div>`;
+        return { kind: 'text' };
+      }
     }
   }
 
@@ -6995,8 +7359,63 @@ async function paintStatusStage(decoded, hint = '', token = null) {
   return { kind: 'text' };
 }
 
-async function publishStatus({ text, color, attachment }) {
-  const body = JSON.stringify({ text, color, attachment: attachment || null });
+/** Thumbnail kecil yang ikut di dalam payload terenkripsi status. */
+async function statusPreviewFromFile(file) {
+  const kind = fileKind(file.type);
+  if (!['image', 'video'].includes(kind)) return null;
+
+  let source = null;
+  let objectUrl = null;
+  try {
+    if (kind === 'image') {
+      source = await createImageBitmap(file);
+    } else {
+      objectUrl = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+      video.src = objectUrl;
+      await new Promise((resolve, reject) => {
+        video.addEventListener('loadeddata', resolve, { once: true });
+        video.addEventListener('error', () => reject(new Error('Video tidak bisa dibaca')), {
+          once: true,
+        });
+        video.load();
+      });
+      try {
+        video.currentTime = Math.min(0.1, Number(video.duration) || 0);
+        await new Promise((resolve) => {
+          video.addEventListener('seeked', resolve, { once: true });
+          setTimeout(resolve, 600);
+        });
+      } catch {
+        /* frame pertama tetap dipakai */
+      }
+      source = video;
+    }
+
+    const width = source.videoWidth || source.width;
+    const height = source.videoHeight || source.height;
+    if (!width || !height) return null;
+
+    const scale = Math.min(1, 360 / Math.max(width, height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+    const image = canvas.toDataURL('image/jpeg', 0.72);
+    return image.length <= 120000 ? image : canvas.toDataURL('image/jpeg', 0.55);
+  } catch {
+    return null;
+  } finally {
+    source?.close?.();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function publishStatus({ text, color, attachment, preview = null }) {
+  const body = JSON.stringify({ text, color, attachment: attachment || null, preview });
   // Dua jalur, mengikuti sakelar "Profil Publik":
   //   publik   → envelope membawa kuncinya sendiri, siapa pun boleh membuka.
   //   privat   → satu kunci per kontak yang pernah chat, seperti sebelumnya.
@@ -7050,6 +7469,64 @@ async function deleteStatus(id) {
   state.statuses = state.statuses.filter((status) => status.id !== id);
   state.statusDecoded.delete(id);
   renderStatuses();
+}
+
+/** Satu baris yang mewakili status di kutipan balasan. */
+function statusReplyPreview(decoded) {
+  if (decoded?.text) return decoded.text.slice(0, 160);
+  if (decoded?.attachment) return KIND_LABEL[fileKind(decoded.attachment.mime)] || 'Status';
+  return 'Status';
+}
+
+/**
+ * Balas status lewat pesan pribadi. Yang dikirim adalah pesan biasa ke DM
+ * penulis status, dengan kutipan status di dalamnya — bukan komentar publik.
+ */
+async function replyToStatus(text) {
+  const view = state.statusView;
+  if (!view) return;
+  const status = statusesFrom(view.uid)[view.index];
+  if (!status) throw new Error('Status itu sudah tidak ada.');
+  const uid = view.uid;
+  if (uid === state.me.uid) return;
+  if (isPeerBlocked(uid)) throw new Error('Buka blokir dulu untuk membalas status ini.');
+
+  const name = statusAuthorName(uid);
+  const roomId = dmRoomId(state.me.uid, uid);
+  const room = ensureRoom({ id: roomId, name, type: 'dm', members: [state.me.uid, uid] });
+  saveRooms();
+
+  // Status publik bisa datang dari orang yang belum ada di direktori. Tarik
+  // kunci publiknya dulu supaya balasannya benar-benar bisa dienkripsi.
+  if (!peerByUid(uid)?.publicKey && socket?.connected) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 3000);
+      socket.emit('sync', {}, (answer) => {
+        clearTimeout(timer);
+        if (answer?.directory) state.directory = answer.directory;
+        resolve();
+      });
+    });
+  }
+  if (!peerByUid(uid)?.publicKey) {
+    throw new Error('Kunci publik kontak ini belum tersedia. Coba lagi sebentar.');
+  }
+
+  const decoded = state.statusDecoded.get(status.id) || (await decodeStatus(status));
+  await sendToRoom(room, text, null, {
+    replyTo: {
+      id: status.id,
+      uid,
+      name,
+      preview: statusReplyPreview(decoded),
+      status: true,
+    },
+  });
+
+  closeStatusViewer();
+  setView('chats');
+  selectRoom(roomId);
+  showToast('Balasan status terkirim sebagai pesan pribadi.');
 }
 
 function openStatusComposer() {
@@ -7137,7 +7614,10 @@ function openStatusComposer() {
 
     try {
       let attachment = null;
+      let preview = null;
       if (chosenFile) {
+        note().textContent = 'Menyiapkan pratinjau…';
+        preview = await statusPreviewFromFile(chosenFile);
         attachment = await uploadAttachment({
           file: chosenFile,
           getIdToken: () => state.auth.getIdToken(),
@@ -7149,7 +7629,7 @@ function openStatusComposer() {
         });
       }
 
-      await publishStatus({ text, color, attachment });
+      await publishStatus({ text, color, attachment, preview });
       closeModal();
       showToast('Status dibagikan. Hilang sendiri dalam 24 jam.');
       const mine = statusesFrom(state.me.uid);
@@ -7483,10 +7963,27 @@ el.statusMeOpen.addEventListener('click', () => {
   else openStatusComposer();
 });
 el.statusMeAdd.addEventListener('click', openStatusComposer);
+if (el.statusFab) el.statusFab.addEventListener('click', openStatusComposer);
 
 el.statusViewerClose.addEventListener('click', closeStatusViewer);
 el.statusPrev.addEventListener('click', () => nextStatus(-1));
 el.statusNext.addEventListener('click', () => nextStatus(1));
+el.statusReply.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const text = el.statusReplyInput.value.trim();
+  if (!text) return el.statusReplyInput.focus();
+
+  const button = el.statusReply.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    await replyToStatus(text);
+    el.statusReplyInput.value = '';
+  } catch (err) {
+    showToast(err.message || 'Gagal membalas status.');
+  } finally {
+    button.disabled = false;
+  }
+});
 el.statusViewerMenu.addEventListener('click', async () => {
   const view = state.statusView;
   if (!view || view.uid !== state.me.uid) return;

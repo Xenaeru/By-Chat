@@ -1122,6 +1122,58 @@ async function checkPhotoAndStatus(andi, budi) {
     await photoShown();
   }
   check('Status foto sampai ke Budi dan berhasil didekripsi', true);
+
+  /* ---- Balas status: pesannya masuk ke DM penulis, bukan komentar publik ---- */
+  const statusReply = `balasan status ${Date.now()}`;
+  await budi.page.type('#status-reply-input', statusReply);
+  await budi.page.click('#status-reply button[type="submit"]');
+  await budi.page.waitForSelector('#status-viewer[hidden]', { timeout: 15000 });
+  await budi.page.waitForFunction(
+    (text) => [...document.querySelectorAll('.msg .msg-text')].some((node) => node.textContent.includes(text)),
+    { timeout: 15000 },
+    statusReply
+  );
+  const statusQuote = await budi.page.evaluate((text) => {
+    const message = [...document.querySelectorAll('.msg')].find((node) =>
+      node.querySelector('.msg-text')?.textContent.includes(text)
+    );
+    const quote = message?.querySelector('.msg-quote');
+    return quote
+      ? {
+          title: quote.title,
+          name: quote.querySelector('.msg-quote-name')?.textContent || '',
+          text: quote.querySelector('.msg-quote-text')?.textContent || '',
+        }
+      : null;
+  }, statusReply);
+  check(
+    'Balasan status masuk ke chat pribadi dengan kutipan status',
+    statusQuote?.title === 'Lihat status yang dibalas' &&
+      statusQuote?.name === 'andi' &&
+      statusQuote?.text === 'Foto',
+    JSON.stringify(statusQuote)
+  );
+  const activeAfterReply = await budi.page.$eval(
+    '.chat-item.active .chat-item-name',
+    (node) => node.textContent
+  );
+  check(
+    'Chat yang terbuka setelah balas status adalah DM penulisnya',
+    activeAfterReply.includes('andi'),
+    activeAfterReply
+  );
+
+  const quoteClicked = await budi.page.evaluate((text) => {
+    const message = [...document.querySelectorAll('.msg')].find((node) =>
+      node.querySelector('.msg-text')?.textContent.includes(text)
+    );
+    const quote = message?.querySelector('.msg-quote');
+    quote?.click();
+    return Boolean(quote);
+  }, statusReply);
+  check('Kutipan status bisa diketuk', quoteClicked);
+  await budi.page.waitForSelector('#status-viewer:not([hidden])', { timeout: 10000 });
+  check('Kutipan status membuka status yang dibalas', true);
   await budi.page.click('#status-viewer-close');
   await budi.page.waitForSelector('#status-viewer[hidden]', { timeout: 10000 });
 
@@ -2442,8 +2494,8 @@ try {
     };
   });
   check(
-    'Kartu status di hp berbentuk portrait dan tanpa teks penjelas',
-    statusCard.height >= statusCard.width * 1.25 && statusCard.meta === 'none' && statusCard.sectionLabel === 'none',
+    'Kartu status di hp berbentuk portrait, berjudul, dan tanpa teks penjelas',
+    statusCard.height >= statusCard.width * 1.25 && statusCard.meta === 'none' && statusCard.sectionLabel !== 'none',
     JSON.stringify(statusCard)
   );
   await goView(budi.page, 'chats');

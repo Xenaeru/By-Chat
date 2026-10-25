@@ -79,6 +79,7 @@
   <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="12" cy="5.4" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="18.6" r="1.7" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-bell-off" viewBox="0 0 24 24"><path d="M6.6 10.4a5.4 5.4 0 0 1 8.4-4.2"/><path d="M17.4 12.4v2.4l1.4 2.2H8.2"/><path d="M5.2 15l.8-1.2v-3"/><path d="M10 20.2a2.4 2.4 0 0 0 4 0"/><path d="M4 4l16 16"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8.6 6.6h11M8.6 12h11M8.6 17.4h11"/><circle cx="4.8" cy="6.6" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.8" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.8" cy="17.4" r="1.1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6.4" height="6.4" rx="1.4"/><rect x="13.6" y="4" width="6.4" height="6.4" rx="1.4"/><rect x="4" y="13.6" width="6.4" height="6.4" rx="1.4"/><rect x="13.6" y="13.6" width="6.4" height="6.4" rx="1.4"/></symbol>
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10.4 13.6 13.6 10.4"/><path d="M9.6 7.6l1.2-1.2a3.4 3.4 0 0 1 4.8 4.8l-1.2 1.2"/><path d="M14.4 16.4l-1.2 1.2a3.4 3.4 0 0 1-4.8-4.8l1.2-1.2"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 10.8v5.4M12 7.8v.2"/></symbol>
   <symbol id="i-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="7.4"/><path d="M12 9.6V13l2.4 1.6"/><path d="M9.4 3.4h5.2"/></symbol>
@@ -279,6 +280,8 @@
     <div class="status-strip">
       <div class="status-me" id="status-me">
         <button type="button" class="status-me-main" id="status-me-open">
+          <span class="status-me-bg" id="status-me-bg" aria-hidden="true"></span>
+          <span class="status-me-note" id="status-me-note" aria-hidden="true"></span>
           <span class="avatar" id="status-me-avatar">?</span>
           <span class="status-me-text">
             <strong>Status saya</strong>
@@ -292,13 +295,21 @@
     </div>
     <p id="status-empty" class="empty-note">Belum ada status. Tekan + untuk mulai.</p>
 
+    <button type="button" class="status-fab" id="status-fab" title="Buat status" aria-label="Buat status">
+      <svg class="ico"><use href="#i-camera" /></svg>
+      <svg class="ico status-fab-plus"><use href="#i-plus" /></svg>
+    </button>
+
     <!-- Saluran: siaran satu arah. Di desktop blok ini dipindah ke panel
          Saluran sendiri; di hp tetap di bawah status seperti WhatsApp. -->
     <div class="channels-block" id="channels-block">
       <div class="channels-head">
         <h2 class="panel-label">Saluran</h2>
         <div class="channels-head-actions">
-          <button type="button" class="ghost tiny" id="btn-explore-channels">Jelajahi</button>
+          <button type="button" class="ghost tiny explore-pill" id="btn-explore-channels">
+            <svg class="ico"><use href="#i-grid" /></svg>
+            <span>Jelajahi</span>
+          </button>
           <button type="button" class="icon-btn" id="btn-create-channel" title="Buat saluran" aria-label="Buat saluran">
             <svg class="ico"><use href="#i-plus" /></svg>
           </button>
@@ -694,6 +705,19 @@
   </header>
 
   <div class="status-stage" id="status-stage"></div>
+
+  <form class="status-reply" id="status-reply" hidden>
+    <input
+      type="text"
+      id="status-reply-input"
+      maxlength="280"
+      placeholder="Balas status…"
+      autocomplete="off"
+    />
+    <button type="submit" class="status-reply-send" id="status-reply-send" title="Kirim balasan" aria-label="Kirim balasan">
+      <svg class="ico"><use href="#i-send" /></svg>
+    </button>
+  </form>
 
   <button type="button" class="status-nav prev" id="status-prev" aria-label="Status sebelumnya"></button>
   <button type="button" class="status-nav next" id="status-next" aria-label="Status berikutnya"></button>

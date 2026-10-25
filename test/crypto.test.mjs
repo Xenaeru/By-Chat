@@ -9,6 +9,7 @@ import {
   decryptMessage,
   encryptFile,
   decryptFile,
+  decryptFileChunks,
   FILE_CHUNK_SIZE,
   safetyNumber,
   dmRoomId,
@@ -158,6 +159,46 @@ for (const [label, size] of [
     assert.equal(await sha256(plain), await sha256(new Blob([data])));
   });
 }
+
+test('streaming decryption yields the same bytes before the whole file arrives', async () => {
+  const size = FILE_CHUNK_SIZE * 2 + 1234;
+  const data = bytesOf(size);
+  const { blob, meta } = await encryptFile(new Blob([data]));
+  const raw = new Uint8Array(await blob.arrayBuffer());
+
+  // Potongan jaringan jarang pas satu chunk: pakai 777 byte supaya batas
+  // chunk harus disatukan lagi oleh dekriptor.
+  const stream = new ReadableStream({
+    start(controller) {
+      for (let offset = 0; offset < raw.length; offset += 777) {
+        controller.enqueue(raw.subarray(offset, Math.min(raw.length, offset + 777)));
+      }
+      controller.close();
+    },
+  });
+
+  const parts = [];
+  for await (const part of decryptFileChunks(stream, meta)) parts.push(part);
+  assert.equal(parts.length, meta.totalChunks);
+  assert.equal(await sha256(new Blob(parts)), await sha256(new Blob([data])));
+});
+
+test('streaming decryption rejects a truncated stream', async () => {
+  const { blob, meta } = await encryptFile(new Blob([bytesOf(FILE_CHUNK_SIZE * 2)]));
+  const raw = new Uint8Array(await blob.arrayBuffer());
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(raw.slice(0, FILE_CHUNK_SIZE + 16));
+      controller.close();
+    },
+  });
+
+  await assert.rejects(async () => {
+    for await (const _ of decryptFileChunks(stream, meta)) {
+      /* drain */
+    }
+  });
+});
 
 test('the uploaded blob never contains the file bytes', async () => {
   const data = new TextEncoder().encode('RAHASIA_PERUSAHAAN_2026 '.repeat(500));
