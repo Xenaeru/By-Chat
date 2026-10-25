@@ -7854,11 +7854,16 @@ el.panelSettings.querySelector('[data-remove-photo]').addEventListener('click', 
 });
 // Profil publik: satu sakelar yang menentukan siapa boleh melihat status.
 el.publicToggle?.addEventListener('click', async () => {
-  const next = el.publicToggle.getAttribute('aria-checked') !== 'true';
-  // Umpan balik langsung; kalau server menolak, tampilannya dikembalikan.
+  const currentChecked = el.publicToggle.getAttribute('aria-checked') === 'true';
+  const next = !currentChecked;
+  // Simpan state lama terlebih dahulu sebelum merubah tampilan
   el.publicToggle.setAttribute('aria-checked', String(next));
   const saved = await saveProfileSettings({ publicProfile: next });
-  if (!saved) return paintProfileFields();
+  if (!saved) {
+    // Kembalikan state lama jika server menolak
+    el.publicToggle.setAttribute('aria-checked', String(currentChecked));
+    return paintProfileFields();
+  }
   showToast(
     next
       ? 'Profilmu publik: siapa pun bisa melihat foto dan statusmu.'
