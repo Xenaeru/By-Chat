@@ -1376,6 +1376,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .call-when { flex: none; font-size: 12px; }
 
 /* ── Status (panel sendiri) ────────────────────────────────────────── */
+.status-label-mobile, .panel-title-mobile { display: none; }
+.status-strip { display: contents; }
 .status-me {
   display: flex;
   align-items: center;
@@ -2425,6 +2427,69 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
   .app.show-chat .tabbar { display: none; }
   .app:not(.show-chat) .chat { display: none; }
 
+  /* Status di hp: kartu mendatar seperti WhatsApp, bukan daftar menurun.
+     Saluran tetap di bawahnya; panel Status desktop tidak berubah. */
+  #panel-status .status-label-mobile { display: block; margin: 2px 16px 8px; }
+  #panel-status .status-label-desktop { display: none; }
+  #panel-status .panel-title-desktop { display: none; }
+  #panel-status .panel-title-mobile { display: inline; }
+  .status-strip {
+    display: flex;
+    gap: 10px;
+    padding: 0 12px 10px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+  }
+  .status-strip .status-me,
+  .status-strip .status-item {
+    flex: 0 0 116px;
+    margin: 0;
+    padding: 0;
+    border-radius: 16px;
+    background: none;
+    scroll-snap-align: start;
+  }
+  .status-strip .status-me-main {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 0;
+    height: 100%;
+  }
+  .status-strip .status-me-main:hover { background: none; }
+  .status-strip .status-me .avatar,
+  .status-strip .status-item .avatar {
+    width: 116px;
+    height: 116px;
+    border-radius: 16px;
+    font-size: 30px;
+  }
+  .status-strip .status-list { display: contents; }
+  .status-strip .status-item {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    cursor: pointer;
+  }
+  .status-strip .status-item:hover { background: none; }
+  .status-strip .status-item-text,
+  .status-strip .status-me-text {
+    flex: none;
+    padding: 0 2px;
+  }
+  .status-strip .status-item-text strong,
+  .status-strip .status-me-text strong {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .status-strip .status-item-text .muted,
+  .status-strip .status-me-text .muted {
+    font-size: 11px;
+    white-space: normal;
+  }
+  .status-strip .status-item-text .muted { display: none; }
+
   /* Perpindahan panel di hp: geser halus, bukan loncatan. */
   .panel.view-in { animation: panel-in-mobile .26s cubic-bezier(.22, .61, .36, 1) both; }
   @keyframes panel-in-mobile {
@@ -2794,7 +2859,8 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
   color: var(--primary);
   vertical-align: -2px;
 }
-.name-with-badge { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.name-with-badge { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; white-space: nowrap; }
+.name-with-badge > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .name-with-badge .chat-item-name,
 .name-with-badge strong { min-width: 0; }
 .badge-check.small { width: 13px; height: 13px; }
@@ -2815,14 +2881,23 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
     radial-gradient(120% 160% at 12% 0%, rgba(124, 58, 237, .95) 0%, rgba(124, 58, 237, 0) 62%),
     linear-gradient(115deg, var(--primary) 0%, #4f46e5 52%, #0ea5e9 100%);
 }
+.profile-cover.has-cover {
+  background-position: center;
+  background-size: cover;
+}
 .profile-cover-glow {
   position: absolute;
   inset: 0;
   background: radial-gradient(80% 120% at 85% 20%, rgba(255, 255, 255, .25), transparent 60%);
 }
+.profile-cover.has-cover .profile-cover-glow {
+  background: linear-gradient(180deg, rgba(9, 16, 24, .04), rgba(9, 16, 24, .28));
+}
 .profile-cover-btn {
   position: absolute;
   top: 10px; right: 10px;
+  width: 40px; height: 40px;
+  border-radius: 12px;
   color: #fff;
   background: rgba(9, 16, 24, .38);
   backdrop-filter: blur(6px);
@@ -3066,6 +3141,25 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
 .info-hero .info-sub { font-size: 13px; color: var(--primary); }
 .info-hero .muted { font-size: 13px; color: var(--text-muted); }
 .info-hero .info-id { font-size: 13px; color: var(--text-muted); letter-spacing: .06em; font-variant-numeric: tabular-nums; }
+.info-hero.has-cover {
+  position: relative;
+  background-position: center;
+  background-size: cover;
+  color: #fff;
+}
+.info-hero.has-cover::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(9, 16, 24, .28), rgba(9, 16, 24, .68));
+}
+.info-hero.has-cover > * { position: relative; z-index: 1; }
+.info-hero.has-cover strong,
+.info-hero.has-cover .muted,
+.info-hero.has-cover .info-id { color: #fff; }
+.info-hero.has-cover .avatar {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, .28), 0 8px 24px rgba(9, 16, 24, .28);
+}
 .info-name-edit { width: 32px; height: 32px; flex: none; color: var(--text-muted); }
 .info-name-edit .ico { width: 17px; height: 17px; }
 .info-badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 2px; }

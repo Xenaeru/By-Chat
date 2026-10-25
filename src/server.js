@@ -106,6 +106,8 @@ const calls = new Map();
 const callLogs = new Map();
 /** uid -> { version, contentType, size } for the profile photo */
 const avatars = new Map();
+/** uid -> { version, contentType, size } untuk background kartu profil. */
+const covers = new Map();
 /** statusId -> { id, from, at, members, payload } */
 const statuses = new Map();
 /**
@@ -129,8 +131,13 @@ const STATUS_TTL = 24 * 60 * 60 * 1000;
 const MAX_STATUSES_PER_USER = 30;
 
 for (const entry of await storage.listAvatars()) {
-  // Foto saluran memakai storage yang sama; jangan dihitung sebagai foto user.
+  // Foto saluran dan background profil memakai storage yang sama; jangan
+  // dihitung sebagai foto user.
   if (entry.uid.startsWith('chv_')) continue;
+  if (entry.uid.startsWith('bg_')) {
+    covers.set(entry.uid.slice(3), entry);
+    continue;
+  }
   avatars.set(entry.uid, entry);
 }
 
@@ -184,6 +191,16 @@ function avatarUrl(uid) {
   // The version in the query string is what makes a new photo show up straight
   // away instead of waiting for a cache to expire.
   return meta ? `/api/avatar/${encodeURIComponent(uid)}?v=${encodeURIComponent(meta.version)}` : null;
+}
+
+function coverStorageKey(uid) {
+  return `bg_${uid}`;
+}
+
+function coverUrl(uid) {
+  const meta = covers.get(uid);
+  if (!meta) return null;
+  return `/api/cover/${encodeURIComponent(uid)}?v=${encodeURIComponent(meta.version)}`;
 }
 
 /** Foto saluran disimpan lewat storage avatar yang sama, dengan awalan sendiri. */
@@ -388,6 +405,7 @@ function publicDirectory() {
       displayName: entry.profile.displayName,
       // A locally uploaded photo wins over whatever the sign-in provider had.
       photoURL: avatarUrl(uid) || entry.profile.photoURL,
+      coverURL: coverUrl(uid),
       // Nomor HP sengaja TIDAK ada di sini. Dulu setiap klien menerima nomor
       // semua orang yang online; sekarang pencarian kontak dikerjakan server
       // (lihat `contact:lookup`), dan hasilnya tidak pernah memuat nomornya.
@@ -413,6 +431,7 @@ function profileCard(uid) {
     uid: String(uid),
     username: usernameFor(uid),
     photoURL: avatarUrl(uid) || live?.profile.photoURL || null,
+    coverURL: coverUrl(String(uid)),
     online: Boolean(live?.socketId),
     id: profile.id || null,
     about: profile.about || '',
@@ -769,6 +788,63 @@ app.delete('/api/profile/avatar', authenticateRequest, async (req, res) => {
   }
 });
 
+/* ---- Background kartu profil ------------------------------------ *
+ * Sama seperti foto profil: publik dan tidak dienkripsi. Bedanya cuma
+ * dipotong ke rasio banner oleh browser sebelum dikirim ke sini.
+ * ------------------------------------------------------------------ */
+
+app.get('/api/cover/:uid', async (req, res) => {
+  const uid = String(req.params.uid || '');
+  if (!covers.has(uid)) return res.status(404).end();
+
+  const cover = await storage.getAvatar(coverStorageKey(uid));
+  if (!cover) return res.status(404).end();
+
+  res.setHeader('Content-Type', cover.contentType);
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.end(cover.buffer);
+});
+
+app.post(
+  '/api/profile/cover',
+  authenticateRequest,
+  express.raw({ type: ['image/png', 'image/jpeg', 'image/webp'], limit: '3mb' }),
+  async (req, res) => {
+    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!buffer.length) return res.status(400).json({ error: 'Gambar kosong.' });
+    if (buffer.length > MAX_AVATAR_BYTES) {
+      return res.status(413).json({
+        error: `Background terlalu besar. Maksimal ${Math.round(MAX_AVATAR_BYTES / 1024 / 1024)} MB.`,
+      });
+    }
+
+    const contentType = sniffImageType(buffer);
+    if (!contentType) return res.status(415).json({ error: 'Formatnya harus PNG, JPEG, atau WebP.' });
+
+    const uid = req.profile.uid;
+    try {
+      const meta = await storage.putAvatar(coverStorageKey(uid), buffer, contentType);
+      covers.set(uid, { ...meta, contentType });
+      broadcastDirectory();
+      res.json({ ok: true, coverURL: coverUrl(uid) });
+    } catch (err) {
+      res.status(502).json({ error: err.message });
+    }
+  }
+);
+
+app.delete('/api/profile/cover', authenticateRequest, async (req, res) => {
+  const uid = req.profile.uid;
+  try {
+    await storage.removeAvatar(coverStorageKey(uid));
+    covers.delete(uid);
+    broadcastDirectory();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
 /* ---- Foto saluran ------------------------------------------------ *
  * Sama seperti foto profil: tidak dienkripsi, karena memang untuk dilihat
  * pengikut. Yang berbeda cuma siapa yang boleh menggantinya — admin saluran.
@@ -1081,6 +1157,7 @@ io.on('connection', (socket) => {
     // centang biru, dan jabatan.
     me: {
       ...(profiles.view(uid) || {}),
+      coverURL: coverUrl(uid),
       checked: isVerified(uid),
       username: usernames.get(uid),
     },
@@ -1218,7 +1295,15 @@ io.on('connection', (socket) => {
     if (!settings) return ack?.({ ok: false, error: 'Profil nggak tersimpan.' });
 
     broadcastDirectory();
-    ack?.({ ok: true, me: { ...settings, checked: isVerified(uid), username: usernames.get(uid) } });
+    ack?.({
+      ok: true,
+      me: {
+        ...settings,
+        coverURL: coverUrl(uid),
+        checked: isVerified(uid),
+        username: usernames.get(uid),
+      },
+    });
   });
 
   /* ---- Jabatan & centang biru ------------------------------------ *

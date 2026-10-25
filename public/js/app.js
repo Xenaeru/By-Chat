@@ -241,6 +241,8 @@ const el = {
   nameTag: $('[data-name-tag]'),
   panelSettings: $('#panel-settings'),
   avatarInput: $('#avatar-input'),
+  coverInput: $('#cover-input'),
+  meCover: $('#me-cover'),
 
   channelList: $('#channel-list'),
   channelEmpty: $('#channel-empty'),
@@ -2512,7 +2514,7 @@ function renderChatList() {
       <div class="avatar${ring}"${peerUid ? ` data-uid="${esc(peerUid)}"` : ''}>${esc(initials(name))}</div>
       <div class="chat-item-main">
         <div class="chat-item-top">
-          <span class="chat-item-name">${esc(name)}${room.type === 'dm' ? badgeFor(peerUid) : ''}${room.type === 'group' ? ' 👥' : ''}${
+          <span class="chat-item-name">${room.type === 'dm' ? nameWithBadge(name, peerUid) : `${esc(name)} 👥`}${
             fav ? '<svg class="ico chat-item-flag star"><use href="#i-star-filled" /></svg>' : ''
           }</span>
           <span class="chat-item-time">${
@@ -5672,9 +5674,12 @@ async function openInfoPanel(kind, target) {
     const unreadStarred = room ? starredCount(room) : 0;
     const themeName = themeLabel();
     const disappear = room ? Number(roomPrefs(room.id).disappearMs) || 0 : 0;
+    const cover = profile.coverURL || '';
 
     el.infoBody.innerHTML = `
-      <div class="info-hero">
+      <div class="info-hero${cover ? ' has-cover' : ''}"${
+        cover ? ` style="background-image:url('${esc(cover)}')"` : ''
+      }>
         <span class="avatar" data-uid="${esc(uid)}">${esc(initials(name))}</span>
         <strong class="name-with-badge"><span>${esc(name)}</span>${badgeFor(uid)}</strong>
         <span class="info-sub">${profile.online ? 'online' : 'terakhir dilihat baru-baru ini'}</span>
@@ -6226,6 +6231,7 @@ function renderSettings() {
   el.meName.innerHTML = `<span class="name-with-badge"><span>${esc(name)}</span>${badgeFor(
     state.me.uid
   )}</span>`;
+  applyCover(meProfile().coverURL);
   el.displayName.value = name;
   el.nameTag.textContent = `@${state.username || '—'}`;
 
@@ -6626,6 +6632,70 @@ function applyOwnPhoto(photoURL) {
   if (entry) entry.photoURL = photoURL || null;
   state.profile = { ...state.profile, photoURL: photoURL || null };
   paintAvatars();
+}
+
+/* Background kartu profil: beda dari foto profil. Fotonya dipotong ke rasio
+   banner dulu, baru diunggah; orang lain melihatnya lewat profil publik. */
+async function prepareCoverFile(file) {
+  const bitmap = await createImageBitmap(file);
+  const width = 1200;
+  const height = 360;
+  const scale = Math.max(width / bitmap.width, height / bitmap.height);
+  const sourceWidth = width / scale;
+  const sourceHeight = height / scale;
+  const sourceX = (bitmap.width - sourceWidth) / 2;
+  const sourceY = (bitmap.height - sourceHeight) / 2;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext('2d').drawImage(
+    bitmap,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    width,
+    height
+  );
+  bitmap.close?.();
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.82));
+  if (!blob) throw new Error('Gagal memproses gambar.');
+  return blob;
+}
+
+function applyCover(coverURL) {
+  if (!el.meCover) return;
+  el.meCover.classList.toggle('has-cover', Boolean(coverURL));
+  if (coverURL) el.meCover.style.backgroundImage = `url("${coverURL}")`;
+  else el.meCover.style.removeProperty('background-image');
+}
+
+function applyOwnCover(coverURL) {
+  state.profile = { ...state.profile, coverURL: coverURL || null };
+  if (state.meProfile) state.meProfile = { ...state.meProfile, coverURL: coverURL || null };
+  applyCover(coverURL);
+}
+
+async function uploadCover(file) {
+  if (!file) return;
+  const token = await state.auth.getIdToken();
+  if (!token) throw new Error('Belum login.');
+
+  const body = await prepareCoverFile(file);
+  const response = await fetch('/api/profile/cover', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': body.type || 'image/jpeg' },
+    body,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Gagal unggah (${response.status}).`);
+
+  applyOwnCover(data.coverURL);
+  showToast('Background profil diperbarui.');
 }
 
 /* ------------------------------------------------------------------ *
@@ -7076,6 +7146,16 @@ el.avatarInput.addEventListener('change', async (event) => {
     await uploadAvatar(file);
   } catch (err) {
     showToast(`Foto profil: ${err.message}`, 6000);
+  }
+});
+el.panelSettings.querySelector('[data-pick-cover]').addEventListener('click', () => el.coverInput.click());
+el.coverInput.addEventListener('change', async (event) => {
+  const [file] = event.target.files || [];
+  event.target.value = '';
+  try {
+    await uploadCover(file);
+  } catch (err) {
+    showToast(`Background profil: ${err.message}`, 6000);
   }
 });
 el.panelSettings.querySelector('[data-remove-photo]').addEventListener('click', async () => {

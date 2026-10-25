@@ -747,6 +747,38 @@ test('a profile photo is stored, served back to anybody, and can be deleted', as
   viewer.close();
 });
 
+test('a profile background is stored, served, and shown to other accounts', async () => {
+  const alice = await new Client('alice13').init();
+
+  const upload = await fetch(`${BASE_URL}/api/profile/cover`, {
+    method: 'POST',
+    headers: { ...authHeader(alice), 'content-type': 'image/png' },
+    body: png1x1,
+  });
+  const body = await upload.text();
+  assert.equal(upload.status, 200, body);
+  const { coverURL } = JSON.parse(body);
+  assert.match(coverURL, /^\/api\/cover\//);
+
+  const served = await fetch(new URL(coverURL, BASE_URL));
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get('content-type'), 'image/png');
+
+  const viewer = await new Client('bob13').init();
+  const seen = viewer.ready.directory.find((entry) => entry.uid === alice.uid);
+  assert.match(seen.coverURL, /^\/api\/cover\//);
+
+  const removed = await fetch(`${BASE_URL}/api/profile/cover`, {
+    method: 'DELETE',
+    headers: authHeader(alice),
+  });
+  assert.equal(removed.status, 200);
+  assert.equal(await fetch(new URL(coverURL, BASE_URL)).then((r) => r.status), 404);
+
+  alice.close();
+  viewer.close();
+});
+
 test('a profile photo must be a real image of a sane size, and come from a real account', async () => {
   const alice = await new Client('alice12').init();
 

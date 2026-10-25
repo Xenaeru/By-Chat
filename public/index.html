@@ -266,24 +266,27 @@
   <!-- Panel status: daftar pembaruan dari kontak yang sudah pernah chat. -->
   <section class="panel" data-panel="status" id="panel-status" hidden>
     <header class="panel-head">
-      <h1 class="panel-title">Status</h1>
+      <h1 class="panel-title"><span class="panel-title-desktop">Status</span><span class="panel-title-mobile">Pembaruan</span></h1>
       <button type="button" class="icon-btn" id="status-me-add" title="Buat status" aria-label="Buat status">
         <svg class="ico"><use href="#i-plus" /></svg>
       </button>
     </header>
 
-    <div class="status-me" id="status-me">
-      <button type="button" class="status-me-main" id="status-me-open">
-        <span class="avatar" id="status-me-avatar">?</span>
-        <span class="status-me-text">
-          <strong>Status saya</strong>
-          <span class="muted" id="status-me-sub">Ketuk buat tambah status</span>
-        </span>
-      </button>
-    </div>
+    <p class="panel-label status-label-mobile">Status</p>
+    <div class="status-strip">
+      <div class="status-me" id="status-me">
+        <button type="button" class="status-me-main" id="status-me-open">
+          <span class="avatar" id="status-me-avatar">?</span>
+          <span class="status-me-text">
+            <strong>Status saya</strong>
+            <span class="muted" id="status-me-sub">Ketuk buat tambah status</span>
+          </span>
+        </button>
+      </div>
 
-    <p class="panel-label">Pembaruan terbaru</p>
-    <ul class="status-list" id="status-list"></ul>
+      <p class="panel-label status-label-desktop">Pembaruan terbaru</p>
+      <ul class="status-list" id="status-list"></ul>
+    </div>
     <p id="status-empty" class="empty-note">
       Belum ada status. Profil publik bisa dilihat siapa saja; profil privat cuma oleh orang yang pernah chat.
     </p>
@@ -328,9 +331,9 @@
 
     <div class="settings-body">
       <div class="profile-card">
-        <div class="profile-cover">
+        <div class="profile-cover" id="me-cover">
           <span class="profile-cover-glow" aria-hidden="true"></span>
-          <button type="button" class="icon-btn profile-cover-btn" data-pick-photo title="Ganti foto" aria-label="Ganti foto">
+          <button type="button" class="icon-btn profile-cover-btn" data-pick-cover title="Tambah background profil" aria-label="Tambah background profil">
             <svg class="ico"><use href="#i-camera" /></svg>
           </button>
         </div>
@@ -379,6 +382,7 @@
         <span class="sub">PNG, JPEG, atau WebP — maksimal 2 MB. Foto profil <strong>tidak</strong> terenkripsi, jadi jangan pakai foto yang kamu nggak mau orang lihat.</span>
       </div>
       <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" hidden />
+      <input type="file" id="cover-input" accept="image/png,image/jpeg,image/webp" hidden />
 
       <h2 class="settings-section">Tampilan</h2>
       <!-- Dropdown, bukan tiga tombol: di panel Pengaturan yang sempit, tiga

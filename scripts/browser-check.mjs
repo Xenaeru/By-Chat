@@ -948,6 +948,8 @@ async function checkPhotoAndStatus(andi, budi) {
       'base64'
     )
   );
+  const coverPng = path.join(TMP, 'background-profil.png');
+  fs.copyFileSync(path.join(process.cwd(), 'public/assets/icon-192.png'), coverPng);
 
   /* ---- Foto profil ---- */
   await goView(andi.page, 'settings');
@@ -1001,6 +1003,27 @@ async function checkPhotoAndStatus(andi, budi) {
     { timeout: 15000 }
   );
   check('Foto profil terpasang dari panel Pengaturan', true);
+
+  // Tombol kotak di pojok banner mengunggah background, bukan menimpa foto
+  // profil. Tombol bulat di avatar tetap jalur foto profil.
+  const [coverChooser] = await Promise.all([
+    andi.page.waitForFileChooser(),
+    andi.page.click('[data-pick-cover]'),
+  ]);
+  await coverChooser.accept([coverPng]);
+  await andi.page.waitForFunction(
+    () => (document.querySelector('#me-cover')?.style.backgroundImage || '').includes('/api/cover/'),
+    { timeout: 15000 }
+  );
+  const coverState = await andi.page.evaluate(() => ({
+    cover: document.querySelector('#me-cover')?.style.backgroundImage || '',
+    avatar: document.querySelector('#me-avatar')?.style.backgroundImage || '',
+  }));
+  check(
+    'Tombol kotak memasang background profil, foto profil tetap utuh',
+    coverState.cover.includes('/api/cover/') && coverState.avatar.includes('/api/avatar/'),
+    JSON.stringify(coverState)
+  );
 
   await goView(andi.page, 'chats');
   await andi.page.waitForFunction(
@@ -1240,6 +1263,21 @@ async function checkReportAndAdmin(andi, budi) {
     'Centang biru dari admin tampil di profil akun',
     Boolean(await budi.page.$('#me-name .badge-check')),
     await budi.page.$eval('#me-name', (node) => node.innerHTML)
+  );
+
+  await andi.page.waitForSelector('.chat-item-name .badge-check', { timeout: 15000 });
+  const badgeLayout = await andi.page.evaluate(() => {
+    const badge = document.querySelector('.chat-item-name .badge-check');
+    const name = badge.closest('.name-with-badge')?.querySelector('span');
+    const b = badge.getBoundingClientRect();
+    const n = name.getBoundingClientRect();
+    return { badgeTop: b.top, nameTop: n.top, badgeLeft: b.left, nameRight: n.right };
+  });
+  check(
+    'Centang biru di daftar chat duduk di samping nama, bukan baris bawah',
+    Math.abs(badgeLayout.badgeTop - badgeLayout.nameTop) < 10 &&
+      badgeLayout.badgeLeft >= badgeLayout.nameRight - 2,
+    JSON.stringify(badgeLayout)
   );
 
   await adminPage.close();
