@@ -223,6 +223,9 @@
     <button type="button" class="rail-btn" data-view="calls" title="Panggilan" aria-label="Panggilan" aria-pressed="false">
       <svg class="ico"><use href="#i-phone" /></svg>
     </button>
+    <button type="button" class="rail-btn" data-view="channels" title="Saluran" aria-label="Saluran" aria-pressed="false">
+      <svg class="ico"><use href="#i-megaphone" /></svg>
+    </button>
     <button type="button" class="rail-btn" data-view="settings" title="Pengaturan" aria-label="Pengaturan" aria-pressed="false">
       <svg class="ico"><use href="#i-sliders" /></svg>
     </button>
@@ -291,22 +294,31 @@
       Belum ada status. Profil publik bisa dilihat siapa saja; profil privat cuma oleh orang yang pernah chat.
     </p>
 
-    <!-- Saluran: siaran satu arah. Yang menulis cuma admin saluran, dan nama
-         penulisnya tidak pernah ikut ke pengikut. -->
-    <div class="channels-head">
-      <h2 class="panel-label">Saluran</h2>
-      <div class="channels-head-actions">
-        <button type="button" class="ghost tiny" id="btn-explore-channels">Jelajahi</button>
-        <button type="button" class="icon-btn" id="btn-create-channel" title="Buat saluran" aria-label="Buat saluran">
-          <svg class="ico"><use href="#i-plus" /></svg>
-        </button>
+    <!-- Saluran: siaran satu arah. Di desktop blok ini dipindah ke panel
+         Saluran sendiri; di hp tetap di bawah status seperti WhatsApp. -->
+    <div class="channels-block" id="channels-block">
+      <div class="channels-head">
+        <h2 class="panel-label">Saluran</h2>
+        <div class="channels-head-actions">
+          <button type="button" class="ghost tiny" id="btn-explore-channels">Jelajahi</button>
+          <button type="button" class="icon-btn" id="btn-create-channel" title="Buat saluran" aria-label="Buat saluran">
+            <svg class="ico"><use href="#i-plus" /></svg>
+          </button>
+        </div>
       </div>
+      <ul class="channel-list" id="channel-list"></ul>
+      <p id="channel-empty" class="empty-note">
+        Belum ada saluran yang kamu ikuti. Tekan Jelajahi buat mencari, atau buat saluran sendiri.
+      </p>
+      <p class="panel-foot">Hilang sendiri setelah 24 jam · isinya tetap terenkripsi</p>
     </div>
-    <ul class="channel-list" id="channel-list"></ul>
-    <p id="channel-empty" class="empty-note">
-      Belum ada saluran yang kamu ikuti. Tekan Jelajahi buat mencari, atau buat saluran sendiri.
-    </p>
-    <p class="panel-foot">Hilang sendiri setelah 24 jam · isinya tetap terenkripsi</p>
+  </section>
+
+  <!-- Panel saluran: menu sendiri di desktop, seperti WhatsApp Web. -->
+  <section class="panel" data-panel="channels" id="panel-channels" hidden>
+    <header class="panel-head">
+      <h1 class="panel-title">Saluran</h1>
+    </header>
   </section>
 
   <!-- Panel panggilan: riwayat disimpan di perangkat ini, bukan di server. -->

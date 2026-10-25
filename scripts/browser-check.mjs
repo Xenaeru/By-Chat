@@ -491,13 +491,13 @@ async function checkShell(andi) {
   check(
     'Aplikasi mulai di panel Chat, dengan rail lengkap di kolom kiri',
     start.view === 'chats' &&
-      start.panels === 4 &&
+      start.panels === 5 &&
       start.railWidth > 0 &&
-      ['chats', 'status', 'calls', 'settings'].every((view) => start.railTabs.includes(view)),
+      ['chats', 'status', 'channels', 'calls', 'settings'].every((view) => start.railTabs.includes(view)),
     JSON.stringify(start)
   );
 
-  for (const view of ['status', 'calls', 'settings', 'chats']) {
+  for (const view of ['status', 'channels', 'calls', 'settings', 'chats']) {
     await goView(andi.page, view);
     const seen = await andi.page.evaluate((name) => {
       const panel = document.querySelector(`.panel[data-panel="${name}"]`);
@@ -807,6 +807,11 @@ async function login(browser, username) {
   check(
     `${username}: menu utamanya chat, status, panggilan, pengaturan`,
     views.every((view) => nav.railTabs.includes(view)) && views.every((view) => nav.tabTabs.includes(view)),
+    JSON.stringify(nav)
+  );
+  check(
+    `${username}: Saluran punya menu sendiri di rail desktop`,
+    nav.railTabs.includes('channels') && !nav.tabTabs.includes('channels'),
     JSON.stringify(nav)
   );
   check(
@@ -3111,7 +3116,7 @@ try {
   check('Tutup obrolan menutup percakapan dan kembali ke layar kosong', closedChat.chatHidden && closedChat.emptyShown, JSON.stringify(closedChat));
 
   /* Saluran: buat dari UI, lihat info adminnya, lalu ganti namanya. */
-  await goView(andi.page, 'status');
+  await goView(andi.page, 'channels');
   await andi.page.click('#btn-create-channel');
   await andi.page.waitForSelector('#channel-name', { timeout: 5000 });
   await andi.page.type('#channel-name', 'Kanal Uji');

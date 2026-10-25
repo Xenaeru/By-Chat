@@ -164,7 +164,7 @@ const state = {
   channelMembers: new Map(),
   info: null,
   notifier: null,
-  /** Panel yang sedang terbuka di kolom daftar: chats | status | calls | settings. */
+  /** Panel yang terbuka di kolom daftar: chats | status | channels | calls | settings. */
   view: 'chats',
   /** Riwayat panggilan lokal + keadaan panggilan yang sedang berjalan. */
   callLog: [],
@@ -240,10 +240,13 @@ const el = {
   displayName: $('#display-name'),
   nameTag: $('[data-name-tag]'),
   panelSettings: $('#panel-settings'),
+  panelStatus: $('#panel-status'),
+  panelChannels: $('#panel-channels'),
   avatarInput: $('#avatar-input'),
   coverInput: $('#cover-input'),
   meCover: $('#me-cover'),
 
+  channelsBlock: $('#channels-block'),
   channelList: $('#channel-list'),
   channelEmpty: $('#channel-empty'),
   btnExploreChannels: $('#btn-explore-channels'),
@@ -835,7 +838,25 @@ function setStatus(text, online = false) {
 /* ------------------------------------------------------------------ *
  * Shell: rail (desktop) + navbar bawah (hp) yang cuma memindahkan panel
  * ------------------------------------------------------------------ */
-const VIEWS = ['chats', 'status', 'calls', 'settings'];
+const VIEWS = ['chats', 'status', 'channels', 'calls', 'settings'];
+const channelsPlacement = window.matchMedia('(min-width: 761px)');
+
+/**
+ * Saluran punya menu sendiri di desktop (seperti WhatsApp Web), tapi tetap
+ * menempel di bawah Status saat layar sempit. Blok yang sama dipindah, bukan
+ * diduplikasi, supaya daftarnya nggak bisa berbeda antar dua tempat.
+ */
+function placeChannelsBlock() {
+  const host = channelsPlacement.matches ? el.panelChannels : el.panelStatus;
+  if (!el.channelsBlock || !host || el.channelsBlock.parentElement === host) return;
+  host.appendChild(el.channelsBlock);
+}
+
+channelsPlacement.addEventListener('change', () => {
+  placeChannelsBlock();
+  if (!channelsPlacement.matches && state.view === 'channels') setView('status');
+});
+placeChannelsBlock();
 
 /**
  * Pindah panel di kolom daftar. Di hp ini yang bikin "halaman" berganti,
@@ -872,6 +893,7 @@ function setView(view, { animate = true } = {}) {
   if (view === 'settings') renderSettings();
   if (view === 'calls') renderCalls();
   if (view === 'status') renderStatuses();
+  if (view === 'channels') renderChannels();
 }
 
 /* ------------------------------------------------------------------ *

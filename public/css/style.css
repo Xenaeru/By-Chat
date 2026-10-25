@@ -3032,7 +3032,24 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
 .channel-photo .avatar { width: 56px; height: 56px; font-size: 20px; }
 .channel-photo .ghost { flex: none; }
 
-/* ── Saluran (panel Status) ─────────────────────────────────────── */
+/* ── Saluran (panel sendiri di desktop, di bawah Status di hp) ───── */
+.channels-block { display: block; }
+#panel-channels .channels-block {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+#panel-channels .channels-head {
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+#panel-channels .channels-head .panel-label { display: none; }
+#panel-channels .channel-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 .channels-head {
   display: flex;
   align-items: center;
