@@ -68,6 +68,13 @@
   <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.3"/><path d="M6.2 6.2 17.8 17.8"/></symbol>
   <symbol id="i-user-plus" viewBox="0 0 24 24"><circle cx="10" cy="8.4" r="3.4"/><path d="M3.6 19.2c0-3 2.9-4.9 6.4-4.9 1.2 0 2.4.2 3.4.7"/><path d="M17.6 13.4v6M14.6 16.4h6"/></symbol>
 
+  <!-- Profil, saluran, dan badge staf -->
+  <symbol id="i-verified" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6" fill="currentColor" stroke="none"/><path d="M8 12.3l2.7 2.7 5.4-5.6" stroke="var(--badge-ink, #fff)" stroke-width="2.2" fill="none"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M3.6 12h16.8"/><path d="M12 3.6c2.3 2.3 3.5 5.3 3.5 8.4s-1.2 6.1-3.5 8.4c-2.3-2.3-3.5-5.3-3.5-8.4S9.7 5.9 12 3.6z"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M16.4 4.4a2.1 2.1 0 0 1 3 3L8.8 18.2l-4.2 1 1-4.2z"/><path d="M14.4 6.4l3.2 3.2"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4.4 8.2h2.8l1.4-2h6.8l1.4 2h2.8a1.8 1.8 0 0 1 1.8 1.8v7.2a1.8 1.8 0 0 1-1.8 1.8H4.4a1.8 1.8 0 0 1-1.8-1.8V10a1.8 1.8 0 0 1 1.8-1.8z"/><circle cx="12" cy="13.4" r="3.3"/></symbol>
+  <symbol id="i-megaphone" viewBox="0 0 24 24"><path d="M4 10.4v3.2l11 4.6V5.8z"/><path d="M15.4 9a3.4 3.4 0 0 1 0 6"/><path d="M7.4 14.8V20h3v-4.1"/></symbol>
+
   <!-- Menu obrolan (titik tiga di header) -->
   <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="12" cy="5.4" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="18.6" r="1.7" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-bell-off" viewBox="0 0 24 24"><path d="M6.6 10.4a5.4 5.4 0 0 1 8.4-4.2"/><path d="M17.4 12.4v2.4l1.4 2.2H8.2"/><path d="M5.2 15l.8-1.2v-3"/><path d="M10 20.2a2.4 2.4 0 0 0 4 0"/><path d="M4 4l16 16"/></symbol>
@@ -278,7 +285,23 @@
     <p class="panel-label">Pembaruan terbaru</p>
     <ul class="status-list" id="status-list"></ul>
     <p id="status-empty" class="empty-note">
-      Belum ada status. Status cuma bisa dilihat dari orang yang sudah pernah chat dengan kamu.
+      Belum ada status. Profil publik bisa dilihat siapa saja; profil privat cuma oleh orang yang pernah chat.
+    </p>
+
+    <!-- Saluran: siaran satu arah. Yang menulis cuma admin saluran, dan nama
+         penulisnya tidak pernah ikut ke pengikut. -->
+    <div class="channels-head">
+      <h2 class="panel-label">Saluran</h2>
+      <div class="channels-head-actions">
+        <button type="button" class="ghost tiny" id="btn-explore-channels">Jelajahi</button>
+        <button type="button" class="icon-btn" id="btn-create-channel" title="Buat saluran" aria-label="Buat saluran">
+          <svg class="ico"><use href="#i-plus" /></svg>
+        </button>
+      </div>
+    </div>
+    <ul class="channel-list" id="channel-list"></ul>
+    <p id="channel-empty" class="empty-note">
+      Belum ada saluran yang kamu ikuti. Tekan Jelajahi buat mencari, atau buat saluran sendiri.
     </p>
     <p class="panel-foot">Hilang sendiri setelah 24 jam · isinya tetap terenkripsi</p>
   </section>
@@ -296,27 +319,52 @@
   </section>
 
   <!-- Panel pengaturan: profil, notifikasi, keluar. -->
+  <!-- Panel profil: satu kartu di atas (foto, nama, ID, status, tahun lahir)
+       lalu pengaturan yang jarang disentuh di bawahnya. -->
   <section class="panel" data-panel="settings" id="panel-settings" hidden>
     <header class="panel-head">
-      <h1 class="panel-title">Pengaturan</h1>
+      <h1 class="panel-title">Profil</h1>
     </header>
 
     <div class="settings-body">
-      <div class="settings-profile">
-        <span class="avatar big" id="me-avatar">?</span>
-        <div class="settings-profile-text">
-          <strong id="me-name">—</strong>
-          <span class="muted" id="me-status">menyambung…</span>
+      <div class="profile-card">
+        <div class="profile-cover">
+          <span class="profile-cover-glow" aria-hidden="true"></span>
+          <button type="button" class="icon-btn profile-cover-btn" data-pick-photo title="Ganti foto" aria-label="Ganti foto">
+            <svg class="ico"><use href="#i-camera" /></svg>
+          </button>
+        </div>
+        <div class="profile-avatar-wrap">
+          <span class="avatar profile-avatar" id="me-avatar">?</span>
+          <button type="button" class="icon-btn profile-avatar-btn" data-pick-photo title="Ganti foto" aria-label="Ganti foto">
+            <svg class="ico"><use href="#i-camera" /></svg>
+          </button>
+        </div>
+        <div class="profile-body">
+          <button type="button" class="profile-name" id="btn-edit-profile">
+            <strong id="me-name">—</strong>
+            <svg class="ico"><use href="#i-pencil" /></svg>
+          </button>
+          <span class="profile-id" id="me-id">ID —</span>
+          <span class="profile-about" id="me-about">Belum ada status</span>
+          <span class="profile-birth" id="me-birth" hidden></span>
+          <span class="profile-conn muted" id="me-status">menyambung…</span>
+          <button type="button" class="ghost wide" id="btn-edit-status">Edit status</button>
         </div>
       </div>
 
-      <div class="photo-actions">
-        <button type="button" class="ghost" data-pick-photo>Ganti foto</button>
-        <button type="button" class="ghost" data-remove-photo>Hapus</button>
-        <span class="sub">PNG, JPEG, atau WebP — maksimal 2 MB. Foto profil <strong>tidak</strong> terenkripsi, jadi jangan pakai foto yang kamu nggak mau orang lihat.</span>
+      <div class="settings-row profile-public">
+        <span class="settings-icon"><svg class="ico"><use href="#i-globe" /></svg></span>
+        <div class="settings-row-text">
+          <strong>Profil Publik</strong>
+          <span class="muted" data-public-note>Siapa pun bisa melihat foto dan statusmu</span>
+        </div>
+        <button type="button" class="switch" id="public-profile-toggle" role="switch" aria-checked="true" aria-label="Profil publik">
+          <span class="switch-dot"></span>
+        </button>
       </div>
-      <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" hidden />
 
+      <h2 class="settings-section">Akun</h2>
       <label for="display-name">Username</label>
       <div class="settings-field">
         <input id="display-name" type="text" maxlength="20" autocomplete="off" />
@@ -326,6 +374,13 @@
         Orang lain lihat kamu sebagai <strong data-name-tag>@—</strong>. Boleh pakai huruf besar/kecil — ejaannya tampil apa adanya, tapi <em>Andi</em> dan <em>andi</em> tetap dianggap nama yang sama, jadi nggak bisa dipakai orang lain.
       </p>
 
+      <div class="photo-actions">
+        <button type="button" class="ghost" data-remove-photo>Hapus foto</button>
+        <span class="sub">PNG, JPEG, atau WebP — maksimal 2 MB. Foto profil <strong>tidak</strong> terenkripsi, jadi jangan pakai foto yang kamu nggak mau orang lihat.</span>
+      </div>
+      <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" hidden />
+
+      <h2 class="settings-section">Tampilan</h2>
       <!-- Dropdown, bukan tiga tombol: di panel Pengaturan yang sempit, tiga
            tombol saling berebut tempat dengan keterangannya sampai teksnya
            terlipat per kata. -->
@@ -352,6 +407,7 @@
         <button type="button" class="ghost" data-notify-toggle aria-pressed="false">Aktifkan</button>
       </div>
 
+      <h2 class="settings-section">Sesi</h2>
       <div class="settings-row">
         <div class="settings-row-text">
           <strong>Keluar</strong>
@@ -521,16 +577,16 @@
       </button>
       <div class="contact-title">
         <strong>Tambah kontak</strong>
-        <span class="muted">Chat cuma bisa dibuat setelah kontaknya ditemukan di sini.</span>
+        <span class="muted">Cari pakai ID pengguna. ID ada di halaman Profil orangnya.</span>
       </div>
     </header>
 
     <form id="contact-form" class="contact-form" autocomplete="off">
       <div class="contact-field">
         <svg class="ico"><use href="#i-search" /></svg>
-        <label for="contact-query" class="sr-only">Email, nomor HP, atau username</label>
-        <input id="contact-query" maxlength="120" autocapitalize="none" autocorrect="off"
-               spellcheck="false" placeholder="email, nomor HP, atau @username" />
+        <label for="contact-query" class="sr-only">ID pengguna</label>
+        <input id="contact-query" maxlength="12" inputmode="numeric" autocapitalize="none" autocorrect="off"
+               spellcheck="false" placeholder="ID pengguna, misal 17217387" />
       </div>
       <button type="submit" id="contact-submit" class="primary">Cari</button>
     </form>
@@ -674,6 +730,19 @@
     <span id="viewer-loading-label">Membuka…</span>
   </div>
 </div>
+
+<!-- Panel info: dibuka dari nama di header obrolan. Isinya menyesuaikan
+     apakah yang dibuka itu orang, grup, atau saluran. -->
+<div id="info-catcher" class="sheet-catcher" hidden></div>
+<aside id="info-panel" class="info-panel" hidden aria-label="Info">
+  <header class="info-head">
+    <strong id="info-title">Info</strong>
+    <button type="button" class="icon-btn" id="info-close" title="Tutup" aria-label="Tutup">
+      <svg class="ico"><use href="#i-close" /></svg>
+    </button>
+  </header>
+  <div class="info-body" id="info-body"></div>
+</aside>
 
 <div id="modal" class="modal" hidden><div class="modal-card" id="modal-card"></div></div>
 <div id="toast" class="toast" hidden></div>

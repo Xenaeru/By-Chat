@@ -28,8 +28,10 @@ import { createVerifier } from './auth.js';
 import { createStorage, isSafePath, newBlobPath, resolveLocalPath, sniffImageType } from './storage.js';
 import { createUsernameRegistry, createUsernameStore } from './usernames.js';
 import { createModeration, createModerationStore, REPORT_REASONS } from './moderation.js';
-import { createAccountIndex, createAccountStore, looksLikeEmail, phoneDigits } from './accounts.js';
+import { createAccountIndex, createAccountStore } from './accounts.js';
 import { createCredentialRegistry, createCredentialStore } from './credentials.js';
+import { createProfileRegistry, createProfileStore, looksLikeUserId } from './profiles.js';
+import { createChannelRegistry, createChannelStore, channelSummary } from './channels.js';
 import { createPushService } from './push.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,6 +67,18 @@ const savedAccounts = await accounts.load();
 const credentialStore = await createCredentialStore(config);
 const credentials = await createCredentialRegistry({ store: credentialStore });
 const savedCredentials = await credentials.load();
+
+// Profil publik: ID pengguna, status, tahun lahir, sakelar profil publik,
+// centang biru, jabatan, dan catatan siapa yang pernah chat dengan siapa.
+const profileStore = await createProfileStore(config);
+const profiles = await createProfileRegistry({ store: profileStore });
+const savedProfiles = await profiles.load();
+
+// Saluran siaran. Postingannya blob terenkripsi; yang tersimpan di sini cuma
+// nama, deskripsi, pengikut, admin, dan blob itu sendiri.
+const channelStore = await createChannelStore(config);
+const channels = await createChannelRegistry({ store: channelStore });
+const savedChannels = await channels.load();
 
 const verifier = await createVerifier(config, {
   verifySession: (token) => credentials.verifySession(token),
@@ -114,7 +128,11 @@ const CALL_RING_MS = Math.max(5000, Number(process.env.CALL_RING_MS || 45_000));
 const STATUS_TTL = 24 * 60 * 60 * 1000;
 const MAX_STATUSES_PER_USER = 30;
 
-for (const entry of await storage.listAvatars()) avatars.set(entry.uid, entry);
+for (const entry of await storage.listAvatars()) {
+  // Foto saluran memakai storage yang sama; jangan dihitung sebagai foto user.
+  if (entry.uid.startsWith('chv_')) continue;
+  avatars.set(entry.uid, entry);
+}
 
 /**
  * Statuses expire on their own. Pruning happens on access rather than on a
@@ -126,12 +144,39 @@ function pruneStatuses() {
   for (const [id, status] of statuses) if (status.at < cutoff) statuses.delete(id);
 }
 
+/**
+ * Siapa yang boleh melihat sebuah status.
+ *
+ * Profil publik  → isinya siaran publik, siapa pun yang login boleh lihat.
+ * Profil privat  → cuma orang yang pernah bertukar pesan langsung dengan
+ *                  penulisnya. Server yang memutuskan, bukan pengirimnya:
+ *                  daftar `members` dari browser tidak pernah dipercaya
+ *                  sepenuhnya.
+ *
+ * Pemilik status selalu bisa melihat miliknya sendiri.
+ */
+function canSeeStatus(viewerUid, status) {
+  if (status.from === viewerUid) return true;
+  const author = profiles.get(status.from);
+  if (status.mode === 'public' && author?.publicProfile !== false) return true;
+  return profiles.hasChatted(viewerUid, status.from);
+}
+
 function statusListFor(uid) {
   pruneStatuses();
   return [...statuses.values()]
-    .filter((status) => status.members.includes(uid))
+    .filter((status) => status.members.includes(uid) || canSeeStatus(uid, status))
     .sort((a, b) => a.at - b.at)
-    .map((status) => ({ id: status.id, from: status.from, at: status.at, payload: status.payload }));
+    .map((status) => ({
+      id: status.id,
+      from: status.from,
+      at: status.at,
+      payload: status.payload,
+      // Nama/foto penulis ikut supaya status publik dari orang yang belum
+      // pernah chat tetap punya label, bukan cuma potongan uid.
+      fromName: usernameFor(status.from),
+      fromPhoto: avatarUrl(status.from),
+    }));
 }
 
 function avatarUrl(uid) {
@@ -139,6 +184,16 @@ function avatarUrl(uid) {
   // The version in the query string is what makes a new photo show up straight
   // away instead of waiting for a cache to expire.
   return meta ? `/api/avatar/${encodeURIComponent(uid)}?v=${encodeURIComponent(meta.version)}` : null;
+}
+
+/** Foto saluran disimpan lewat storage avatar yang sama, dengan awalan sendiri. */
+const channelAvatarKey = (id) => `chv_${id}`;
+
+function channelAvatarUrl(channel) {
+  if (!channel?.avatarVersion) return null;
+  return `/api/channel/${encodeURIComponent(channel.id)}/avatar?v=${encodeURIComponent(
+    channel.avatarVersion
+  )}`;
 }
 
 app.disable('x-powered-by');
@@ -162,6 +217,8 @@ app.get('/healthz', (_req, res) => {
     usernames: usernames.size(),
     accounts: accounts.size(),
     credentials: credentials.size(),
+    profiles: profiles.size(),
+    channels: channels.size(),
     avatars: avatars.size,
     trackedMessages: sentMessages.size,
     statuses: statuses.size,
@@ -247,15 +304,67 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 const onlineCount = () => [...directory.values()].filter((e) => e.socketId).length;
 
 /**
- * Admin = akun yang uid atau email-nya tercantum di env. Tidak ada jalur lain:
- * tidak ada "pendaftar pertama jadi admin", tidak ada tombol di UI, dan
- * halaman /admin.html sendiri hanya alat — aturan yang berlaku ada di sini.
+ * OWNER = akun yang uid atau email-nya tercantum di env. Tidak ada jalur lain
+ * untuk menjadi owner: tidak ada "pendaftar pertama jadi admin", tidak ada
+ * tombol di UI, dan halaman /admin.html sendiri hanya alat — aturan yang
+ * berlaku ada di sini.
+ *
+ * Di bawah owner ada dua jabatan yang bisa diberikan: `admin` (boleh memberi
+ * moderator dan centang biru) dan `moderator` (cuma centang biru). Pemegang
+ * jabatan disimpan di profiles.js, bukan di env, supaya bisa diberikan tanpa
+ * restart.
  */
-function isAdmin(profile) {
+function isOwner(profile) {
   if (!profile) return false;
   if (config.admins.uids.includes(profile.uid)) return true;
   const email = String(profile.email || '').toLowerCase();
   return Boolean(email) && config.admins.emails.includes(email);
+}
+
+/** Nama lama tetap dipakai di beberapa tempat: admin dari env = owner. */
+const isAdmin = isOwner;
+
+/** 'owner' | 'admin' | 'moderator' | null untuk satu uid. */
+function staffRank(uid) {
+  const id = String(uid || '');
+  if (!id) return null;
+  if (isOwner({ uid: id, email: accounts.get(id)?.email })) return 'owner';
+  const role = profiles.get(id)?.role || null;
+  return role === 'admin' || role === 'moderator' ? role : null;
+}
+
+/** Panel admin (blokir, laporan) terbuka untuk owner dan admin, bukan moderator. */
+function canUseAdminPanel(profile) {
+  const rank = staffRank(profile?.uid);
+  return rank === 'owner' || rank === 'admin';
+}
+
+/**
+ * Centang biru yang ditampilkan. Owner dan admin selalu memakainya supaya
+ * akun staf gampang dikenali; moderator hanya kalau memang diberi. `verified`
+ * tetap berarti "diberikan lewat role:set", jadi mencabutnya tidak menghapus
+ * centang bawaan jabatan.
+ */
+function isVerified(uid) {
+  if (profiles.get(uid)?.verified === true) return true;
+  const rank = staffRank(uid);
+  return rank === 'owner' || rank === 'admin';
+}
+
+/**
+ * Siapa boleh memberi apa. Aturannya sengaja satu arah: owner memberi jabatan
+ * apa pun, admin memberi moderator + centang biru, moderator cuma centang
+ * biru. Tidak ada jalur untuk menaikkan diri sendiri.
+ */
+const GRANT_RULES = {
+  owner: ['admin', 'moderator', 'verified'],
+  admin: ['moderator', 'verified'],
+  moderator: ['verified'],
+};
+
+function canGrant(actorUid, key) {
+  const rank = staffRank(actorUid);
+  return Boolean(rank) && GRANT_RULES[rank].includes(key);
 }
 
 /** Semua uid yang dikenal server: punya username, sedang online, atau terindeks. */
@@ -272,17 +381,93 @@ function usernameFor(uid) {
 }
 
 function publicDirectory() {
-  return [...directory.entries()].map(([uid, entry]) => ({
-    uid,
-    displayName: entry.profile.displayName,
-    // A locally uploaded photo wins over whatever the sign-in provider had.
-    photoURL: avatarUrl(uid) || entry.profile.photoURL,
-    // Nomor HP sengaja TIDAK ada di sini. Dulu setiap klien menerima nomor
-    // semua orang yang online; sekarang pencarian kontak dikerjakan server
-    // (lihat `contact:lookup`), dan hasilnya tidak pernah memuat nomornya.
-    publicKey: entry.publicKey,
-    online: Boolean(entry.socketId),
-  }));
+  return [...directory.entries()].map(([uid, entry]) => {
+    const profile = profiles.view(uid) || {};
+    return {
+      uid,
+      displayName: entry.profile.displayName,
+      // A locally uploaded photo wins over whatever the sign-in provider had.
+      photoURL: avatarUrl(uid) || entry.profile.photoURL,
+      // Nomor HP sengaja TIDAK ada di sini. Dulu setiap klien menerima nomor
+      // semua orang yang online; sekarang pencarian kontak dikerjakan server
+      // (lihat `contact:lookup`), dan hasilnya tidak pernah memuat nomornya.
+      publicKey: entry.publicKey,
+      online: Boolean(entry.socketId),
+      // ID publik dipakai untuk menambah kontak; badge staf ikut supaya
+      // centang biru muncul di samping nama tanpa permintaan tambahan.
+      id: profile.id || null,
+      about: profile.about || '',
+      verified: Boolean(profile.verified),
+      checked: isVerified(uid),
+      staff: staffRank(uid),
+      publicProfile: profile.publicProfile !== false,
+    };
+  });
+}
+
+/** Potret profil untuk panel info — berlaku juga untuk orang yang offline. */
+function profileCard(uid) {
+  const profile = profiles.view(uid) || {};
+  const live = directory.get(uid);
+  return {
+    uid: String(uid),
+    username: usernameFor(uid),
+    photoURL: avatarUrl(uid) || live?.profile.photoURL || null,
+    online: Boolean(live?.socketId),
+    id: profile.id || null,
+    about: profile.about || '',
+    birthYear: profile.birthYear ?? null,
+    publicProfile: profile.publicProfile !== false,
+    verified: Boolean(profile.verified),
+    checked: isVerified(uid),
+    role: profile.role || null,
+    staff: staffRank(uid),
+    banned: moderation.isBanned(uid),
+  };
+}
+
+/**
+ * Satu jalur untuk mengubah jabatan/centang biru, dipakai socket dan halaman
+ * admin. Semua izin diperiksa di sini supaya dua pintu itu tidak bisa berbeda
+ * aturan.
+ */
+async function changeRole(actorUid, targetUid, key, value) {
+  if (!['admin', 'moderator', 'verified'].includes(key)) {
+    return { ok: false, error: 'Jabatan itu nggak dikenal.' };
+  }
+  if (!knownUids().has(targetUid)) return { ok: false, error: 'Akun itu nggak dikenal server.' };
+  if (targetUid === actorUid) return { ok: false, error: 'Nggak bisa mengubah jabatan sendiri.' };
+  if (isOwner({ uid: targetUid, email: accounts.get(targetUid)?.email })) {
+    return { ok: false, error: 'Akun owner cuma diatur lewat ADMIN_EMAILS / ADMIN_UIDS.' };
+  }
+  if (!canGrant(actorUid, key)) {
+    return { ok: false, error: 'Jabatanmu nggak cukup buat memberikan ini.' };
+  }
+
+  let me = null;
+  if (key === 'verified') {
+    me = await profiles.setVerified(targetUid, value === true);
+  } else {
+    const current = profiles.get(targetUid)?.role || null;
+    let next = current;
+    if (key === 'admin') next = value ? 'admin' : current === 'admin' ? null : current;
+    if (key === 'moderator') {
+      next = value ? (current === 'admin' ? 'admin' : 'moderator') : current === 'moderator' ? null : current;
+    }
+    me = await profiles.setRole(targetUid, next);
+  }
+
+  broadcastDirectory();
+  const card = profileCard(targetUid);
+  sendTo(targetUid, 'profile:roles', {
+    me: { ...(me || {}), checked: isVerified(targetUid), username: usernameFor(targetUid) },
+  });
+  console.log(
+    `🛡️  ${usernameFor(actorUid) || actorUid} mengubah ${key} ${usernameFor(targetUid) || targetUid} → ${
+      value ? 'ya' : 'tidak'
+    }`
+  );
+  return { ok: true, profile: card };
 }
 
 /**
@@ -298,6 +483,7 @@ function adminUsers() {
       const ban = moderation.banInfo(uid);
       return {
         uid,
+        id: profiles.get(uid)?.id || null,
         username: usernameFor(uid),
         email: account?.email || live?.profile.email || null,
         phone: account?.phone || live?.profile.phone || null,
@@ -305,6 +491,9 @@ function adminUsers() {
         banned: Boolean(ban),
         banReason: ban?.reason || '',
         photoURL: avatarUrl(uid) || live?.profile.photoURL || null,
+        verified: Boolean(profiles.get(uid)?.verified),
+        checked: isVerified(uid),
+        role: staffRank(uid),
       };
     })
     .sort(
@@ -354,6 +543,9 @@ function memberInfo(uid) {
     uid: id,
     displayName: usernameFor(id) || entry?.profile.displayName || id.slice(0, 8),
     photoURL: avatarUrl(id) || entry?.profile.photoURL || null,
+    verified: Boolean(profiles.get(id)?.verified),
+    checked: isVerified(id),
+    staff: staffRank(id),
   };
 }
 
@@ -577,6 +769,59 @@ app.delete('/api/profile/avatar', authenticateRequest, async (req, res) => {
   }
 });
 
+/* ---- Foto saluran ------------------------------------------------ *
+ * Sama seperti foto profil: tidak dienkripsi, karena memang untuk dilihat
+ * pengikut. Yang berbeda cuma siapa yang boleh menggantinya — admin saluran.
+ */
+
+app.get('/api/channel/:id/avatar', async (req, res) => {
+  const channel = channels.get(req.params.id);
+  if (!channel) return res.status(404).end();
+
+  const avatar = await storage.getAvatar(channelAvatarKey(channel.id));
+  if (!avatar) return res.status(404).end();
+
+  res.setHeader('Content-Type', avatar.contentType);
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.end(avatar.buffer);
+});
+
+app.post(
+  '/api/channel/:id/avatar',
+  authenticateRequest,
+  express.raw({ type: ['image/png', 'image/jpeg', 'image/webp'], limit: '3mb' }),
+  async (req, res) => {
+    const channel = channels.get(req.params.id);
+    if (!channel) return res.status(404).json({ error: 'Saluran tidak ditemukan.' });
+    if (!channel.admins.includes(req.profile.uid)) {
+      return res.status(403).json({ error: 'Cuma admin saluran yang bisa mengganti foto ini.' });
+    }
+
+    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!buffer.length) return res.status(400).json({ error: 'Gambar kosong.' });
+    if (buffer.length > MAX_AVATAR_BYTES) {
+      return res.status(413).json({
+        error: `Foto terlalu besar. Maksimal ${Math.round(MAX_AVATAR_BYTES / 1024 / 1024)} MB.`,
+      });
+    }
+
+    const contentType = sniffImageType(buffer);
+    if (!contentType) return res.status(415).json({ error: 'Formatnya harus PNG, JPEG, atau WebP.' });
+
+    try {
+      const meta = await storage.putAvatar(channelAvatarKey(channel.id), buffer, contentType);
+      await channels.setAvatar(channel.id, meta.version);
+      const photoURL = channelAvatarUrl({ id: channel.id, avatarVersion: meta.version });
+      for (const memberUid of new Set([...channel.followers, ...channel.admins])) {
+        sendTo(memberUid, 'channel:update', { channel: { ...channelSummary(channel, memberUid), avatarUrl: photoURL } });
+      }
+      res.json({ ok: true, photoURL });
+    } catch (err) {
+      res.status(502).json({ error: err.message });
+    }
+  }
+);
+
 /* ------------------------------------------------------------------ *
  * Admin — laporan & blokir
  *
@@ -589,7 +834,7 @@ app.delete('/api/profile/avatar', authenticateRequest, async (req, res) => {
  * ------------------------------------------------------------------ */
 
 const requireAdmin = (req, res, next) => {
-  if (!isAdmin(req.profile)) return res.status(403).json({ error: 'Akun ini bukan admin.' });
+  if (!canUseAdminPanel(req.profile)) return res.status(403).json({ error: 'Akun ini bukan admin.' });
   next();
 };
 
@@ -600,6 +845,8 @@ app.get('/api/admin/overview', authenticateRequest, requireAdmin, (req, res) => 
       username: usernames.get(req.profile.uid),
       email: req.profile.email,
       photoURL: avatarUrl(req.profile.uid) || req.profile.photoURL,
+      rank: staffRank(req.profile.uid),
+      checked: isVerified(req.profile.uid),
     },
     admins: { uids: config.admins.uids, emails: config.admins.emails },
     reasons: REPORT_REASONS,
@@ -620,9 +867,9 @@ app.post('/api/admin/ban', authenticateRequest, requireAdmin, express.json(), as
   const uid = String(req.body?.uid || '');
   if (!uid) return res.status(400).json({ error: 'uid wajib diisi.' });
   if (uid === req.profile.uid) return res.status(400).json({ error: 'Nggak bisa memblokir akun sendiri.' });
-  if (isAdmin({ uid, email: accounts.get(uid)?.email })) {
+  if (isOwner({ uid, email: accounts.get(uid)?.email })) {
     return res.status(400).json({
-      error: 'Akun admin nggak bisa diblokir. Hapus dulu dari ADMIN_UIDS / ADMIN_EMAILS.',
+      error: 'Akun owner nggak bisa diblokir. Hapus dulu dari ADMIN_UIDS / ADMIN_EMAILS.',
     });
   }
 
@@ -655,6 +902,25 @@ app.post('/api/admin/unban', authenticateRequest, requireAdmin, express.json(), 
   const removed = await moderation.unban(uid);
   if (removed) console.log(`✅ ${usernameFor(uid) || uid} dibuka blokirnya`);
   res.json({ ok: true, removed });
+});
+
+/**
+ * Jabatan dari halaman admin. Aturan izinnya sama persis dengan `role:set`
+ * karena dua-duanya lewat changeRole: owner memberi apa pun, admin memberi
+ * moderator + centang biru, dan akun owner dari env tidak bisa disentuh.
+ */
+app.post('/api/admin/role', authenticateRequest, requireAdmin, express.json(), async (req, res) => {
+  const uid = String(req.body?.uid || '');
+  if (!uid) return res.status(400).json({ error: 'uid wajib diisi.' });
+
+  const result = await changeRole(
+    req.profile.uid,
+    uid,
+    String(req.body?.key || ''),
+    req.body?.value === true
+  );
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json(result);
 });
 
 app.post('/api/admin/report', authenticateRequest, requireAdmin, express.json(), async (req, res) => {
@@ -781,6 +1047,14 @@ io.on('connection', (socket) => {
   const { profile, publicKey } = socket.data;
   const uid = profile.uid;
 
+  // ID pengguna dipastikan di latar belakang, bukan dengan `await` di sini:
+  // menunggu di titik ini menunda pemasangan seluruh listener, sehingga event
+  // yang dikirim klien tepat setelah 'connect' (sebelum 'ready') hilang tanpa
+  // jejak. Yang menunggu cuma pengiriman 'ready'.
+  const profileReady = profiles
+    .ensure(uid)
+    .catch((err) => console.warn(`⚠️  Profil ${uid}: ${err.message}`));
+
   // One live session per account. Opening the app elsewhere takes over, so a
   // stale tab can't keep receiving messages or ring for calls.
   const previous = directory.get(uid);
@@ -799,10 +1073,22 @@ io.on('connection', (socket) => {
   const pending = inbox.get(uid) || [];
   inbox.delete(uid);
 
-  socket.emit('ready', {
+  profileReady.then(() => socket.emit('ready', {
     profile,
     // null until this account claims one — the client shows the gate for that.
     username: usernames.get(uid),
+    // Profil publik milik sendiri: ID, status, tahun lahir, sakelar publik,
+    // centang biru, dan jabatan.
+    me: {
+      ...(profiles.view(uid) || {}),
+      checked: isVerified(uid),
+      username: usernames.get(uid),
+    },
+    roles: { rank: staffRank(uid), panel: canUseAdminPanel(profile) },
+    channels: channels
+      .summaries(uid)
+      .filter((channel) => channel.isFollowing)
+      .map((channel) => ({ ...channel, avatarUrl: channelAvatarUrl(channels.get(channel.id)) })),
     directory: publicDirectory(),
     statuses: statusListFor(uid),
     inbox: pending,
@@ -811,9 +1097,9 @@ io.on('connection', (socket) => {
     callLogs: takeCallLogs(uid),
     // Cuma dipakai buat menampilkan tautan ke /admin.html; halaman itu sendiri
     // tetap memeriksa ulang ke server.
-    admin: isAdmin(profile),
+    admin: canUseAdminPanel(profile),
     server: { auth: verifier.mode, storage: storage.driver, calls: publicConfig().calls },
-  });
+  }));
   broadcastDirectory();
 
   // Undangan panggilan yang masih berdering dikirim ulang setelah tersambung,
@@ -875,41 +1161,79 @@ io.on('connection', (socket) => {
     lookupTimes.push(now);
 
     const query = String(raw ?? '').trim();
-    if (query.length < 3) {
-      return ack?.({ ok: false, error: 'Tulis minimal 3 karakter: email, nomor HP, atau @username.' });
-    }
-    if (query.length > 120) return ack?.({ ok: false, error: 'Pencarian kepanjangan.' });
-
-    /** uid -> alasan dia muncul, supaya layarnya bisa bilang kenapa. */
-    const found = new Map();
-    const add = (targetUid, via) => {
-      if (!targetUid || targetUid === uid) return;
-      if (!found.has(targetUid)) found.set(targetUid, via);
-    };
-
-    // 1) @username: satu nama, satu orang.
-    add(usernames.ownerOf(query.replace(/^@/, '')), 'username');
-    // 2) Email: harus sama persis.
-    if (looksLikeEmail(query)) for (const account of accounts.findByEmail(query)) add(account.uid, 'email');
-    // 3) Nomor HP: dicocokkan pada 9 angka terakhir, jadi "+62 812…" dan "0812…"
-    //    menemukan orang yang sama.
-    if (phoneDigits(query).length >= 7) {
-      for (const account of accounts.findByPhone(query)) add(account.uid, 'phone');
+    // Sejak ID pengguna ada, menambah kontak tidak lagi memakai email/nomor HP
+    // atau @username: ID itu satu-satunya alamat yang dibagikan orang. Bentuk
+    // pencarian lama sengaja tidak dipertahankan — kalau dipertahankan, kolom
+    // ini tetap bisa dipakai menebak alamat email orang lain.
+    if (!looksLikeUserId(query)) {
+      return ack?.({ ok: false, error: 'Tulis ID pengguna (6–12 angka), misalnya 17217387.' });
     }
 
-    const results = [...found.entries()].slice(0, 10).map(([targetUid, via]) => {
-      const live = directory.get(targetUid);
-      return {
-        uid: targetUid,
-        username: usernameFor(targetUid),
-        photoURL: avatarUrl(targetUid) || live?.profile.photoURL || null,
-        online: Boolean(live?.socketId),
-        foundVia: via,
-        banned: moderation.isBanned(targetUid),
-      };
+    const found = profiles.byUserId(query);
+    if (!found || found.uid === uid) return ack?.({ ok: true, results: [] });
+
+    const live = directory.get(found.uid);
+    ack?.({
+      ok: true,
+      results: [
+        {
+          uid: found.uid,
+          id: found.id,
+          username: usernameFor(found.uid),
+          photoURL: avatarUrl(found.uid) || live?.profile.photoURL || null,
+          online: Boolean(live?.socketId),
+          about: found.about,
+          verified: Boolean(found.verified),
+          checked: isVerified(found.uid),
+          staff: staffRank(found.uid),
+          foundVia: 'id',
+          banned: moderation.isBanned(found.uid),
+        },
+      ],
     });
+  });
 
-    ack?.({ ok: true, results });
+  /* ---- Kartu profil ---------------------------------------------- *
+   * Panel info orang butuh data yang juga berlaku saat dia offline. Yang
+   * dikirim cuma bagian publik; email dan nomor HP tidak pernah ikut.
+   */
+  socket.on('profile:get', (raw, ack) => {
+    const target = String(raw?.uid || raw || '');
+    if (!target) return ack?.({ ok: false, error: 'uid kosong.' });
+    if (!knownUids().has(target)) return ack?.({ ok: false, error: 'Akun itu nggak dikenal server.' });
+    ack?.({ ok: true, profile: profileCard(target) });
+  });
+
+  /* ---- Pengaturan profil ----------------------------------------- *
+   * Status, tahun lahir, dan sakelar profil publik cuma boleh diubah
+   * pemiliknya. Namanya tetap lewat username:claim supaya tidak ada dua orang
+   * dengan nama yang sama.
+   */
+  socket.on('profile:settings', async (data, ack) => {
+    const settings = await profiles.updateSettings(uid, {
+      about: data?.about,
+      birthYear: data?.birthYear,
+      publicProfile: data?.publicProfile,
+    });
+    if (!settings) return ack?.({ ok: false, error: 'Profil nggak tersimpan.' });
+
+    broadcastDirectory();
+    ack?.({ ok: true, me: { ...settings, checked: isVerified(uid), username: usernames.get(uid) } });
+  });
+
+  /* ---- Jabatan & centang biru ------------------------------------ *
+   * Aturannya satu arah: owner memberi apa pun, admin memberi moderator dan
+   * centang biru, moderator cuma centang biru. Mencabut jabatan mengikuti
+   * aturan yang sama, dan akun owner dari env tidak bisa disentuh dari sini.
+   */
+  socket.on('role:set', async (data, ack) => {
+    const result = await changeRole(
+      uid,
+      String(data?.uid || ''),
+      String(data?.key || ''),
+      data?.value === true
+    );
+    ack?.(result);
   });
 
   /* ---- Laporan -------------------------------------------------- *
@@ -967,6 +1291,15 @@ io.on('connection', (socket) => {
 
     rememberSentMessage(record.id, { from: uid, members, roomId: record.roomId });
 
+    // Catat pasangan DM. Inilah yang membuat status orang dengan profil privat
+    // tetap bisa dilihat oleh orang yang pernah mengobrol dengannya.
+    if (record.type === 'dm') {
+      for (const member of members) {
+        if (member === uid) continue;
+        profiles.markChat(uid, member).catch(() => {});
+      }
+    }
+
     const delivered = [];
     const queued = [];
     for (const member of members) {
@@ -1018,24 +1351,75 @@ io.on('connection', (socket) => {
     const payload = data?.payload;
     if (!payload?.ct) return ack?.({ ok: false, error: 'Status tidak lengkap.' });
 
+    // Status publik membawa kuncinya sendiri di dalam envelope (`payload.key`),
+    // jadi siapa pun bisa membukanya. Tanpa kunci itu, isinya hanya bisa dibaca
+    // orang yang kuncinya dibungkus satu per satu: mode kontak.
+    //
+    // Sakelar Profil Publik yang menentukan, bukan mode yang dikirim klien:
+    // profil privat tidak boleh menyiarkan status ke orang asing walau
+    // kliennya meminta `mode: 'public'`.
     pruneStatuses();
+    const requestsPublic = data?.mode === 'public' && typeof payload.key === 'string';
     // Keep the newest few; the rest are old news anyway.
     const mine = [...statuses.values()].filter((s) => s.from === uid).sort((a, b) => a.at - b.at);
     while (mine.length >= MAX_STATUSES_PER_USER) statuses.delete(mine.shift().id);
 
-    const audience = sanitizeUids(data?.members)
-      .filter((member) => member !== uid && directory.has(member))
-      .slice(0, 500);
-    audience.push(uid);
+    // Untuk profil privat, server menyaring sendiri: hanya orang yang benar-
+    // benar pernah chat yang boleh menerima kunci status ini. Profil publik
+    // boleh memilih lingkaran yang lebih kecil (mode kontak) tanpa disaring,
+    // karena isinya memang bisa dia siarkan ke semua orang kalau mau.
+    const isPrivate = profiles.get(uid)?.publicProfile === false;
+    const mode = requestsPublic && !isPrivate ? 'public' : 'contacts';
+    const audience =
+      mode === 'public'
+        ? [uid]
+        : sanitizeUids(data?.members).filter(
+            (member) =>
+              member !== uid && (!isPrivate || profiles.hasChatted(uid, member))
+          );
+    if (mode === 'contacts') audience.push(uid);
 
-    const status = { id: crypto.randomUUID(), from: uid, at: Date.now(), members: audience, payload };
+    const status = {
+      id: crypto.randomUUID(),
+      from: uid,
+      at: Date.now(),
+      mode,
+      members: audience,
+      payload,
+    };
     statuses.set(status.id, status);
 
-    for (const member of audience) {
-      if (member === uid) continue;
-      reachMember(member, 'status:new', { id: status.id, from: uid, at: status.at, payload });
+    if (mode === 'public') {
+      // Status publik: siapa pun yang sedang tersambung boleh menerimanya.
+      socket.broadcast.emit('status:new', {
+        id: status.id,
+        from: uid,
+        at: status.at,
+        payload,
+        fromName: usernameFor(uid),
+        fromPhoto: avatarUrl(uid),
+      });
+    } else {
+      for (const member of audience) {
+        if (member === uid) continue;
+        reachMember(member, 'status:new', {
+          id: status.id,
+          from: uid,
+          at: status.at,
+          payload,
+          fromName: usernameFor(uid),
+          fromPhoto: avatarUrl(uid),
+        });
+      }
     }
-    ack?.({ ok: true, id: status.id, at: status.at, reached: audience.length - 1 });
+
+    ack?.({
+      ok: true,
+      id: status.id,
+      at: status.at,
+      mode,
+      reached: mode === 'public' ? Math.max(0, onlineCount() - 1) : audience.length - 1,
+    });
   });
 
   socket.on('status:remove', (id, ack) => {
@@ -1044,9 +1428,13 @@ io.on('connection', (socket) => {
     if (status.from !== uid) return ack?.({ ok: false, error: 'Itu bukan status kamu.' });
 
     statuses.delete(status.id);
-    for (const member of status.members) {
-      if (member === uid) continue;
-      reachMember(member, 'status:removed', { id: status.id, from: uid });
+    if (status.mode === 'public') {
+      io.emit('status:removed', { id: status.id, from: uid });
+    } else {
+      for (const member of status.members) {
+        if (member === uid) continue;
+        reachMember(member, 'status:removed', { id: status.id, from: uid });
+      }
     }
     ack?.({ ok: true });
   });
@@ -1073,6 +1461,148 @@ io.on('connection', (socket) => {
     socket.data.profile = entry.profile;
     broadcastDirectory();
     ack?.({ ok: true, username: result.username, unchanged: result.unchanged });
+  });
+
+  /* ---- Saluran --------------------------------------------------- *
+   * Saluran itu satu arah: pengikut membaca, admin saluran menulis. Postingan
+   * yang sampai ke pengikut tidak membawa uid penulisnya — dari sisi mereka
+   * semuanya datang "dari saluran".
+   */
+
+  const channelAudience = (channel) => [...new Set([...channel.followers, ...channel.admins])];
+
+  const channelPayload = (channel) => ({
+    ...channelSummary(channel, uid),
+    avatarUrl: channelAvatarUrl(channel),
+    posts: channel.posts.slice(-100).map((post) => ({ id: post.id, at: post.at, payload: post.payload })),
+  });
+
+  const broadcastChannel = (channel, event = 'channel:update') => {
+    for (const member of channelAudience(channel)) {
+      if (member === uid) continue;
+      sendTo(member, event, {
+        channel: { ...channelSummary(channel, member), avatarUrl: channelAvatarUrl(channel) },
+      });
+    }
+  };
+
+  socket.on('channel:list', (_data, ack) => {
+    if (!usernames.get(uid)) return ack?.({ ok: false, error: 'Pilih username dulu.' });
+    ack?.({
+      ok: true,
+      channels: channels.summaries(uid).map((channel) => ({
+        ...channel,
+        avatarUrl: channelAvatarUrl(channels.get(channel.id)),
+      })),
+    });
+  });
+
+  socket.on('channel:create', async (data, ack) => {
+    if (!usernames.get(uid)) return ack?.({ ok: false, error: 'Pilih username dulu.' });
+    const result = await channels.create({
+      name: data?.name,
+      description: data?.description,
+      owner: uid,
+    });
+    if (!result.ok) return ack?.(result);
+
+    console.log(`📣 Saluran baru: ${result.channel.name} (${usernameFor(uid) || uid})`);
+    ack?.({ ok: true, channel: channelPayload(result.channel) });
+  });
+
+  socket.on('channel:open', (data, ack) => {
+    const channel = channels.get(data?.channelId);
+    if (!channel) return ack?.({ ok: false, error: 'Saluran tidak ditemukan.' });
+
+    // Daftar pengikut cuma untuk admin saluran. Pengikut biasa dapat jumlahnya
+    // saja — itu yang membuat saluran terasa satu arah.
+    const isChannelAdmin = channel.admins.includes(uid);
+    ack?.({
+      ok: true,
+      channel: channelPayload(channel),
+      members: isChannelAdmin ? channel.followers.map((member) => memberInfo(member)) : null,
+      memberCount: channel.followers.length,
+    });
+  });
+
+  socket.on('channel:update', async (data, ack) => {
+    const channel = channels.get(data?.channelId);
+    if (!channel) return ack?.({ ok: false, error: 'Saluran tidak ditemukan.' });
+    if (!channel.admins.includes(uid)) {
+      return ack?.({ ok: false, error: 'Cuma admin saluran yang bisa mengubah ini.' });
+    }
+
+    const result = await channels.update(channel.id, {
+      name: data?.name,
+      description: data?.description,
+    });
+    if (!result.ok) return ack?.(result);
+
+    broadcastChannel(result.channel);
+    ack?.({ ok: true, channel: channelPayload(result.channel) });
+  });
+
+  socket.on('channel:follow', async (data, ack) => {
+    const channel = channels.get(data?.channelId);
+    if (!channel) return ack?.({ ok: false, error: 'Saluran tidak ditemukan.' });
+
+    const result = await channels.follow(channel.id, uid);
+    if (!result.ok) return ack?.(result);
+    ack?.({ ok: true, channel: channelPayload(result.channel) });
+  });
+
+  socket.on('channel:unfollow', async (data, ack) => {
+    const channel = channels.get(data?.channelId);
+    if (!channel) return ack?.({ ok: false, error: 'Saluran tidak ditemukan.' });
+
+    const result = await channels.unfollow(channel.id, uid);
+    if (!result.ok) return ack?.(result);
+    ack?.({ ok: true, channel: channelPayload(result.channel) });
+  });
+
+  socket.on('channel:members', (data, ack) => {
+    const channel = channels.get(data?.channelId);
+    if (!channel) return ack?.({ ok: false, error: 'Saluran tidak ditemukan.' });
+    if (!channel.admins.includes(uid)) {
+      return ack?.({ ok: false, error: 'Daftar anggota cuma bisa dilihat admin saluran.' });
+    }
+    ack?.({ ok: true, members: channel.followers.map((member) => memberInfo(member)) });
+  });
+
+  socket.on('channel:admin', async (data, ack) => {
+    const channel = channels.get(data?.channelId);
+    if (!channel) return ack?.({ ok: false, error: 'Saluran tidak ditemukan.' });
+    if (channel.owner !== uid) {
+      return ack?.({ ok: false, error: 'Cuma pemilik saluran yang bisa mengangkat admin.' });
+    }
+
+    const targetUid = String(data?.uid || '');
+    const result = await channels.setAdmin(channel.id, targetUid, data?.value === true);
+    if (!result.ok) return ack?.(result);
+
+    sendTo(targetUid, 'channel:update', {
+      channel: { ...channelSummary(result.channel, targetUid), avatarUrl: channelAvatarUrl(result.channel) },
+    });
+    ack?.({ ok: true, channel: channelPayload(result.channel) });
+  });
+
+  socket.on('channel:post', async (data, ack) => {
+    if (!usernames.get(uid)) return ack?.({ ok: false, error: 'Pilih username dulu.' });
+    const channel = channels.get(data?.channelId);
+    if (!channel) return ack?.({ ok: false, error: 'Saluran tidak ditemukan.' });
+    if (!channel.admins.includes(uid)) {
+      return ack?.({ ok: false, error: 'Cuma admin saluran yang bisa mengirim pesan.' });
+    }
+
+    const result = await channels.addPost(channel.id, { payload: data?.payload, from: uid });
+    if (!result.ok) return ack?.(result);
+
+    const post = { id: result.post.id, at: result.post.at, payload: result.post.payload };
+    for (const member of channelAudience(channel)) {
+      if (member === uid) continue;
+      sendTo(member, 'channel:post', { channelId: channel.id, ...post });
+    }
+    ack?.({ ok: true, post });
   });
 
   /* ---- Call signaling ------------------------------------------- *
@@ -1260,6 +1790,8 @@ if (!process.env.NO_LISTEN) {
     console.log(`   Username: ${savedUsernames} klaim tersimpan (${usernameStore.kind})`);
     console.log(`   Kontak  : ${savedAccounts} akun bisa dicari lewat email/nomor (${accountStore.kind})`);
     console.log(`   Akun    : ${savedCredentials} akun username+kata sandi (${credentialStore.kind})`);
+    console.log(`   Profil  : ${savedProfiles} ID pengguna tersimpan (${profileStore.kind})`);
+    console.log(`   Saluran : ${savedChannels} saluran (${channelStore.kind})`);
     console.log(
       `   Moderasi: ${savedModeration.bans} diblokir, ${savedModeration.reports} laporan (${moderationStore.kind})`
     );
@@ -1286,13 +1818,19 @@ export {
   moderation,
   accounts,
   credentials,
+  profiles,
+  channels,
   push,
   callLogs,
   savedUsernames,
   savedModeration,
   savedAccounts,
   savedCredentials,
+  savedProfiles,
+  savedChannels,
   isAdmin,
+  isOwner,
+  staffRank,
   adminUsers,
   avatarUrl,
   onlineCount,

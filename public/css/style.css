@@ -1622,6 +1622,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .contact-result-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .contact-result-main strong { font-size: 14px; font-weight: 500; }
 .contact-result-main .muted { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.contact-info { width: 30px; height: 30px; flex: none; color: var(--text-soft); }
 .contact-go { font-size: 13px; font-weight: 600; color: var(--primary); flex: none; }
 
 /* ── Aksen bahaya (laporkan / blokir) ─────────────────────────────── */
@@ -1737,6 +1738,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .tag.dismissed { color: var(--text-muted); }
 .tag.online { color: var(--success); border-color: #b7e6c6; background: var(--success-soft); }
 .tag.banned { color: var(--danger); border-color: #fbcaca; background: var(--danger-soft); }
+.tag.role { color: var(--primary); border-color: var(--primary); background: var(--primary-tint); }
 
 .admin-empty { padding: 32px 4px; text-align: center; color: var(--text-muted); font-size: 13px; }
 .admin-error { margin: 12px 0 0; color: var(--danger); font-size: 13px; }
@@ -2019,6 +2021,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .msg-menu-item.danger,
 .msg-menu-item.danger .ico { color: var(--danger); }
 .msg-menu-sep { height: 1px; margin: 5px 8px; background: var(--border); }
+.msg-menu-label {
+  padding: 7px 12px 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
 
 .msg.menu-target { box-shadow: 0 0 0 2px var(--primary); }
 
@@ -2765,3 +2775,576 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
 .blocked-bar[hidden],
 .select-bar[hidden],
 .list-filters[hidden] { display: none; }
+
+/* ==================================================================
+ * Profil, badge staf, saluran, dan panel info
+ *
+ * Bagian ini menyusul fitur yang lebih baru: kartu profil di panel
+ * Pengaturan, badge centang biru, daftar saluran di panel Status, dan panel
+ * info yang dibuka dari nama di header obrolan. Semua warnanya memakai token
+ * yang sudah ada, jadi mode gelap ikut tanpa aturan tambahan.
+ * ================================================================== */
+
+:root { --badge-ink: #ffffff; }
+:root[data-theme="dark"] { --badge-ink: #08131c; }
+
+.badge-check {
+  width: 15px; height: 15px;
+  flex: none;
+  color: var(--primary);
+  vertical-align: -2px;
+}
+.name-with-badge { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.name-with-badge .chat-item-name,
+.name-with-badge strong { min-width: 0; }
+.badge-check.small { width: 13px; height: 13px; }
+
+/* ── Kartu profil (panel Pengaturan) ────────────────────────────── */
+.profile-card {
+  position: relative;
+  margin: 0 0 8px;
+  border-radius: var(--r-xl);
+  overflow: hidden;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+}
+.profile-cover {
+  position: relative;
+  height: 108px;
+  background:
+    radial-gradient(120% 160% at 12% 0%, rgba(124, 58, 237, .95) 0%, rgba(124, 58, 237, 0) 62%),
+    linear-gradient(115deg, var(--primary) 0%, #4f46e5 52%, #0ea5e9 100%);
+}
+.profile-cover-glow {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(80% 120% at 85% 20%, rgba(255, 255, 255, .25), transparent 60%);
+}
+.profile-cover-btn {
+  position: absolute;
+  top: 10px; right: 10px;
+  color: #fff;
+  background: rgba(9, 16, 24, .38);
+  backdrop-filter: blur(6px);
+}
+.profile-cover-btn:hover { background: rgba(9, 16, 24, .55); color: #fff; }
+
+.profile-avatar-wrap {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  margin: -50px auto 0;
+}
+.profile-avatar {
+  width: 100px; height: 100px;
+  font-size: 38px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px var(--canvas), 0 6px 18px rgba(9, 16, 24, .18);
+}
+.profile-avatar-btn {
+  position: absolute;
+  right: -2px; bottom: -2px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  box-shadow: var(--lift);
+  color: var(--ink);
+}
+.profile-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 20px 18px;
+  text-align: center;
+}
+.profile-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  padding: 2px 6px;
+  border-radius: var(--r-md);
+  color: var(--ink);
+}
+.profile-name:hover { background: var(--cloud); }
+.profile-name strong {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -.2px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-name .ico { width: 16px; height: 16px; color: var(--text-soft); }
+.profile-id {
+  font-size: 13px;
+  color: var(--text-muted);
+  letter-spacing: .06em;
+  font-variant-numeric: tabular-nums;
+}
+.profile-about { font-size: 14px; color: var(--ink); margin-top: 4px; }
+.profile-birth { font-size: 13px; color: var(--text-muted); }
+.profile-conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.profile-conn::before {
+  content: "";
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--offline);
+}
+.profile-conn.online::before { background: var(--success); }
+.profile-body .ghost.wide { width: 100%; margin-top: 12px; font-size: 13px; }
+
+.settings-section {
+  margin: 22px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+/* Sakelar "Profil Publik" */
+.settings-icon {
+  display: grid;
+  place-items: center;
+  width: 36px; height: 36px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+.settings-icon .ico { width: 18px; height: 18px; }
+.profile-public { align-items: center; }
+.profile-public .settings-row-text strong { font-size: 15px; }
+
+.switch {
+  flex: none;
+  width: 52px; height: 30px;
+  padding: 3px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--steel);
+  display: flex;
+  align-items: center;
+  transition: background .18s;
+}
+.switch .switch-dot {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(9, 16, 24, .3);
+  transition: transform .18s;
+}
+.switch[aria-checked="true"] { background: var(--primary); }
+.switch[aria-checked="true"] .switch-dot { transform: translateX(22px); }
+
+/* Pratinjau foto saluran di dialog buat saluran */
+.channel-photo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 14px;
+}
+.channel-photo .avatar { width: 56px; height: 56px; font-size: 20px; }
+.channel-photo .ghost { flex: none; }
+
+/* ── Saluran (panel Status) ─────────────────────────────────────── */
+.channels-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 16px 0;
+}
+.channels-head .panel-label { margin: 0; }
+.channels-head-actions { display: flex; align-items: center; gap: 4px; }
+.ghost.tiny { padding: 5px 10px; min-height: 0; font-size: 12px; }
+
+.channel-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.channel-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--r-lg);
+  cursor: pointer;
+  transition: background .16s;
+}
+.channel-item:hover { background: var(--cloud); }
+.channel-item.active { background: var(--primary-tint); }
+.channel-item .avatar { width: 46px; height: 46px; font-size: 17px; border-radius: 50%; }
+.channel-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.channel-item-main strong {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.channel-item-main .muted { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-item-go {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  padding: 6px 10px;
+  border-radius: var(--r-pill);
+  background: var(--primary-tint);
+}
+
+/* Postingan saluran */
+.msg.channel { max-width: 92%; }
+.msg.channel .msg-sender { color: var(--primary); }
+
+/* ── Panel info ─────────────────────────────────────────────────── */
+.sheet-catcher {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(9, 16, 24, .38);
+  backdrop-filter: blur(2px);
+}
+.info-panel {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  z-index: 61;
+  width: min(400px, 100%);
+  display: flex;
+  flex-direction: column;
+  background: var(--canvas);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--float);
+  animation: info-in .22s cubic-bezier(.22, .61, .36, 1) both;
+}
+@keyframes info-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.info-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 10px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.info-head strong { font-size: 15px; font-weight: 600; }
+.info-body { flex: 1; min-height: 0; overflow-y: auto; background: var(--cloud); }
+
+.info-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 26px 20px 14px;
+  background: var(--cloud);
+  text-align: center;
+}
+.info-hero .avatar {
+  width: 104px; height: 104px;
+  font-size: 36px;
+  border-radius: 50%;
+  margin-bottom: 8px;
+}
+.info-hero-title { display: flex; align-items: center; justify-content: center; gap: 4px; max-width: 100%; }
+.info-hero strong { font-size: 21px; font-weight: 600; letter-spacing: -.25px; }
+.info-hero .info-sub { font-size: 13px; color: var(--primary); }
+.info-hero .muted { font-size: 13px; color: var(--text-muted); }
+.info-hero .info-id { font-size: 13px; color: var(--text-muted); letter-spacing: .06em; font-variant-numeric: tabular-nums; }
+.info-name-edit { width: 32px; height: 32px; flex: none; color: var(--text-muted); }
+.info-name-edit .ico { width: 17px; height: 17px; }
+.info-badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 2px; }
+.info-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--primary-tint);
+  color: var(--primary);
+}
+.info-badge .ico { width: 13px; height: 13px; }
+.info-badge.owner { background: var(--warning-soft); color: var(--warning); }
+
+.info-actions {
+  display: flex;
+  justify-content: center;
+  gap: 30px;
+  padding: 4px 16px 18px;
+  background: var(--cloud);
+}
+.info-action {
+  flex: none;
+  width: 66px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+.info-action-icon {
+  display: grid;
+  place-items: center;
+  width: 50px; height: 50px;
+  border-radius: 50%;
+  background: var(--fog);
+  color: var(--primary);
+  transition: background .16s;
+}
+.info-action:hover .info-action-icon { background: var(--primary-tint); }
+.info-action .ico { width: 21px; height: 21px; }
+
+.info-card {
+  margin: 8px 0;
+  background: var(--canvas);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.info-row {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  width: 100%;
+  padding: 14px 20px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 14px;
+  text-align: left;
+}
+.info-row + .info-row,
+.info-media-strip + .info-row { border-top: 1px solid var(--border); }
+.info-row:hover { background: var(--cloud); }
+.info-row .ico { width: 20px; height: 20px; color: var(--text-muted); flex: none; }
+.info-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.info-row-label { font-size: 14.5px; line-height: 1.35; }
+.info-row-value { font-size: 12.5px; line-height: 1.4; color: var(--text-muted); }
+.info-row-side { flex: none; font-size: 13px; color: var(--text-soft); }
+.info-row-primary { color: var(--primary); }
+.info-row-start { align-items: flex-start; }
+.info-row-start > .ico { margin-top: 1px; }
+.info-row-description .ico { width: 17px; height: 17px; }
+.info-row-danger, .info-row-danger .ico { color: var(--danger); }
+.info-row-danger:hover { background: var(--danger-soft); }
+.info-role-card .info-row { padding-left: 20px; padding-right: 20px; }
+.info-role-note { margin: 0; padding: 0 20px 12px; }
+
+.info-section { padding: 14px 20px; background: var(--canvas); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.info-section h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+.info-section p { margin: 0; font-size: 14px; line-height: 1.55; color: var(--ink); }
+.info-section p.muted { color: var(--text-muted); font-size: 13px; }
+.info-note { font-size: 12px !important; color: var(--text-muted) !important; line-height: 1.5; }
+
+.info-members-head {
+  padding: 14px 20px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+}
+.info-member { display: flex; align-items: center; gap: 12px; padding: 8px 20px; }
+.info-member:hover { background: var(--cloud); }
+.info-member .avatar { width: 40px; height: 40px; font-size: 14px; }
+.info-member-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.info-member-main strong { font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 5px; }
+.info-member-main span { font-size: 12px; color: var(--text-muted); }
+.info-members-more {
+  width: 100%;
+  padding: 13px 20px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+}
+.info-members-more:hover { background: var(--cloud); }
+
+.info-media-strip { display: flex; gap: 8px; padding: 0 20px 14px; overflow: hidden; }
+.info-media-tile {
+  width: 64px; height: 64px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--fog);
+  color: var(--text-muted);
+}
+.info-media-tile img { width: 100%; height: 100%; object-fit: cover; }
+.info-media-tile .ico { width: 22px; height: 22px; }
+.info-media-tile:hover { outline: 2px solid var(--primary); outline-offset: -2px; }
+
+.info-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 18px 20px 30px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.info-footer .ico { width: 13px; height: 13px; flex: none; }
+
+.info-choice-list { display: flex; flex-direction: column; margin: 0 -4px; }
+.info-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 13px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  text-align: left;
+  color: var(--ink);
+  font-size: 14px;
+}
+.info-item:hover { background: var(--cloud); }
+.info-item .ico { width: 19px; height: 19px; color: var(--text-muted); flex: none; }
+.info-item span.label { flex: 1; min-width: 0; }
+.info-item.danger { color: var(--danger); }
+.info-item.danger .ico { color: var(--danger); }
+.info-item .switch { margin-left: auto; }
+
+.info-media-list, .info-starred-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 52vh;
+  overflow-y: auto;
+  margin: 0 -8px;
+}
+.info-media-row, .info-starred-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--ink);
+  text-align: left;
+}
+.info-media-row:hover, .info-starred-row:hover { background: var(--cloud); }
+.info-media-thumb {
+  width: 46px; height: 46px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: var(--fog);
+  color: var(--text-muted);
+}
+.info-media-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.info-media-thumb .ico { width: 20px; height: 20px; }
+.info-media-main, .info-starred-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.info-media-main strong, .info-starred-main strong { font-size: 13.5px; font-weight: 500; }
+.info-media-main span, .info-starred-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.info-starred-time { flex: none; font-size: 11.5px; color: var(--text-soft); }
+
+@media (max-width: 760px) {
+  .info-panel {
+    top: auto;
+    height: min(92vh, 760px);
+    width: 100%;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 18px 18px 0 0;
+    animation: info-up .24s cubic-bezier(.22, .61, .36, 1) both;
+  }
+  @keyframes info-up {
+    from { transform: translateY(24px); opacity: .6; }
+    to { transform: none; opacity: 1; }
+  }
+  .info-head::before {
+    content: "";
+    position: absolute;
+    top: 6px; left: 50%;
+    width: 40px; height: 4px;
+    margin-left: -20px;
+    border-radius: var(--r-pill);
+    background: var(--steel);
+  }
+  .info-head { position: relative; padding-top: 18px; }
+  .info-hero { padding-top: 20px; }
+  .info-hero .avatar { width: 92px; height: 92px; font-size: 32px; }
+  .profile-cover { height: 96px; }
+  .profile-avatar, .profile-avatar-wrap { width: 88px; height: 88px; }
+  .profile-avatar-wrap { margin-top: -44px; }
+  .profile-avatar { font-size: 32px; }
+}
+
+@media (max-width: 760px) {
+  .info-panel {
+    top: auto;
+    height: min(88vh, 720px);
+    width: 100%;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 18px 18px 0 0;
+    animation: info-up .24s cubic-bezier(.22, .61, .36, 1) both;
+  }
+  @keyframes info-up {
+    from { transform: translateY(24px); opacity: .6; }
+    to { transform: none; opacity: 1; }
+  }
+  .info-head::before {
+    content: "";
+    position: absolute;
+    top: 6px; left: 50%;
+    width: 40px; height: 4px;
+    margin-left: -20px;
+    border-radius: var(--r-pill);
+    background: var(--steel);
+  }
+  .info-head { position: relative; padding-top: 18px; }
+  .profile-cover { height: 96px; }
+  .profile-avatar, .profile-avatar-wrap { width: 88px; height: 88px; }
+  .profile-avatar-wrap { margin-top: -44px; }
+  .profile-avatar { font-size: 32px; }
+}
+
+/* Nama pengirim di gelembung grup: jalur ke panel info orangnya. */
+.msg-sender-link { cursor: pointer; }
+.msg-sender-link:hover { text-decoration: underline; }

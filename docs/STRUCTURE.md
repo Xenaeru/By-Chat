@@ -15,7 +15,9 @@ By-Chat/
 │   ├── storage.js        Driver blob (supabase | local)
 │   ├── usernames.js      Namespace @nama
 │   ├── moderation.js     Laporan + daftar blokir
-│   ├── accounts.js       Indeks email/nomor HP untuk pencarian kontak
+│   ├── accounts.js       Indeks email/nomor HP (arsip; pencarian kontak pakai ID)
+│   ├── profiles.js       ID pengguna, status, tahun lahir, profil publik, jabatan, riwayat chat
+│   ├── channels.js       Saluran: pengikut, admin, postingan, foto
 │   └── push.js           Web Push (VAPID, langganan, pengiriman)
 │
 ├── public/               Aset yang disajikan Express (document root)
@@ -63,6 +65,8 @@ Semua path data lokal dihitung dari **root project** (`src/config.js` memakai
 | Namespace username | `data/usernames.json` |
 | Laporan + blokir | `data/moderation.json` |
 | Indeks email/nomor HP | `data/accounts.json` |
+| Profil publik + ID + jabatan + riwayat chat | `data/profiles.json` |
+| Saluran + pengikut + postingan | `data/channels.json` |
 | Langganan + kunci push | `data/push.json` |
 
 Dengan driver `supabase`, file JSON di atas pindah ke objek `registry/*.json`
@@ -97,9 +101,12 @@ Autentikasi REST memakai header `Authorization: Bearer <ID token>`
 | GET | `/api/avatar/:uid` | publik | Ambil foto profil (binary) |
 | POST | `/api/profile/avatar` | Bearer | Unggah foto profil (`image/png`, `image/jpeg`, `image/webp`, maks 2 MB; tipe dicek dari byte) |
 | DELETE | `/api/profile/avatar` | Bearer | Hapus foto profil |
+| GET | `/api/channel/:id/avatar` | publik | Foto saluran (binary) |
+| POST | `/api/channel/:id/avatar` | Bearer + admin saluran | Ganti foto saluran (jenis dan ukuran diperiksa dari byte) |
 | GET | `/api/admin/overview` | Bearer + admin | Statistik, laporan, blokir, daftar user |
 | POST | `/api/admin/ban` | Bearer + admin | Blokir uid + putus socket aktif |
 | POST | `/api/admin/unban` | Bearer + admin | Buka blokir uid |
+| POST | `/api/admin/role` | Bearer + admin | Beri/cabut jabatan atau centang biru (aturan sama dengan `role:set`) |
 | POST | `/api/admin/report` | Bearer + admin | Ubah status laporan (mis. `resolved`) |
 | POST | `/api/attachments/request-upload` | Bearer | Buat path + URL upload (Supabase signed URL atau route blob lokal) |
 | POST | `/api/attachments/link` | Bearer | Buat URL unduh untuk path blob |
@@ -147,7 +154,7 @@ driver local:
 
 ```
 admin.js → GET /api/admin/overview
-         → POST /api/admin/ban | /api/admin/unban | /api/admin/report
+         → POST /api/admin/ban | /api/admin/unban | /api/admin/report | /api/admin/role
          → server memeriksa isAdmin(profile) dari ADMIN_UIDS / ADMIN_EMAILS
 ```
 
@@ -175,7 +182,18 @@ sedang diblokir (`err.data = { banned: true, reason }`).
 | `sync` | — | `{ ok, directory }` | Ambil direktori user online |
 | `username:check` | `name` | hasil cek | Cek ketersediaan username |
 | `username:claim` | `name` | `{ ok, username }` | Klaim username |
-| `contact:lookup` | query (`@nama` / email / nomor) | `{ ok, results }` | Cari kontak (rate limit 30/menit) |
+| `contact:lookup` | ID pengguna (6–12 angka) | `{ ok, results }` | Cari kontak lewat ID (rate limit 30/menit); email/nomor/username ditolak |
+| `profile:get` | `{ uid }` | `{ ok, profile }` | Kartu profil publik untuk panel info (juga saat offline) |
+| `profile:settings` | `{ about, birthYear, publicProfile }` | `{ ok, me }` | Ubah status, tahun lahir, dan sakelar profil publik |
+| `role:set` | `{ uid, key: 'admin'|'moderator'|'verified', value }` | `{ ok, profile }` | Beri/cabut jabatan sesuai peringkat pemberi |
+| `channel:list` | — | `{ ok, channels }` | Semua saluran (untuk Jelajahi) + status ikut |
+| `channel:create` | `{ name, description }` | `{ ok, channel }` | Buat saluran; pembuat jadi pemilik + admin |
+| `channel:open` | `{ channelId }` | `{ ok, channel, members, memberCount }` | Buka saluran + 100 postingan terakhir; `members` hanya untuk admin saluran |
+| `channel:update` | `{ channelId, name, description }` | `{ ok, channel }` | Ubah nama/deskripsi (admin saluran) |
+| `channel:follow` / `channel:unfollow` | `{ channelId }` | `{ ok, channel }` | Ikuti / berhenti ikuti |
+| `channel:members` | `{ channelId }` | `{ ok, members }` | Daftar pengikut; ditolak untuk non-admin saluran |
+| `channel:admin` | `{ channelId, uid, value }` | `{ ok, channel }` | Angkat/cabut admin saluran (hanya pemilik saluran) |
+| `channel:post` | `{ channelId, payload }` | `{ ok, post }` | Kirim postingan (admin saluran); envelope menyembunyikan penulis dari pengikut |
 | `report:submit` | `{ uid, reason, detail, roomId }` | `{ ok, id }` | Kirim laporan (tanpa isi pesan) |
 | `send` | `{ roomId, roomName, type, members, payload }` | `{ ok, id, at, delivered, queued }` | Relay envelope terenkripsi (DM/grup) |
 | `message:delete` | `{ id }` | `{ ok, delivered, queued }` | Hapus untuk semua (hanya pengirim asli) |
@@ -199,8 +217,11 @@ sedang diblokir (`err.data = { banned: true, reason }`).
 | `session:replaced` | Akun yang sama membuka sesi lain | Sesi lama diputus |
 | `session:banned` | Admin memblokir saat user online | Alasan blokir, lalu socket diputus |
 | `message` | `send` atau pesan tertunda | Envelope terenkripsi |
-| `status:new` | `status:publish` | Status baru untuk audience |
+| `status:new` | `status:publish` | Status baru (publik disiarkan ke semua yang tersambung; privat hanya ke kontak) |
 | `status:removed` | `status:remove` | Id status yang hilang |
+| `profile:roles` | Jabatan/centang biru akun sendiri berubah | Profil terbaru |
+| `channel:update` | Saluran yang diikuti berubah (nama, deskripsi, foto, admin) | Ringkasan saluran |
+| `channel:post` | Admin saluran mengirim postingan | `{ channelId, id, at, payload }` tanpa uid penulis |
 | `typing` | `typing` | Indikator mengetik |
 | `call:incoming` | `call:invite` atau saat reconnect di tengah ringing | Detail panggilan |
 | `call:joined` | `call:accept` (ke penerima) | Roster lengkap |
@@ -236,10 +257,24 @@ pengirim → socket.emit('message:delete', { id })
 ### Alur status
 
 ```
-pengirim → status:publish { payload, members }
-         → server menyimpan { id, from, at, members, payload }
-         → anggota online menerima 'status:new'
+pengirim → status:publish { payload, members, mode }
+         mode 'public' : payload membawa kuncinya sendiri (`key`)
+                         → server menyiarkan ke semua socket + menyimpan
+         mode 'contacts': satu kunci per kontak di `keys`
+                         → server menyaring `members`: profil privat cuma
+                           boleh berisi orang yang pernah chat
+         → siapapun yang reconnect menerima status lewat 'ready' bila berhak
+           (publik + profil penulis publik, atau pernah chat)
          → status kedaluwarsa setelah 24 jam (dipangkas saat diakses)
+```
+
+### Alur saluran
+
+```
+admin saluran → channel:post { channelId, payload }
+              → server menyimpan blob (maks 300 postingan) tanpa uid penulis
+              → semua pengikut + admin menerima 'channel:post'
+              → pengikut baru membaca postingan lama lewat channel:open
 ```
 
 ### Alur panggilan (WebRTC)

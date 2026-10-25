@@ -5,8 +5,10 @@ By Chat adalah aplikasi pesan instan dengan enkripsi ujung ke ujung (end-to-end 
 ## Ringkasan
 
 - Setiap akun wajib memiliki satu username unik setelah login. Penulisan huruf besar dan kecil dipertahankan saat ditampilkan (`XenaboutYou` tetap `XenaboutYou`), tetapi keunikan dinilai setelah normalisasi: `Andi`, `andi`, dan `a.n.d.i` dianggap sama untuk mencegah peniruan identitas.
-- Percakapan baru dimulai dari halaman tambah kontak (tombol **+**). Pengguna dicari melalui email, nomor telepon, atau @username. Percakapan dapat dibuka meskipun pihak yang dicari sedang offline.
-- Halaman admin (`/admin.html`) digunakan untuk meninjau laporan pengguna dan memblokir akun. Daftar admin ditentukan di sisi server melalui variabel `ADMIN_EMAILS` atau `ADMIN_UIDS`.
+- Percakapan baru dimulai dari halaman tambah kontak (tombol **+**). Pengguna dicari melalui **ID pengguna** (6–12 angka, dibuat server dan tampil di halaman Profil). Percakapan dapat dibuka meskipun pihak yang dicari sedang offline.
+- Halaman Profil punya sakelar **Profil Publik**. Saat aktif, siapa pun dapat melihat foto dan status; saat dimatikan, status hanya terlihat oleh orang yang pernah bertukar pesan. Status tetap hilang setelah 24 jam.
+- Saluran (mirip Saluran WhatsApp) adalah siaran satu arah: siapa pun boleh membuatnya, hanya admin saluran yang bisa menulis, dan postingan tidak membawa nama penulis ke pengikut. Daftar pengikut hanya terbuka untuk admin saluran.
+- Halaman admin (`/admin.html`) digunakan untuk meninjau laporan pengguna dan memblokir akun. **OWNER** ditentukan di sisi server melalui `ADMIN_EMAILS` atau `ADMIN_UIDS`; owner bisa mengangkat **admin** dan **moderator**, admin bisa mengangkat moderator dan memberi centang biru, dan moderator hanya bisa memberi centang biru.
 
 ## Memulai (mode pengembangan)
 
@@ -29,10 +31,14 @@ Mode pengembangan menolak berjalan ketika `NODE_ENV=production`.
 | File | Dienkripsi di browser sebelum diunggah (AES-GCM per bagian) dengan indikator progres. Foto dan video dibuka dalam penampil layar penuh di dalam aplikasi; dokumen lain diunduh. Nama file dan kuncinya hanya berada di dalam pesan terenkripsi. |
 | Pesan suara | Perekaman hingga 5 menit dengan pengatur waktu dan visualisasi gelombang. Rekaman dikirim melalui jalur lampiran terenkripsi yang sama. Pemutaran mendukung kecepatan 1x, 1,5x, dan 2x. |
 | Panggilan | Suara, video, dan berbagi layar melalui WebRTC. Mendukung panggilan 1:1 maupun grup hingga 8 peserta, serta penambahan peserta di tengah panggilan. Riwayat panggilan (tidak terjawab, terjawab beserta durasi, sedang berlangsung) tercatat di chat dan panel Panggilan. |
-| Status | Teks atau foto yang hilang otomatis setelah 24 jam, terenkripsi end-to-end. Status hanya dapat dilihat oleh pengguna yang pernah bertukar pesan dengan pemilik status. |
-| Pengaturan | Profil (foto dan username), tema Terang/Gelap/Otomatis, notifikasi pesan, dan tombol Keluar. |
+| Status | Teks atau foto yang hilang otomatis setelah 24 jam. Profil publik memakai envelope dengan kunci sendiri sehingga siapa pun bisa membuka; profil privat tetap terenkripsi per kontak dan hanya sampai ke orang yang pernah bertukar pesan. |
+| Profil | Kartu profil bergaya WhatsApp: banner, foto, nama, ID pengguna, status teks, tahun lahir, tombol Edit status, dan sakelar Profil Publik. |
+| Saluran | Siaran satu arah yang bisa dibuat siapa pun: nama, deskripsi, foto opsional, jelajah saluran lain, ikuti/berhenti ikuti. Hanya admin saluran yang bisa mengirim; pengikut tidak melihat nama penulis, dan daftar pengikut hanya untuk admin saluran. |
+| Panel info | Ketuk nama di header obrolan untuk membuka info orang, grup, atau saluran: tentang, media, anggota/pengikut, bisukan, favorit, blokir, laporkan, keluar grup, dan (untuk staf) pengaturan jabatan. |
+| Jabatan & centang biru | Owner (dari env) otomatis bercentang biru dan memberi jabatan apa pun; admin otomatis bercentang biru dan memberi moderator + centang biru; moderator hanya centang biru. Badge tampil di daftar chat, header, panel info, dan halaman admin. Halaman admin juga punya tombol jabatan yang aturannya sama dengan panel info. |
+| Pengaturan | Profil, tema Terang/Gelap/Otomatis, notifikasi pesan, dan tombol Keluar. |
 | Mode gelap | Palet warna gelap tersendiri. Preferensi disimpan per perangkat dan diterapkan sebelum CSS dimuat sehingga tidak terjadi kilatan layar putih. Mode Otomatis mengikuti `prefers-color-scheme`. |
-| Kontak | Pencocokan email, nomor telepon, dan username dilakukan oleh server. Hasil pencarian hanya mengembalikan uid, nama, dan status online, tanpa menampilkan email atau nomor telepon. |
+| Kontak | Pencarian dilakukan server berdasarkan ID pengguna. Hasilnya hanya uid, nama, ID, badge, dan status online — email dan nomor telepon tidak pernah ikut kembali. |
 | Pelaporan | Pengguna dapat melaporkan akun dari header chat dengan memilih alasan dan menulis catatan. Isi percakapan tidak ikut terkirim. |
 | Administrasi | Peninjauan laporan, penandaan selesai/diabaikan, pencarian pengguna, serta pemblokiran dan pembukaan blokir. Pemblokiran ditegakkan server dan langsung mengakhiri sesi yang sedang berjalan. |
 | Autentikasi | Login Google melalui Firebase Authentication. |
@@ -194,7 +200,11 @@ Skrip ini membuat ID token asli yang ditandatangani Google, menyambung ke server
 | Informasi siapa memasang status dan waktunya | Isi status (teks maupun foto) |
 | Laporan yang ditulis pelapor serta daftar akun terblokir beserta alasannya | Isi percakapan yang dilaporkan |
 | Pengirim sebuah id pesan (untuk fitur "hapus untuk semua orang") | Isi pesan tersebut |
-| Foto profil (tidak dienkripsi) | - |
+| Foto profil dan foto saluran (tidak dienkripsi) | - |
+| ID pengguna, status teks, tahun lahir, jabatan, dan centang biru | Private key pengguna |
+| Nama/deskripsi saluran, pengikut, dan daftar anggota grup | Isi pesan pribadi dan grup |
+
+**Catatan tentang status publik dan saluran.** Keduanya memang siaran, jadi envelope-nya membawa kunci sendiri (`mode: "public"`) agar pengikut baru dan orang yang bukan kontak tetap bisa membacanya. Konsekuensinya, server yang menyimpan envelope itu secara teknis bisa membuka isinya. Jangan menaruh hal rahasia di status publik atau saluran; untuk percakapan tetap pakai pesan biasa yang terenkripsi per penerima.
 
 Email dan nomor telepon disimpan di server (diperoleh dari penyedia login yang telah memverifikasinya), tetapi tidak disiarkan ke klien. Klien hanya menerima nama, foto, dan public key. Kedua data tersebut hanya muncul melalui dua jalur: hasil pencarian kontak (yang tidak mengembalikan nilainya) dan halaman admin.
 
@@ -210,7 +220,9 @@ src/
   storage.js         Driver blob (supabase | local); path selalu dibuat server
   usernames.js       Namespace username (normalisasi, nama sistem, penyimpanan permanen)
   moderation.js      Laporan pengguna dan daftar blokir
-  accounts.js        Indeks email dan nomor telepon untuk pencarian kontak
+  accounts.js        Indeks email dan nomor telepon (tidak lagi dipakai mencari kontak)
+  profiles.js        ID pengguna, status, tahun lahir, profil publik, jabatan, riwayat chat
+  channels.js        Saluran: pengikut, admin, postingan, foto
   push.js            Web Push: kunci VAPID, langganan per akun, pengiriman notifikasi
 
 public/

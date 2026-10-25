@@ -24,6 +24,9 @@ process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
 process.env.PUSH_STORE = path.join(TMP, 'push.json');
 // Akun username+kata sandi punya file sendiri juga.
 process.env.CREDENTIAL_STORE = path.join(TMP, 'credentials.json');
+// ID pengguna, jabatan, dan daftar saluran juga tidak boleh menumpuk di data/.
+process.env.PROFILE_STORE = path.join(TMP, 'profiles.json');
+process.env.CHANNEL_STORE = path.join(TMP, 'channels.json');
 // Satu akun di sini yang jadi admin, supaya endpoint /api/admin/* bisa diuji.
 process.env.ADMIN_UIDS = 'u-petugas';
 process.env.PORT = process.env.TEST_PORT || '4399';
@@ -68,6 +71,7 @@ class Client {
     this.directory = [];
     this.statusFeed = [];
     this.removedStatuses = [];
+    this.channelPosts = [];
     this.bannedNotices = [];
     this.shared = new Map();
   }
@@ -88,6 +92,7 @@ class Client {
     this.socket.on('directory', (list) => (this.directory = list));
     this.socket.on('status:new', (status) => this.statusFeed.push(status));
     this.socket.on('status:removed', (status) => this.removedStatuses.push(status));
+    this.socket.on('channel:post', (post) => this.channelPosts.push(post));
     this.socket.on('session:banned', (data) => this.bannedNotices.push(data));
     for (const event of [
       'call:incoming',
@@ -424,8 +429,9 @@ test('capitals are shown as typed, while the name stays unique and searchable', 
   const seen = finder.directory.find((u) => u.uid === owner.uid);
   assert.equal(seen?.displayName, 'XenaboutYou', JSON.stringify(finder.directory));
 
-  // ...dan bisa menemukannya walau mengetik besar/kecil seenaknya.
-  const found = await finder.lookup('@xenABOUTyou');
+  // ...dan bisa menemukannya lewat ID pengguna, apa pun ejaan namanya.
+  assert.match(seen?.id || '', /^\d{6,12}$/, 'setiap akun punya ID angka');
+  const found = await finder.lookup(seen.id);
   assert.equal(found.ok, true, found.error);
   assert.equal(found.results[0]?.uid, owner.uid, JSON.stringify(found.results));
   assert.equal(found.results[0]?.username, 'XenaboutYou');
@@ -438,7 +444,7 @@ test('capitals are shown as typed, while the name stays unique and searchable', 
   assert.equal((await finder.claim('xenaboutyou')).ok, false);
 
   await sleep(80);
-  const afterRename = await finder.lookup('@XENABOUTYOU');
+  const afterRename = await finder.lookup(seen.id);
   assert.equal(afterRename.results[0]?.username, 'Xenaboutyou');
 
   owner.close();
@@ -1019,11 +1025,11 @@ test('hanging up or disconnecting ends the call for the other side', async () =>
  * Cari kontak
  * ------------------------------------------------------------------ */
 
-test('a contact is found by username, email, or phone — and while offline', async () => {
+test('a contact is found by user ID — and while offline', async () => {
   const seeker = await new Client('seeker').init();
   const target = await new Client('target', {
-    // Email dan nomor HP datang dari penyedia login, jadi di sini dibuat lewat
-    // token dev yang sudah diverifikasi server.
+    // Email dan nomor HP tetap datang dari penyedia login; keduanya tidak lagi
+    // dipakai mencari orang.
     token: makeDevToken({
       uid: 'u-target',
       displayName: 'target',
@@ -1033,44 +1039,351 @@ test('a contact is found by username, email, or phone — and while offline', as
   }).init();
   await sleep(60);
 
-  // Empat ejaan berbeda, satu orang yang sama — dan alasannya ikut dilaporkan.
-  const queries = [
-    ['target', 'username'],
-    ['@target', 'username'],
-    ['target.one@example.com', 'email'],
-    ['08123456789', 'phone'],
-  ];
-  for (const [query, via] of queries) {
-    const result = await seeker.lookup(query);
-    assert.equal(result.ok, true, `${query}: ${result.error}`);
-    assert.equal(result.results.length, 1, `${query} → ${JSON.stringify(result.results)}`);
-    assert.equal(result.results[0].uid, 'u-target', query);
-    assert.equal(result.results[0].username, 'target', query);
-    assert.equal(result.results[0].foundVia, via, query);
+  // ID pengguna dibuat server, bukan dipilih sendiri.
+  const id = target.ready.me?.id;
+  assert.match(id || '', /^\d{6,12}$/, 'server harus memberi ID angka');
 
-    // Yang dipakai buat mencari tidak pernah ikut kembali: kalau nilainya
-    // dikirim, kolom ini berubah jadi alat menebak alamat orang lain.
-    const raw = JSON.stringify(result.results[0]);
-    assert.equal(raw.includes('example.com'), false, `email bocor: ${raw}`);
-    assert.equal(raw.includes('628123456789'), false, `nomor bocor: ${raw}`);
-    assert.equal(raw.includes('publicKey'), false, 'kunci publik bukan urusan pencarian');
+  // Satu ID, satu orang — dan alasannya ikut dilaporkan.
+  const result = await seeker.lookup(id);
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.results.length, 1, JSON.stringify(result.results));
+  assert.equal(result.results[0].uid, 'u-target');
+  assert.equal(result.results[0].id, id);
+  assert.equal(result.results[0].username, 'target');
+  assert.equal(result.results[0].foundVia, 'id');
+
+  // Yang dipakai buat mencari tidak pernah ikut kembali: kalau nilainya
+  // dikirim, kolom ini berubah jadi alat menebak alamat orang lain.
+  const raw = JSON.stringify(result.results[0]);
+  assert.equal(raw.includes('example.com'), false, `email bocor: ${raw}`);
+  assert.equal(raw.includes('628123456789'), false, `nomor bocor: ${raw}`);
+  assert.equal(raw.includes('publicKey'), false, 'kunci publik bukan urusan pencarian');
+
+  // Jalur lama sengaja ditutup: username dan email bukan alamat untuk menambah
+  // kontak lagi. Nomor HP memang berbentuk angka, jadi ia lolos sebagai ID —
+  // tapi tidak pernah dicocokkan ke nomor siapa pun.
+  for (const legacy of ['target', '@target', 'target.one@example.com']) {
+    const refused = await seeker.lookup(legacy);
+    assert.equal(refused.ok, false, `${legacy} seharusnya ditolak`);
   }
+  const phoneAsId = await seeker.lookup('08123456789');
+  assert.equal(phoneAsId.ok, true);
+  assert.deepEqual(phoneAsId.results, [], 'nomor HP tidak boleh dipakai mencari orang');
 
-  // Kueri yang terlalu pendek atau tidak jelas tidak memanggil apa pun.
-  assert.equal((await seeker.lookup('ab')).ok, false, 'kueri 2 karakter harus ditolak');
-  const nothing = await seeker.lookup('tidak.pernah.ada@contoh.id');
+  // ID yang tidak terdaftar menghasilkan daftar kosong, bukan error.
+  const nothing = await seeker.lookup('99999999');
   assert.equal(nothing.ok, true);
   assert.deepEqual(nothing.results, []);
 
-  // Orang yang sedang offline tetap bisa ditemukan, dan tetap tanpa kunci publik.
+  // Orang yang sedang offline tetap bisa ditemukan lewat ID-nya.
   target.close();
   await sleep(200);
-  const offline = await seeker.lookup('target.one@example.com');
+  const offline = await seeker.lookup(id);
   assert.equal(offline.ok, true);
   assert.equal(offline.results.length, 1);
   assert.equal(offline.results[0].online, false);
 
   seeker.close();
+});
+
+/* ------------------------------------------------------------------ *
+ * Profil publik, saluran, dan jabatan
+ * ------------------------------------------------------------------ */
+
+const b64 = (bytes) => Buffer.from(new Uint8Array(bytes)).toString('base64');
+
+/** Envelope publik: kunci ikut di dalam, seperti yang dikirim app.js. */
+async function sealPublicText(text) {
+  const raw = crypto.getRandomValues(new Uint8Array(32));
+  const key = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    new TextEncoder().encode(text)
+  );
+  return { v: 1, mode: 'public', iv: b64(iv), ct: b64(ct), key: b64(raw) };
+}
+
+const setProfile = (client, patch) =>
+  new Promise((resolve) => client.socket.emit('profile:settings', patch, resolve));
+
+const setRole = (client, data) =>
+  new Promise((resolve) => client.socket.emit('role:set', data, resolve));
+
+test('a public status reaches strangers; a private one waits until you have chatted', async () => {
+  const author = await new Client('publik').init();
+  const stranger = await new Client('asing').init();
+  await sleep(80);
+
+  // Profil baru sengaja publik, jadi status pertamanya siaran terbuka.
+  const publicPayload = await sealPublicText('siaran untuk semua');
+  const publicResult = await new Promise((resolve) =>
+    author.socket.emit('status:publish', { payload: publicPayload, members: [], mode: 'public' }, resolve)
+  );
+  assert.equal(publicResult.ok, true, publicResult.error);
+  assert.equal(publicResult.mode, 'public');
+
+  // Server tidak bisa membacanya, tapi siapa pun bisa membuka kuncinya.
+  assert.equal(JSON.stringify(publicPayload).includes('siaran untuk semua'), false);
+  const opened = await (async () => {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      Uint8Array.from(Buffer.from(publicPayload.key, 'base64')),
+      { name: 'AES-GCM' },
+      false,
+      ['decrypt']
+    );
+    const plain = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: Uint8Array.from(Buffer.from(publicPayload.iv, 'base64')) },
+      key,
+      Uint8Array.from(Buffer.from(publicPayload.ct, 'base64'))
+    );
+    return new TextDecoder().decode(plain);
+  })();
+  assert.equal(opened, 'siaran untuk semua');
+
+  await sleep(80);
+  assert.equal(stranger.statusFeed.some((status) => status.id === publicResult.id), true);
+
+  // Profil privat: status dari orang asing tidak dikirim sama sekali.
+  const off = await setProfile(author, { publicProfile: false });
+  assert.equal(off.ok, true, off.error);
+  assert.equal(off.me.publicProfile, false);
+
+  // Klien yang nakal tetap tidak bisa memaksa siaran publik dari profil
+  // privat: server menurunkan mode dan menyaring penerimanya sendiri.
+  const beforeSneak = stranger.statusFeed.length;
+  const sneak = await new Promise((resolve) =>
+    author.socket.emit(
+      'status:publish',
+      { payload: publicPayload, members: [], mode: 'public' },
+      resolve
+    )
+  );
+  assert.equal(sneak.ok, true, sneak.error);
+  assert.equal(sneak.mode, 'contacts', 'profil privat tidak boleh memaksa mode publik');
+  await sleep(120);
+  assert.equal(
+    stranger.statusFeed.length,
+    beforeSneak,
+    'status publik dari profil privat tidak boleh bocor ke orang asing'
+  );
+
+  const privatePayload = await encryptMessage(
+    JSON.stringify({ text: 'cuma buat yang pernah chat' }),
+    new Map([[author.uid, await author.keyWith(author.uid, author.identity.publicKey)]])
+  );
+  const beforeChat = stranger.statusFeed.length;
+  const privateResult = await new Promise((resolve) =>
+    author.socket.emit(
+      'status:publish',
+      { payload: privatePayload, members: [stranger.uid], mode: 'contacts' },
+      resolve
+    )
+  );
+  assert.equal(privateResult.ok, true, privateResult.error);
+  assert.equal(privateResult.mode, 'contacts');
+  await sleep(120);
+  assert.equal(stranger.statusFeed.length, beforeChat, 'orang asing tidak boleh menerima status privat');
+
+  // Setelah bertukar pesan langsung, dia masuk lingkaran yang boleh melihat.
+  await author.send({
+    roomId: 'dm:publik:asing',
+    type: 'dm',
+    members: [author.uid, stranger.uid],
+    text: 'halo',
+    keys: new Map([
+      [author.uid, await author.keyWith(author.uid, author.identity.publicKey)],
+      [stranger.uid, await author.keyWith(stranger.uid, stranger.identity.publicKey)],
+    ]),
+  });
+  await sleep(80);
+
+  const afterChat = await new Promise((resolve) =>
+    author.socket.emit(
+      'status:publish',
+      { payload: privatePayload, members: [stranger.uid], mode: 'contacts' },
+      resolve
+    )
+  );
+  assert.equal(afterChat.ok, true, afterChat.error);
+  await sleep(120);
+  assert.equal(
+    stranger.statusFeed.some((status) => status.id === afterChat.id),
+    true,
+    'status privat harus sampai ke orang yang pernah chat'
+  );
+
+  // Status publik punya penonton yang lebih luas daripada daftar anggota.
+  const backOn = await setProfile(author, { publicProfile: true });
+  assert.equal(backOn.ok, true);
+
+  author.close();
+  stranger.close();
+});
+
+test('a channel is broadcast-only, anonymous, and its member list is for admins', async () => {
+  const owner = await new Client('pemilik').init();
+  const follower = await new Client('pengikut').init();
+  await sleep(60);
+
+  const created = await new Promise((resolve) =>
+    owner.socket.emit('channel:create', { name: 'Kanal Uji', description: 'deskripsi' }, resolve)
+  );
+  assert.equal(created.ok, true, created.error);
+  const channelId = created.channel.id;
+  assert.equal(created.channel.isAdmin, true);
+  assert.equal(created.channel.followers, 1);
+
+  const followed = await new Promise((resolve) =>
+    follower.socket.emit('channel:follow', { channelId }, resolve)
+  );
+  assert.equal(followed.ok, true, followed.error);
+
+  const payload = await sealPublicText('pengumuman pertama');
+  const posted = await new Promise((resolve) =>
+    owner.socket.emit('channel:post', { channelId, payload }, resolve)
+  );
+  assert.equal(posted.ok, true, posted.error);
+
+  await sleep(120);
+  const received = follower.channelPosts.find((post) => post.id === posted.post.id);
+  assert.ok(received, 'pengikut harus menerima postingan');
+  assert.equal(received.from, undefined, 'postingan tidak boleh membawa identitas penulis');
+  assert.equal(received.channelId, channelId);
+
+  // Pengikut biasa tidak bisa menulis, dan tidak bisa melihat daftar anggota.
+  const refusedPost = await new Promise((resolve) =>
+    follower.socket.emit('channel:post', { channelId, payload }, resolve)
+  );
+  assert.equal(refusedPost.ok, false);
+  const refusedMembers = await new Promise((resolve) =>
+    follower.socket.emit('channel:members', { channelId }, resolve)
+  );
+  assert.equal(refusedMembers.ok, false);
+
+  const members = await new Promise((resolve) =>
+    owner.socket.emit('channel:members', { channelId }, resolve)
+  );
+  assert.equal(members.ok, true, members.error);
+  assert.deepEqual(
+    members.members.map((member) => member.uid).sort(),
+    [owner.uid, follower.uid].sort()
+  );
+
+  const opened = await new Promise((resolve) =>
+    follower.socket.emit('channel:open', { channelId }, resolve)
+  );
+  assert.equal(opened.ok, true);
+  assert.equal(opened.members, null, 'pengikut biasa cuma boleh melihat jumlah anggota');
+  assert.equal(opened.memberCount, 2);
+  assert.equal(opened.channel.posts.length, 1);
+
+  // Hanya pemilik saluran yang bisa mengangkat admin saluran lain.
+  const promoted = await new Promise((resolve) =>
+    owner.socket.emit('channel:admin', { channelId, uid: follower.uid, value: true }, resolve)
+  );
+  assert.equal(promoted.ok, true, promoted.error);
+  assert.equal(promoted.channel.isAdmin, true);
+
+  const secondPromote = await new Promise((resolve) =>
+    follower.socket.emit('channel:admin', { channelId, uid: owner.uid, value: false }, resolve)
+  );
+  assert.equal(secondPromote.ok, false, 'admin saluran bukan pemilik tidak boleh mengubah admin');
+
+  owner.close();
+  follower.close();
+});
+
+test('owner, admin, and moderator each get exactly the powers they should', async () => {
+  const owner = await new Client('petugas', { claimUsername: false }).init();
+  const alice = await new Client('alice').init();
+  const bob = await new Client('bob').init();
+  const carol = await new Client('carol').init();
+  await sleep(80);
+
+  assert.equal(owner.ready.roles.rank, 'owner');
+  assert.equal(owner.ready.me?.checked, true, 'owner otomatis punya centang biru');
+
+  // Owner mengangkat admin.
+  const makeAdmin = await setRole(owner, { uid: alice.uid, key: 'admin', value: true });
+  assert.equal(makeAdmin.ok, true, makeAdmin.error);
+  assert.equal(makeAdmin.profile.role, 'admin');
+  assert.equal(makeAdmin.profile.verified, false, 'centang bawaan bukan hadiah role:set');
+  assert.equal(makeAdmin.profile.checked, true, 'admin otomatis tampil dengan centang biru');
+
+  // Admin mengangkat moderator, tapi tidak boleh mengangkat admin lain.
+  const makeMod = await setRole(alice, { uid: bob.uid, key: 'moderator', value: true });
+  assert.equal(makeMod.ok, true, makeMod.error);
+  assert.equal(makeMod.profile.role, 'moderator');
+  const adminCannotAdmin = await setRole(alice, { uid: carol.uid, key: 'admin', value: true });
+  assert.equal(adminCannotAdmin.ok, false);
+
+  // Moderator cuma bisa memberi centang biru.
+  const verified = await setRole(bob, { uid: carol.uid, key: 'verified', value: true });
+  assert.equal(verified.ok, true, verified.error);
+  assert.equal(verified.profile.verified, true);
+  const modCannotMod = await setRole(bob, { uid: carol.uid, key: 'moderator', value: true });
+  assert.equal(modCannotMod.ok, false);
+
+  await sleep(120);
+  const seen = alice.directory.find((entry) => entry.uid === carol.uid);
+  assert.equal(seen?.verified, true, 'centang biru harus terlihat di direktori');
+  const seenAdmin = alice.directory.find((entry) => entry.uid === alice.uid);
+  assert.equal(seenAdmin?.checked, true, 'admin harus tampil bercentang di direktori');
+
+  // Admin tidak bisa menurunkan admin lain jadi moderator diam-diam.
+  const demoteAttempt = await setRole(bob, { uid: alice.uid, key: 'verified', value: true });
+  assert.equal(demoteAttempt.ok, true);
+  assert.equal(demoteAttempt.profile.role, 'admin', 'admin tetap admin saat diberi centang biru');
+
+  // Owner dari env tidak bisa diubah dari aplikasi.
+  const touchOwner = await setRole(alice, { uid: 'u-petugas', key: 'verified', value: true });
+  assert.equal(touchOwner.ok, false);
+
+  owner.close();
+  alice.close();
+  bob.close();
+  carol.close();
+});
+
+test('halaman admin memberi jabatan lewat REST dengan aturan yang sama', async () => {
+  const owner = await new Client('petugas', { claimUsername: false }).init();
+  const helper = await new Client('helper').init();
+  const target = await new Client('target3').init();
+  await sleep(80);
+
+  const call = (token, body) =>
+    fetch(`${BASE_URL}/api/admin/role`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  // Owner mengangkat admin dari halaman admin.
+  const promote = await call(owner.token, { uid: helper.uid, key: 'admin', value: true });
+  assert.equal(promote.status, 200);
+  const promoted = await promote.json();
+  assert.equal(promoted.profile.role, 'admin');
+
+  // Admin baru itu boleh memberi moderator, tapi tidak boleh memberi admin.
+  const asModerator = await call(helper.token, { uid: target.uid, key: 'moderator', value: true });
+  assert.equal(asModerator.status, 200);
+  assert.equal((await asModerator.json()).profile.role, 'moderator');
+
+  const asAdmin = await call(helper.token, { uid: target.uid, key: 'admin', value: true });
+  assert.equal(asAdmin.status, 400);
+
+  // Moderator tidak punya akses halaman admin sama sekali.
+  const overview = await fetch(`${BASE_URL}/api/admin/overview`, {
+    headers: { authorization: `Bearer ${target.token}` },
+  });
+  assert.equal(overview.status, 403);
+
+  owner.close();
+  helper.close();
+  target.close();
 });
 
 test('the directory no longer broadcasts phone numbers to every client', async () => {

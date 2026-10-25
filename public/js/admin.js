@@ -59,6 +59,7 @@ const state = {
 };
 
 const REPORT_STATUS_LABEL = { open: 'Belum ditangani', resolved: 'Selesai', dismissed: 'Diabaikan' };
+const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', moderator: 'Moderator' };
 
 const esc = (text) =>
   String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -164,7 +165,8 @@ function render() {
   if (!overview) return;
 
   const who = overview.me.username ? `@${overview.me.username}` : overview.me.uid.slice(0, 12);
-  el.me.textContent = `Masuk sebagai ${who}${overview.me.email ? ` · ${overview.me.email}` : ''}`;
+  const rank = overview.me.rank ? ` · ${ROLE_LABEL[overview.me.rank] || overview.me.rank}` : '';
+  el.me.textContent = `Masuk sebagai ${who}${rank}${overview.me.email ? ` · ${overview.me.email}` : ''}`;
 
   el.stats.innerHTML = [
     { value: overview.stats.open, label: 'laporan belum ditangani', hot: overview.stats.open > 0 },
@@ -248,18 +250,55 @@ function reportCard(report) {
   `;
 }
 
+/**
+ * Tombol jabatan yang boleh ditekan admin yang sedang masuk. Aturannya sama
+ * dengan server: owner memberi apa pun, admin memberi moderator + centang
+ * biru. Admin yang sudah naik otomatis punya centang, jadi sakelarnya tidak
+ * ditampilkan untuk mereka.
+ */
+function roleButtons(user) {
+  const rank = state.overview?.me?.rank;
+  if (!rank || user.role === 'owner' || user.uid === state.overview?.me?.uid) return '';
+
+  const can = (key) =>
+    rank === 'owner'
+      ? ['admin', 'moderator', 'verified'].includes(key)
+      : rank === 'admin'
+        ? ['moderator', 'verified'].includes(key)
+        : false;
+  const autoChecked = user.role === 'admin';
+  const buttons = [];
+  const add = (key, on, onLabel, offLabel) =>
+    buttons.push(
+      `<button class="ghost" data-act="role" data-uid="${esc(user.uid)}" data-role-key="${key}" data-role-value="${
+        on ? '0' : '1'
+      }">${esc(on ? offLabel : onLabel)}</button>`
+    );
+
+  if (can('verified') && !autoChecked) {
+    add('verified', Boolean(user.verified), 'Beri centang biru', 'Cabut centang biru');
+  }
+  if (can('moderator') && !autoChecked) {
+    add('moderator', user.role === 'moderator', 'Jadikan moderator', 'Cabut moderator');
+  }
+  if (can('admin')) {
+    add('admin', user.role === 'admin', 'Jadikan admin', 'Cabut admin');
+  }
+  return buttons.join('');
+}
+
 function renderUsers() {
   const query = state.query.trim().toLowerCase();
   const users = (state.overview.users || []).filter((user) => {
     if (!query) return true;
-    return [user.username, user.email, user.phone, user.uid]
+    return [user.username, user.email, user.phone, user.uid, user.id]
       .filter(Boolean)
       .some((field) => String(field).toLowerCase().includes(query));
   });
 
   const search = `
     <div class="admin-toolbar">
-      <input id="admin-search" class="search" placeholder="Cari username, email, nomor, atau uid…" value="${esc(state.query)}" />
+      <input id="admin-search" class="search" placeholder="Cari username, ID, email, nomor, atau uid…" value="${esc(state.query)}" />
       <span class="muted small">${users.length} dari ${(state.overview.users || []).length} pengguna</span>
     </div>
   `;
@@ -278,7 +317,10 @@ function renderUsers() {
         return `
           <article class="admin-card" data-user="${esc(user.uid)}">
             <div class="admin-card-head">
-              <strong>${esc(name)}</strong>
+              <strong class="name-with-badge"><span>${esc(name)}</span>${
+                user.checked ? '<svg class="ico badge-check"><use href="#i-verified" /></svg>' : ''
+              }</strong>
+              ${user.role ? `<span class="tag role">${esc(ROLE_LABEL[user.role] || user.role)}</span>` : ''}
               ${user.banned ? '<span class="tag banned">Diblokir</span>' : ''}
               ${user.online ? '<span class="tag online">Online</span>' : ''}
               <span class="admin-when">${esc(when(Date.now()))}</span>
@@ -286,6 +328,7 @@ function renderUsers() {
             <p class="admin-card-sub">
               ${user.email ? `${esc(user.email)}<br />` : ''}
               ${user.phone ? `${esc(user.phone)}<br />` : ''}
+              ${user.id ? `ID pengguna <code>${esc(user.id)}</code><br />` : ''}
               <code>${esc(user.uid)}</code>
             </p>
             ${user.banned && user.banReason ? `<div class="admin-note">Alasan blokir: ${esc(user.banReason)}</div>` : ''}
@@ -296,6 +339,7 @@ function renderUsers() {
                   : `<button class="ghost" data-act="ban" data-uid="${esc(user.uid)}" data-name="${esc(name)}">Blokir</button>`
               }
               <button class="ghost" data-act="report-about" data-name="${esc(name)}" data-uid="${esc(user.uid)}">Lihat laporannya</button>
+              ${roleButtons(user)}
             </div>
           </article>
         `;
@@ -407,6 +451,19 @@ async function unbanUser(uid) {
   }
 }
 
+async function changeUserRole(uid, key, value) {
+  try {
+    await api('/api/admin/role', {
+      method: 'POST',
+      body: JSON.stringify({ uid, key, value }),
+    });
+    showToast('Jabatan diperbarui.');
+    await loadOverview({ quiet: true });
+  } catch (err) {
+    showToast(`Gagal mengubah jabatan: ${err.message}`, 6000);
+  }
+}
+
 async function setReportStatus(id, status) {
   try {
     await api('/api/admin/report', {
@@ -430,6 +487,13 @@ el.panel.addEventListener('click', (event) => {
 
   if (action === 'ban') return banUser(button.dataset.uid, button.dataset.name);
   if (action === 'unban') return unbanUser(button.dataset.uid);
+  if (action === 'role') {
+    return changeUserRole(
+      button.dataset.uid,
+      button.dataset.roleKey,
+      button.dataset.roleValue === '1'
+    );
+  }
 
   if (action === 'find' || action === 'report-about') {
     state.tab = 'users';

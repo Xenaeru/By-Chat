@@ -25,6 +25,9 @@ process.env.LOCAL_AVATAR_DIR = path.join(TMP, 'avatars');
 process.env.USERNAME_STORE = path.join(TMP, 'usernames.json');
 process.env.MODERATION_STORE = path.join(TMP, 'moderation.json');
 process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
+process.env.CREDENTIAL_STORE = path.join(TMP, 'credentials.json');
+process.env.PROFILE_STORE = path.join(TMP, 'profiles.json');
+process.env.CHANNEL_STORE = path.join(TMP, 'channels.json');
 // `andi` jadi admin di jalur ini, supaya tangkapan layar halaman admin bisa
 // dibuat tanpa menyiapkan apa pun secara manual.
 process.env.ADMIN_UIDS = `dev-${crypto.createHash('sha256').update('andi').digest('hex').slice(0, 20)}`;

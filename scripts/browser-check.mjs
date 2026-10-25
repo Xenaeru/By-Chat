@@ -30,13 +30,15 @@ process.env.USERNAME_STORE = path.join(TMP, 'usernames.json');
 process.env.MODERATION_STORE = path.join(TMP, 'moderation.json');
 process.env.ACCOUNT_STORE = path.join(TMP, 'accounts.json');
 process.env.CREDENTIAL_STORE = path.join(TMP, 'credentials.json');
+process.env.PROFILE_STORE = path.join(TMP, 'profiles.json');
+process.env.CHANNEL_STORE = path.join(TMP, 'channels.json');
 // `andi` yang jadi admin di jalur ini, jadi tautan admin muncul di sidebar-nya
 // dan halaman /admin.html benar-benar bisa dibuka — sekaligus bisa diuji bahwa
 // akun lain ditolak.
 process.env.ADMIN_UIDS = `dev-${crypto.createHash('sha256').update('andi').digest('hex').slice(0, 20)}`;
 process.env.PORT = process.env.PORT || '4400';
 
-const { server, directory, inbox, statuses, moderation } = await import('../src/server.js');
+const { server, directory, inbox, statuses, moderation, profiles } = await import('../src/server.js');
 // Token dev yang sama dengan yang dipakai browser, buat satu klien mentah di
 // bawah: pembuktian sisi penerima bahwa status orang asing tetap diabaikan.
 const { makeDevToken } = await import('../src/auth.js');
@@ -70,6 +72,9 @@ const results = [];
 function check(label, condition, detail = '') {
   results.push({ label, ok: Boolean(condition) });
   if (!condition) throw new Error(`GAGAL: ${label}${detail ? ` — ${detail}` : ''}`);
+  // Dicetak sambil jalan: kalau salah satu langkah menggantung, log terakhir
+  // menunjukkan langkah mana yang belum selesai.
+  console.log(`✔ ${label}`);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -541,6 +546,22 @@ const statusItemsIn = (page) => page.$$eval('.status-item', (nodes) => nodes.len
  * juga, bukan cuma mengandalkan pengirimnya.
  */
 async function checkStatusBeforeChat(andi, budi) {
+  // Status cuma bisa dilihat orang yang pernah chat kalau profilnya privat.
+  // Profil baru sengaja publik, jadi jalur ini dimulai dengan mematikan
+  // sakelarnya lewat UI yang dipakai orang.
+  await goView(andi.page, 'settings');
+  await andi.page.waitForSelector('#public-profile-toggle', { timeout: 10000 });
+  await andi.page.click('#public-profile-toggle');
+  await andi.page.waitForFunction(
+    () => document.querySelector('#public-profile-toggle')?.getAttribute('aria-checked') === 'false',
+    { timeout: 10000 }
+  );
+  check(
+    'Sakelar Profil Publik bisa dimatikan dan tersimpan di server',
+    profiles.get(devUid('andi'))?.publicProfile === false,
+    JSON.stringify(profiles.get(devUid('andi'))?.publicProfile)
+  );
+
   const beforeChat = `status sebelum kenal ${Date.now()}`;
   await goView(andi.page, 'status');
   await andi.page.click('#status-me-add');
@@ -989,7 +1010,10 @@ async function checkPhotoAndStatus(andi, budi) {
   check('Avatar di rail ikut memakai foto yang baru diunggah', true);
 
   // Kontak lain melihat foto yang sama saat mencari namanya, tanpa minta apa pun.
-  const listed = await findContact(budi.page, 'andi');
+  const andiId = profiles.get(devUid('andi'))?.id || '';
+  check('Setiap akun punya ID pengguna angka', /^\d{6,12}$/.test(andiId), andiId || '(kosong)');
+
+  const listed = await findContact(budi.page, andiId);
   check(
     'Kontak lain melihat foto profil itu',
     listed.avatar.includes('/api/avatar/'),
@@ -1190,12 +1214,33 @@ async function checkReportAndAdmin(andi, budi) {
   });
   check('Admin bisa membuka blokir', true);
 
+  // Jabatan dari halaman admin: owner memberi Budi centang biru. Aturannya
+  // sama dengan panel info, tapi jalurnya REST.
+  await adminPage.click('.admin-tab[data-tab="users"]');
+  await adminPage.waitForSelector('#admin-search', { timeout: 10000 });
+  await adminPage.type('#admin-search', 'budi');
+  await adminPage.waitForSelector('[data-user] [data-role-key="verified"]', { timeout: 10000 });
+  await adminPage.click('[data-user] [data-role-key="verified"]');
+  await adminPage.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('Jabatan diperbarui'), {
+    timeout: 15000,
+  });
+  check(
+    'Owner bisa memberi centang biru dari halaman admin',
+    profiles.get(devUid('budi'))?.verified === true,
+    JSON.stringify(profiles.get(devUid('budi'))?.verified)
+  );
+
   await budi.page.reload({ waitUntil: 'domcontentloaded' });
   await budi.page.waitForSelector('#app:not([hidden])', { timeout: 15000 });
   await budi.page.waitForFunction(() => document.querySelector('#me-name')?.textContent === 'budi', {
     timeout: 15000,
   });
   check('Setelah blokirnya dibuka, akunnya jalan lagi seperti semula', true);
+  check(
+    'Centang biru dari admin tampil di profil akun',
+    Boolean(await budi.page.$('#me-name .badge-check')),
+    await budi.page.$eval('#me-name', (node) => node.innerHTML)
+  );
 
   await adminPage.close();
 }
@@ -1206,6 +1251,10 @@ const browser = await puppeteer.launch({
   args: [
     '--no-sandbox',
     '--disable-dev-shm-usage',
+    // Headless Chrome melaporkan hover/pointer "none". Tanpa ini, aturan CSS
+    // desktop (mis. tombol panah di gelembung pesan) tidak pernah aktif dan
+    // pemeriksaannya gagal karena lingkungan, bukan karena aplikasinya.
+    '--blink-settings=primaryHoverType=2,primaryPointerType=4',
     // Fake camera + mic, and auto-grant the permission prompt.
     '--use-fake-device-for-media-stream',
     '--use-fake-ui-for-media-stream',
@@ -1249,18 +1298,19 @@ try {
     { timeout: 10000 }
   );
   const shortNote = await andi.page.$eval('#contact-note', (node) => node.textContent);
-  check('Pencarian ditolak kalau kurang dari 3 karakter', /3 karakter/i.test(shortNote), shortNote);
+  check('Pencarian ditolak kalau bukan ID 6–12 angka', /6–12 angka/.test(shortNote), shortNote);
 
   await andi.page.$eval('#contact-query', (field) => {
     field.value = '';
     field.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  await andi.page.type('#contact-query', 'budi');
+  const budiId = profiles.get(devUid('budi'))?.id || '';
+  await andi.page.type('#contact-query', budiId);
   await andi.page.click('#contact-submit');
   await andi.page.waitForSelector('#contact-results:not([hidden]) .contact-result', { timeout: 15000 });
   const foundBudi = await andi.page.$eval('.contact-result', (li) => li.textContent);
-  check('Andi menemukan Budi lewat username', /budi/i.test(foundBudi), foundBudi);
-  check('Hasil pencarian bilang alasannya ketemu', /ditemukan lewat username/i.test(foundBudi), foundBudi);
+  check('Andi menemukan Budi lewat ID pengguna', /budi/i.test(foundBudi), foundBudi);
+  check('Hasil pencarian menampilkan ID-nya', foundBudi.includes(budiId), foundBudi);
 
   await andi.page.click('.contact-result');
   await andi.page.waitForSelector('#contact-page[hidden]', { timeout: 10000 });
@@ -2703,6 +2753,17 @@ try {
       chatMenuItems.some((item) => item.action === 'delete' && /hapus chat/i.test(item.label)),
     JSON.stringify(chatMenuItems)
   );
+
+  // Owner mengatur jabatan langsung dari baris chat, tanpa membuka panel admin.
+  const roleMenuItems = chatMenuItems.filter((item) => item.action.startsWith('role-'));
+  check(
+    'Owner melihat aksi jabatan di menu chat',
+    roleMenuItems.some((item) => /centang biru/i.test(item.label)) &&
+      roleMenuItems.some((item) => /moderator/i.test(item.label)) &&
+      roleMenuItems.some((item) => /admin/i.test(item.label)),
+    JSON.stringify(roleMenuItems)
+  );
+
   const chatMenuBox = await andi.page.$eval('#chat-menu-list', (node) => {
     const rect = node.getBoundingClientRect();
     return {
@@ -2711,6 +2772,22 @@ try {
     };
   });
   check('Menu chat nggak keluar dari layar', chatMenuBox.insideX && chatMenuBox.insideY, JSON.stringify(chatMenuBox));
+
+  // Klik kanan di baris chat harus membuka menu yang sama, lengkap dengan
+  // aksi jabatan untuk owner.
+  await andi.page.evaluate(() => document.querySelector('#chat-menu-catcher').click());
+  await andi.page.waitForSelector('#chat-menu[hidden]', { timeout: 5000 });
+  const rightPoint = await findRow();
+  await andi.page.mouse.click(rightPoint.x, rightPoint.y, { button: 'right' });
+  await andi.page.waitForSelector('#chat-menu:not([hidden])', { timeout: 5000 });
+  const rightClickMenu = await andi.page.$$eval('#chat-menu-list .msg-menu-item', (nodes) =>
+    nodes.map((node) => node.dataset.action)
+  );
+  check(
+    'Klik kanan baris chat membuka menu jabatan',
+    rightClickMenu.includes('clear') && rightClickMenu.includes('role-moderator'),
+    JSON.stringify(rightClickMenu)
+  );
 
   await andi.page.click('#chat-menu-list [data-action="clear"]');
   await andi.page.waitForSelector('#modal:not([hidden]) [data-confirm]', { timeout: 5000 });
@@ -2908,21 +2985,26 @@ try {
   await budi.page.click('#chat-options-list [data-back]');
   await closeHeaderMenu();
 
-  // Info kontak, cari, dan pilih pesan.
+  // Info kontak memakai panel samping yang sama untuk orang, grup, dan saluran.
   await openHeaderMenu();
   await clickOption('Info kontak');
-  await budi.page.waitForSelector('#modal:not([hidden])', { timeout: 5000 });
+  await budi.page.waitForSelector('#info-panel:not([hidden])', { timeout: 5000 });
   const info = await budi.page.evaluate(() => ({
-    title: document.querySelector('#modal-card h3')?.textContent || '',
-    verify: Boolean(document.querySelector('#modal-card [data-info="verify"]')),
-    mute: /dibisukan|berbunyi/.test(document.querySelector('#modal-card')?.textContent || ''),
+    title: document.querySelector('#info-title')?.textContent || '',
+    text: document.querySelector('#info-body')?.textContent || '',
+    safety: Boolean(document.querySelector('#info-body [data-act="safety"]')),
   }));
   check(
-    'Info kontak menampilkan ringkasan obrolan dan tombol safety number',
-    /info kontak/i.test(info.title) && info.verify && info.mute,
+    'Info kontak menampilkan profil, bisukan, dan safety number',
+    /info kontak/i.test(info.title) && /bisukan/i.test(info.text) && info.safety,
     JSON.stringify(info)
   );
+
+  await budi.page.click('#info-body [data-act="safety"]');
+  await budi.page.waitForSelector('#modal:not([hidden]) .safety', { timeout: 5000 });
+  check('Safety number bisa dibuka dari panel info', true);
   await budi.page.evaluate(() => document.querySelector('#modal').click());
+  await budi.page.waitForSelector('#info-panel[hidden]', { timeout: 5000 });
 
   await openHeaderMenu();
   await clickOption('Cari');
@@ -2989,6 +3071,48 @@ try {
     emptyShown: document.querySelector('#empty-state')?.hidden === false,
   }));
   check('Tutup obrolan menutup percakapan dan kembali ke layar kosong', closedChat.chatHidden && closedChat.emptyShown, JSON.stringify(closedChat));
+
+  /* Saluran: buat dari UI, lihat info adminnya, lalu ganti namanya. */
+  await goView(andi.page, 'status');
+  await andi.page.click('#btn-create-channel');
+  await andi.page.waitForSelector('#channel-name', { timeout: 5000 });
+  await andi.page.type('#channel-name', 'Kanal Uji');
+  await andi.page.type('#channel-desc', 'deskripsi uji');
+  await andi.page.click('#modal-card [data-create]');
+  await andi.page.waitForFunction(
+    () => document.querySelector('#peer-name')?.textContent.includes('Kanal Uji'),
+    { timeout: 15000 }
+  );
+  check('Saluran bisa dibuat dari UI dengan nama dan deskripsi', true);
+
+  await andi.page.click('#peer-name');
+  await andi.page.waitForSelector('#info-panel:not([hidden])', { timeout: 5000 });
+  const channelInfo = await andi.page.evaluate(() => ({
+    title: document.querySelector('#info-title')?.textContent || '',
+    text: document.querySelector('#info-body')?.textContent || '',
+    photo: Boolean(document.querySelector('#info-body [data-act="channel-photo"]')),
+  }));
+  check(
+    'Info saluran menampilkan deskripsi, pengikut, dan aksi admin',
+    /info saluran/i.test(channelInfo.title) &&
+      /deskripsi uji/i.test(channelInfo.text) &&
+      /pengikut/i.test(channelInfo.text) &&
+      channelInfo.photo,
+    JSON.stringify(channelInfo)
+  );
+
+  await andi.page.click('#info-body [data-act="channel-edit"]');
+  await andi.page.waitForSelector('#modal-card #channel-name', { timeout: 5000 });
+  await andi.page.$eval('#channel-name', (field) => {
+    field.value = '';
+  });
+  await andi.page.type('#channel-name', 'Kanal Baru');
+  await andi.page.click('#modal-card [data-save]');
+  await andi.page.waitForFunction(
+    () => document.querySelector('#peer-name')?.textContent.includes('Kanal Baru'),
+    { timeout: 10000 }
+  );
+  check('Nama saluran bisa diganti dari panel info', true);
 
   console.log('');
   for (const r of results) console.log(`  ✔ ${r.label}`);

@@ -6,6 +6,8 @@ import {
   decryptMessage,
   safetyNumber,
   dmRoomId,
+  b64,
+  unb64,
 } from './crypto.js';
 import { createAuthClient } from './auth-client.js';
 import { uploadAttachment, fetchAttachment, formatBytes } from './files.js';
@@ -144,10 +146,23 @@ const state = {
   viewer: null,
   viewerToken: 0,
   statuses: [],
+  // Nama/foto penulis status publik yang belum ada di direktori.
+  statusAuthors: new Map(),
   statusSeen: new Set(),
   statusDecoded: new Map(),
   statusView: null,
   isAdmin: false,
+  // Profil publik milik sendiri: ID, status, tahun lahir, sakelar publik,
+  // centang biru, dan jabatan (owner/admin/moderator).
+  meProfile: null,
+  roles: { rank: null, panel: false },
+  // Saluran: ringkasan yang diikuti + postingan yang sudah dibuka.
+  channels: new Map(),
+  channelPosts: new Map(),
+  activeChannelId: null,
+  activeChannel: null,
+  channelMembers: new Map(),
+  info: null,
   notifier: null,
   /** Panel yang sedang terbuka di kolom daftar: chats | status | calls | settings. */
   view: 'chats',
@@ -215,10 +230,28 @@ const el = {
   meAvatar: $('#me-avatar'),
   meName: $('#me-name'),
   meStatus: $('#me-status'),
+  meId: $('#me-id'),
+  meAbout: $('#me-about'),
+  meBirth: $('#me-birth'),
+  publicToggle: $('#public-profile-toggle'),
+  publicNote: $('[data-public-note]'),
+  btnEditProfile: $('#btn-edit-profile'),
+  btnEditStatus: $('#btn-edit-status'),
   displayName: $('#display-name'),
   nameTag: $('[data-name-tag]'),
   panelSettings: $('#panel-settings'),
   avatarInput: $('#avatar-input'),
+
+  channelList: $('#channel-list'),
+  channelEmpty: $('#channel-empty'),
+  btnExploreChannels: $('#btn-explore-channels'),
+  btnCreateChannel: $('#btn-create-channel'),
+
+  infoPanel: $('#info-panel'),
+  infoBody: $('#info-body'),
+  infoCatcher: $('#info-catcher'),
+  infoTitle: $('#info-title'),
+  infoClose: $('#info-close'),
   callList: $('#call-list'),
   callEmpty: $('#call-empty'),
   statusEmpty: $('#status-empty'),
@@ -388,6 +421,21 @@ function showToast(message, ms = 4000) {
 
 const peerByUid = (uid) => state.directory.find((u) => u.uid === uid);
 
+/* Penulis status publik bisa saja belum pernah muncul di direktori perangkat
+   ini; server mengirim namanya bersama status supaya labelnya tetap manusiawi. */
+const statusAuthor = (uid) => state.statusAuthors.get(String(uid || '')) || null;
+
+function rememberStatusAuthor(status) {
+  if (!status?.from) return;
+  state.statusAuthors.set(status.from, {
+    displayName: status.fromName || statusAuthor(status.from)?.displayName || null,
+    photoURL: status.fromPhoto || statusAuthor(status.from)?.photoURL || null,
+  });
+}
+
+const statusAuthorName = (uid) =>
+  peerByUid(uid)?.displayName || statusAuthor(uid)?.displayName || String(uid || '').slice(0, 8);
+
 /*
  * Avatar colour is derived from the name, so the same person is always the same
  * colour — you recognise a contact before you finish reading the name. Casing is
@@ -408,6 +456,10 @@ function paintAvatars(root = document) {
     const seed = node.dataset.hueFor || node.textContent.trim();
     if (seed) node.style.setProperty('--hue', nameHue(seed));
 
+    // Avatar saluran memakai foto dari /api/channel/...; jangan ditimpa oleh
+    // pencarian foto profil berdasarkan uid.
+    if (node.dataset.avatarLocked) continue;
+
     const photo = photoFor(node.dataset.uid);
     const url = photo ? new URL(photo, location.origin).href : '';
     // Only touch the style when the url really changed, otherwise every re-render
@@ -422,6 +474,70 @@ function paintAvatars(root = document) {
       node.classList.remove('has-photo');
     }
   }
+}
+
+/* ------------------------------------------------------------------
+ * Profil publik, badge, dan envelope publik
+ *
+ * Saluran dan status publik itu siaran untuk siapa saja yang berhak
+ * membacanya, jadi kuncinya ikut di dalam envelope (`key`) alih-alih
+ * dibungkus satu per satu untuk tiap penerima. Status privat tetap memakai
+ * jalur lama: satu kunci per kontak.
+ * ------------------------------------------------------------------ */
+
+const meProfile = () => state.meProfile || {};
+
+/** Data profil publik seseorang, dari direktori atau dari pemilik akun ini. */
+function publicProfileOf(uid) {
+  if (!uid) return null;
+  if (uid === state.me?.uid) return { ...(state.meProfile || {}), uid };
+  const peer = peerByUid(uid);
+  if (peer) return { ...peer, uid };
+  return null;
+}
+
+/** Centang biru, satu bentuk markup di seluruh aplikasi. */
+function badgeFor(uid, cls = '') {
+  const profile = publicProfileOf(uid);
+  // `checked` sudah memperhitungkan centang bawaan owner/admin; `verified`
+  // tetap dibaca untuk data lama yang belum punya `checked`.
+  const verified = profile?.checked ?? profile?.verified;
+  if (!verified) return '';
+  return `<svg class="ico badge-check ${cls}" aria-label="Terverifikasi"><use href="#i-verified" /></svg>`;
+}
+
+const STAFF_LABEL = { owner: 'Owner', admin: 'Admin', moderator: 'Moderator' };
+
+function staffBadgeFor(uid) {
+  const staff = publicProfileOf(uid)?.staff;
+  if (!staff) return '';
+  return `<span class="info-badge${staff === 'owner' ? ' owner' : ''}">${esc(
+    STAFF_LABEL[staff] || staff
+  )}</span>`;
+}
+
+function nameWithBadge(name, uid) {
+  return `<span class="name-with-badge"><span>${esc(name)}</span>${badgeFor(uid)}</span>`;
+}
+
+async function sealPublic(text) {
+  const raw = crypto.getRandomValues(new Uint8Array(32));
+  const key = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text));
+  return { v: 1, mode: 'public', iv: b64(iv), ct: b64(ct), key: b64(raw) };
+}
+
+async function openPublic(payload) {
+  const key = await crypto.subtle.importKey('raw', unb64(payload.key), { name: 'AES-GCM' }, false, [
+    'decrypt',
+  ]);
+  const plain = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: unb64(payload.iv) },
+    key,
+    unb64(payload.ct)
+  );
+  return new TextDecoder().decode(plain);
 }
 
 const packMessage = (text, attachment, extra = {}) =>
@@ -620,6 +736,15 @@ function showLogin() {
   state.profile = null;
   state.username = null;
   state.isAdmin = false;
+  state.meProfile = null;
+  state.roles = { rank: null, panel: false };
+  state.channels.clear();
+  state.channelPosts.clear();
+  state.channelMembers.clear();
+  state.activeChannelId = null;
+  state.activeChannel = null;
+  closeInfoPanel();
+  renderChannels();
   state.rooms.clear();
   closeOnboarding();
   closeContactPage();
@@ -668,6 +793,14 @@ async function enterApp(profile) {
   closeMessageMenu();
   closeViewer();
   state.statuses = [];
+  state.statusAuthors.clear();
+  state.meProfile = null;
+  state.channels.clear();
+  state.channelPosts.clear();
+  state.channelMembers.clear();
+  state.activeChannelId = null;
+  state.activeChannel = null;
+  closeInfoPanel();
   state.statusSeen = new Set(store.get(statusSeenKey(profile.uid), []));
   state.statusDecoded.clear();
   state.statusView = null;
@@ -893,7 +1026,10 @@ function applyUsername(username) {
   state.username = username;
   state.profile = { ...state.profile, displayName: username };
   if (state.me) state.me.displayName = username;
-  el.meName.textContent = username;
+  // Nama di kartu profil tetap membawa centang biru kalau akunnya terverifikasi.
+  el.meName.innerHTML = `<span class="name-with-badge"><span>${esc(username)}</span>${badgeFor(
+    state.me?.uid
+  )}</span>`;
   el.meAvatar.textContent = initials(username);
   el.meAvatar.dataset.hueFor = username;
   el.meAvatar.dataset.uid = state.me?.uid || '';
@@ -1046,6 +1182,13 @@ function connect(token) {
     state.directory = payload.directory || [];
     state.statuses = payload.statuses || [];
     state.statusDecoded.clear();
+    for (const status of state.statuses) rememberStatusAuthor(status);
+    state.meProfile = payload.me || null;
+    state.roles = payload.roles || { rank: null, panel: false };
+    state.channels = new Map((payload.channels || []).map((channel) => [channel.id, channel]));
+    // Setelan profil bisa berubah di perangkat lain; layar ini ikut menyesuaikan.
+    renderSettings();
+    renderChannels();
     // Penanda ini cuma buat menampilkan tautan ke /admin.html; halaman itu
     // sendiri memeriksa ulang ke server siapa yang boleh masuk.
     state.isAdmin = Boolean(payload.admin);
@@ -1082,6 +1225,7 @@ function connect(token) {
   socket.on('message', (envelope) => receiveMessage(envelope));
 
   socket.on('status:new', (status) => {
+    rememberStatusAuthor(status);
     state.statuses.push(status);
     renderStatuses();
     renderChatList();
@@ -1093,6 +1237,37 @@ function connect(token) {
     state.statuses = state.statuses.filter((status) => status.id !== id);
     state.statusDecoded.delete(id);
     renderStatuses();
+  });
+
+  // Jabatan atau centang biru akun ini berubah (diberikan owner/admin lain).
+  socket.on('profile:roles', ({ me } = {}) => {
+    state.meProfile = { ...(state.meProfile || {}), ...(me || {}) };
+    renderSettings();
+    renderChatList();
+    renderPeerHeader();
+    if (state.info?.kind === 'user' && state.info.uid === state.me.uid) openInfoPanel('user', state.me.uid);
+  });
+
+  socket.on('channel:update', ({ channel } = {}) => {
+    if (!channel?.id) return;
+    if (channel.isFollowing === false) state.channels.delete(channel.id);
+    else state.channels.set(channel.id, { ...(state.channels.get(channel.id) || {}), ...channel });
+    renderChannels();
+    if (state.activeChannelId === channel.id) {
+      state.activeChannel = { ...(state.activeChannel || {}), ...channel };
+      renderChannelHeader();
+      renderChannelPosts();
+    }
+  });
+
+  socket.on('channel:post', ({ channelId, id, at, payload }) => {
+    if (!channelId || !payload?.ct) return;
+    const posts = state.channelPosts.get(channelId) || [];
+    if (!posts.some((post) => post.id === id)) posts.push({ id, at, payload });
+    state.channelPosts.set(channelId, posts);
+    if (state.activeChannelId === channelId) renderChannelPosts();
+    const channel = state.channels.get(channelId);
+    if (channel) showToast(`${channel.name}: pesan baru.`, 3500);
   });
 
   socket.on('typing', ({ roomId, from, typing }) => {
@@ -2216,6 +2391,10 @@ function renderEmptyState() {
 }
 
 function selectRoom(roomId) {
+  // Pindah dari saluran ke obrolan biasa: panel saluran ditutup dulu supaya
+  // komposer dan menu chat kembali ke perilaku normalnya.
+  state.activeChannelId = null;
+  el.composer.hidden = false;
   closeMessageMenu();
   // Pindah chat menghentikan rekaman dan suara yang sedang diputar; keduanya
   // milik percakapan yang sedang dibuka, bukan percakapan berikutnya.
@@ -2240,10 +2419,18 @@ function selectRoom(roomId) {
 }
 
 function renderPeerHeader() {
+  if (state.activeChannelId) return renderChannelHeader();
   const room = state.rooms.get(state.activeRoomId);
   if (!room) return;
   const name = displayName(room);
-  el.peerName.textContent = room.type === 'group' ? room.name : name;
+  const headerName = room.type === 'group' ? room.name : name;
+  const headerUid = room.type === 'dm' ? otherUid(room) : '';
+  el.peerName.innerHTML = `<span class="name-with-badge"><span>${esc(headerName)}</span>${badgeFor(
+    headerUid
+  )}</span>`;
+  // Kembali dari saluran: foto header dikelola lagi oleh paintAvatars.
+  delete el.peerAvatar.dataset.avatarLocked;
+  delete el.peerAvatar.dataset.photoUrl;
   el.peerAvatar.textContent = initials(room.type === 'group' ? room.name : name);
   el.peerAvatar.dataset.uid = room.type === 'dm' ? otherUid(room) : '';
 
@@ -2260,6 +2447,7 @@ function renderPeerHeader() {
   el.input.disabled = blocked;
   el.btnSend.disabled = blocked;
   el.btnAttach.disabled = blocked;
+  el.input.placeholder = 'Tulis pesan terenkripsi…';
 
   if (!isDm) {
     const names = room.members.filter((m) => m !== state.me.uid).map((m) => peerByUid(m)?.displayName || '?');
@@ -2324,7 +2512,7 @@ function renderChatList() {
       <div class="avatar${ring}"${peerUid ? ` data-uid="${esc(peerUid)}"` : ''}>${esc(initials(name))}</div>
       <div class="chat-item-main">
         <div class="chat-item-top">
-          <span class="chat-item-name">${esc(name)}${room.type === 'group' ? ' 👥' : ''}${
+          <span class="chat-item-name">${esc(name)}${room.type === 'dm' ? badgeFor(peerUid) : ''}${room.type === 'group' ? ' 👥' : ''}${
             fav ? '<svg class="ico chat-item-flag star"><use href="#i-star-filled" /></svg>' : ''
           }</span>
           <span class="chat-item-time">${
@@ -2422,6 +2610,106 @@ function placeChatMenu(li) {
   el.chatMenuList.style.top = `${top}px`;
 }
 
+/**
+ * Aksi jabatan untuk satu lawan chat. Menu ini dibuka dari baris daftar chat,
+ * jadi owner/admin/moderator bisa mengatur akun tanpa masuk panel admin.
+ */
+function roleMenuActions(profile) {
+  const rank = state.roles.rank;
+  const uid = profile?.uid;
+  if (!rank || !uid || uid === state.me?.uid) return [];
+  if (profile.staff === 'owner') return [];
+
+  const allowed = (key) =>
+    rank === 'owner'
+      ? ['admin', 'moderator', 'verified'].includes(key)
+      : rank === 'admin'
+        ? ['moderator', 'verified'].includes(key)
+        : ['verified'].includes(key);
+
+  const targetIsAdmin = profile.staff === 'admin';
+  const targetIsModerator = profile.staff === 'moderator';
+  const targetRole = targetIsAdmin ? 'admin' : targetIsModerator ? 'moderator' : null;
+  const actions = [];
+
+  // Admin otomatis bercentang biru, jadi sakelar centang cuma masuk akal
+  // untuk akun biasa dan moderator.
+  if (!targetIsAdmin && allowed('verified')) {
+    const on = Boolean(profile.verified);
+    actions.push({
+      id: 'role-verified',
+      label: on ? 'Cabut centang biru' : 'Beri centang biru',
+      icon: '#i-verified',
+      run: () => setRoleFromChat(uid, 'verified', !on, on ? 'Centang biru dicabut.' : 'Centang biru diberikan.'),
+    });
+  }
+
+  if (!targetIsAdmin && allowed('moderator')) {
+    actions.push({
+      id: 'role-moderator',
+      label: targetRole === 'moderator' ? 'Cabut moderator' : 'Jadikan moderator',
+      icon: '#i-shield',
+      run: () =>
+        setRoleFromChat(
+          uid,
+          'moderator',
+          targetRole !== 'moderator',
+          targetRole === 'moderator' ? 'Moderator dicabut.' : 'Sekarang moderator.'
+        ),
+    });
+  }
+
+  if (allowed('admin')) {
+    actions.push({
+      id: 'role-admin',
+      label: targetIsAdmin ? 'Cabut admin' : 'Jadikan admin',
+      icon: '#i-shield',
+      run: () =>
+        setRoleFromChat(
+          uid,
+          'admin',
+          !targetIsAdmin,
+          targetIsAdmin ? 'Admin dicabut.' : 'Sekarang admin.'
+        ),
+    });
+  }
+
+  return actions;
+}
+
+async function setRoleFromChat(uid, key, value, successText) {
+  const result = await emitAck('role:set', { uid, key, value });
+  if (!result.ok) return showToast(result.error || 'Gagal mengubah jabatan.', 5000);
+  showToast(successText);
+  if (state.info?.kind === 'user' && state.info.uid === uid) openInfoPanel('user', uid);
+}
+
+function appendChatMenuAction(action, room) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'msg-menu-item' + (action.danger ? ' danger' : '');
+  button.dataset.action = action.id;
+  button.setAttribute('role', 'menuitem');
+  button.innerHTML = `<svg class="ico"><use href="${action.icon}" /></svg><span>${esc(action.label)}</span>`;
+  button.addEventListener('click', () => {
+    closeChatMenu();
+    if (action.run) action.run();
+    else runChatAction(action.id, room);
+  });
+  el.chatMenuList.appendChild(button);
+}
+
+function appendChatMenuSeparator(label) {
+  const line = document.createElement('div');
+  line.className = 'msg-menu-sep';
+  el.chatMenuList.appendChild(line);
+  if (!label) return;
+  const heading = document.createElement('div');
+  heading.className = 'msg-menu-label';
+  heading.textContent = label;
+  el.chatMenuList.appendChild(heading);
+}
+
 function openChatMenu(li, room) {
   if (!li || !room) return;
   closeMessageMenu();
@@ -2432,18 +2720,31 @@ function openChatMenu(li, room) {
   el.chatMenu.dataset.target = room.id;
   li.classList.add('menu-target');
 
-  for (const action of chatMenuActions(room)) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'msg-menu-item' + (action.danger ? ' danger' : '');
-    button.dataset.action = action.id;
-    button.setAttribute('role', 'menuitem');
-    button.innerHTML = `<svg class="ico"><use href="${action.icon}" /></svg><span>${esc(action.label)}</span>`;
-    button.addEventListener('click', () => {
-      closeChatMenu();
-      runChatAction(action.id, room);
-    });
-    el.chatMenuList.appendChild(button);
+  for (const action of chatMenuActions(room)) appendChatMenuAction(action, room);
+
+  if (state.roles.rank && room.type === 'dm') {
+    const uid = otherUid(room);
+    if (uid && uid !== state.me.uid) {
+      const known = peerByUid(uid);
+      if (known) {
+        const actions = roleMenuActions({ ...known, uid });
+        if (actions.length) {
+          appendChatMenuSeparator('Jabatan');
+          for (const action of actions) appendChatMenuAction(action, room);
+        }
+      } else {
+        // Chat lama bisa berisi orang yang sedang offline dan belum ada di
+        // direktori. Server masih punya kartu profilnya, jadi ambil dari sana.
+        emitAck('profile:get', { uid }, 3000).then((result) => {
+          if (!result.ok || el.chatMenu.hidden || el.chatMenu.dataset.target !== room.id) return;
+          const actions = roleMenuActions({ ...result.profile, uid });
+          if (!actions.length) return;
+          appendChatMenuSeparator('Jabatan');
+          for (const action of actions) appendChatMenuAction(action, room);
+          placeChatMenu(li);
+        });
+      }
+    }
   }
 
   placeChatMenu(li);
@@ -2468,6 +2769,14 @@ function bindChatLongPress(li, room) {
     }, CHAT_LONG_PRESS_MS);
   };
   const cancel = () => clearTimeout(chatPressTimer);
+
+  // Klik kanan di desktop adalah jalan utama yang diminta: buka menu yang
+  // sama dengan panah dan tahan-lama, bukan menu konteks bawaan browser.
+  li.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    clearTimeout(chatPressTimer);
+    openChatMenu(li, room);
+  });
 
   li.addEventListener('pointerdown', (event) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -2980,58 +3289,23 @@ function runChatOption(id, room) {
 
 /* ---- Info kontak ---- */
 function openContactInfo(room) {
-  const isDm = room.type === 'dm';
-  const peer = isDm ? peerByUid(otherUid(room)) : null;
-  const name = displayName(room);
-  const blocked = peerBlocked(room);
-  const muted = isMuted(room.id);
-  const ttl = Number(roomPrefs(room.id).disappearMs) || 0;
+  // Satu panel info untuk orang, grup, dan saluran — isinya mengikuti jenisnya,
+  // persis seperti "Info kontak" / "Info grup" di WhatsApp.
+  if (room.type === 'dm') openInfoPanel('user', otherUid(room));
+  else openInfoPanel('group', room.id);
+}
 
-  const rows = [
-    ['Status', peer ? (peer.online ? 'online' : 'offline') : `${room.members.length} anggota`],
-    ['Enkripsi', 'End-to-end — server cuma perantara buta'],
-    ['Notifikasi', muted ? 'dibisukan' : 'berbunyi'],
-    ['Pesan sementara', ttl ? disappearLabel(ttl) : 'mati'],
-  ];
-  if (isDm && peer?.uid) rows.push(['ID', peer.uid.slice(0, 12)]);
-
-  openModal(`
-    <h3>Info kontak</h3>
-    <div class="contact-info-head">
-      <span class="avatar" ${peer?.uid ? `data-uid="${esc(peer.uid)}"` : ''}>${esc(initials(name))}</span>
-      <div>
-        <strong>${esc(name)}</strong>
-        <span class="muted">${room.type === 'group' ? 'Grup' : 'Chat pribadi'} · terenkripsi end-to-end</span>
-      </div>
-    </div>
-    <ul class="contact-info-list">
-      ${rows
-        .map(
-          ([key, value]) =>
-            `<li><span class="muted">${esc(key)}</span><strong>${esc(value)}</strong></li>`
-        )
-        .join('')}
-    </ul>
-    <div class="modal-actions">
-      ${isDm ? '<button type="button" data-info="verify">Safety number</button>' : ''}
-      ${isDm ? `<button type="button" data-info="block">${blocked ? 'Buka blokir' : 'Blokir'}</button>` : ''}
-      <button type="button" data-close>Tutup</button>
-    </div>
-  `);
-
-  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
-  el.modalCard.querySelector('[data-info="verify"]')?.addEventListener('click', () => {
-    closeModal();
-    openSafetyNumber();
-  });
-  el.modalCard.querySelector('[data-info="block"]')?.addEventListener('click', () => {
-    closeModal();
-    toggleBlock(room);
-  });
+function openChannelInfo() {
+  if (!state.activeChannelId) return;
+  openInfoPanel('channel', state.activeChannelId);
 }
 
 /* ---- Tutup obrolan ---- */
 function closeConversation() {
+  if (state.activeChannelId) {
+    state.activeChannelId = null;
+    el.composer.hidden = false;
+  }
   if (state.voiceRecording) cancelVoiceNote();
   stopVoicePlayback();
   exitSelection({ render: false });
@@ -3833,8 +4107,14 @@ function renderMessages() {
 
     if (room.type === 'group' && !mine && !message.deleted) {
       const sender = document.createElement('span');
-      sender.className = 'msg-sender';
+      sender.className = 'msg-sender msg-sender-link';
       sender.textContent = peerByUid(message.from)?.displayName || 'Tidak dikenal';
+      // Nama di dalam grup bisa diketuk, sama seperti di WhatsApp: yang muncul
+      // panel info orangnya, bukan cuma teks mati.
+      sender.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openInfoPanel('user', message.from);
+      });
       div.appendChild(sender);
     }
 
@@ -4417,7 +4697,9 @@ function closeModal() {
  * mengenal orang adalah mencarinya lewat email, nomor HP, atau @username.
  * `+` jadi membuka halaman ini, bukan daftar orang yang kebetulan online.
  * ------------------------------------------------------------------ */
-const VIA_LABEL = { username: 'username', email: 'email', phone: 'nomor HP' };
+// Satu-satunya alamat untuk menambah kontak sekarang adalah ID pengguna.
+const VIA_LABEL = { id: 'ID pengguna' };
+const USER_ID_RE = /^\d{6,12}$/;
 
 function setContactNote(text, kind = '') {
   el.contactNote.textContent = text;
@@ -4433,7 +4715,7 @@ function openContactPage() {
   el.contactResults.innerHTML = '';
   el.contactResults.hidden = true;
   setContactNote(
-    'Orang yang belum pernah kamu chat nggak muncul sendiri. Cari pakai email, nomor HP, atau @username — hasilnya tetap ada walau dia sedang offline.'
+    'Cari pakai ID pengguna (6–12 angka). ID ada di halaman Profil orangnya, dan tetap bisa ditemukan walau dia sedang offline.'
   );
   el.contactQuery.focus();
 }
@@ -4447,10 +4729,12 @@ function renderContactResults(results) {
   el.contactResults.hidden = results.length === 0;
 
   for (const person of results) {
-    const name = person.username || person.uid.slice(0, 8);
+    const name = person.username || `pengguna ${person.id || person.uid.slice(0, 8)}`;
     const status = person.banned
       ? 'diblokir admin — nggak bisa di-chat'
-      : `${person.online ? 'online' : 'offline'} · ditemukan lewat ${VIA_LABEL[person.foundVia] || 'pencarian'}`;
+      : `${person.online ? 'online' : 'offline'} · ${VIA_LABEL[person.foundVia] || 'ID'} ${
+          person.id || '—'
+        }`;
 
     const li = document.createElement('li');
     li.className = 'contact-result';
@@ -4458,11 +4742,23 @@ function renderContactResults(results) {
     li.innerHTML = `
       <span class="avatar" data-uid="${esc(person.uid)}">${esc(initials(name))}</span>
       <span class="contact-result-main">
-        <strong>${esc(name)}</strong>
+        <strong class="name-with-badge"><span>${esc(name)}</span>${
+          (person.checked ?? person.verified)
+            ? '<svg class="ico badge-check"><use href="#i-verified" /></svg>'
+            : ''
+        }</strong>
         <span class="muted">${esc(status)}</span>
       </span>
+      <button type="button" class="icon-btn contact-info" data-info-uid="${esc(person.uid)}" title="Lihat profil" aria-label="Lihat profil ${esc(name)}">
+        <svg class="ico"><use href="#i-info" /></svg>
+      </button>
       <span class="contact-go">${person.banned ? '—' : 'Chat'}</span>
     `;
+    li.querySelector('.contact-info')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closeContactPage();
+      openInfoPanel('user', person.uid);
+    });
     li.addEventListener('click', () => {
       if (person.banned) return showToast('Akun itu diblokir admin, jadi nggak bisa di-chat.');
       openContactRoom(person.uid, person.username);
@@ -4475,8 +4771,15 @@ function renderContactResults(results) {
 
 async function lookupContact() {
   const query = el.contactQuery.value.trim();
-  if (query.length < 3) {
-    return setContactNote('Tulis minimal 3 karakter: email, nomor HP, atau @username.', 'bad');
+  if (!USER_ID_RE.test(query)) {
+    return setContactNote('Tulis ID pengguna: 6–12 angka, misalnya 17217387.', 'bad');
+  }
+  // ID sendiri bukan kontak; yang perlu dilakukan justru membagikannya.
+  if (query === meProfile().id) {
+    return setContactNote(
+      `Itu ID kamu sendiri (${query}). Bagikan angka ini ke orang lain supaya mereka bisa menambahkanmu.`,
+      'good'
+    );
   }
 
   el.contactSubmit.disabled = true;
@@ -4501,7 +4804,7 @@ async function lookupContact() {
   renderContactResults(results);
   if (!results.length) {
     return setContactNote(
-      `Tidak ada yang cocok dengan "${query}". Cek lagi ejaannya, atau minta dia masuk dulu supaya akunnya terdaftar.`,
+      `Tidak ada akun dengan ID ${query}. Cek lagi angkanya, atau minta dia membuka aplikasinya sekali supaya ID-nya terdaftar.`,
       'bad'
     );
   }
@@ -4658,6 +4961,1226 @@ function openNewGroup() {
   });
 }
 
+/* ------------------------------------------------------------------
+ * Saluran
+ *
+ * Saluran itu satu arah: pengikut membaca, admin saluran menulis. Postingan
+ * dikirim sebagai envelope publik (kuncinya ikut di dalam), jadi pengikut baru
+ * tetap bisa membaca pesan lama, dan server tidak pernah melihat teksnya.
+ * ------------------------------------------------------------------ */
+
+function channelAvatarMarkup(channel, extra = '') {
+  const photo = channel?.avatarUrl;
+  return `<span class="avatar${extra}" data-avatar-locked="1" data-hue-for="${esc(
+    channel?.name || '?'
+  )}"${photo ? ` style="background-image:url('${esc(photo)}')"` : ''}>${esc(
+    initials(channel?.name)
+  )}</span>`;
+}
+
+function renderChannels() {
+  if (!el.channelList) return;
+  const list = [...state.channels.values()].filter((channel) => channel.isFollowing !== false);
+
+  el.channelList.innerHTML = '';
+  if (el.channelEmpty) el.channelEmpty.hidden = list.length > 0;
+
+  for (const channel of list) {
+    const li = document.createElement('li');
+    li.className = 'channel-item' + (channel.id === state.activeChannelId ? ' active' : '');
+    li.innerHTML = `
+      ${channelAvatarMarkup(channel)}
+      <span class="channel-item-main">
+        <strong>${esc(channel.name)}</strong>
+        <span class="muted">${channel.followers} pengikut${channel.isAdmin ? ' · admin saluran' : ''}</span>
+      </span>
+      <span class="channel-item-go">Buka</span>
+    `;
+    li.addEventListener('click', () => openChannel(channel.id));
+    el.channelList.appendChild(li);
+  }
+}
+
+function renderChannelHeader() {
+  const channel = state.activeChannel;
+  if (!channel) return;
+
+  el.peerName.innerHTML = `<span class="name-with-badge"><span>${esc(channel.name)}</span></span>`;
+  el.peerSub.textContent = `${channel.followers} pengikut · ${
+    channel.isAdmin ? 'kamu admin saluran' : 'siaran satu arah'
+  }`;
+  el.peerAvatar.textContent = initials(channel.name);
+  el.peerAvatar.dataset.uid = '';
+  el.peerAvatar.dataset.avatarLocked = '1';
+  el.peerAvatar.classList.toggle('has-photo', Boolean(channel.avatarUrl));
+  if (channel.avatarUrl) el.peerAvatar.style.backgroundImage = `url("${channel.avatarUrl}")`;
+  else el.peerAvatar.style.removeProperty('background-image');
+
+  el.btnCallAudio.hidden = true;
+  el.btnCallVideo.hidden = true;
+  el.blockedBar.hidden = true;
+  el.input.disabled = !channel.isAdmin;
+  el.btnSend.disabled = !channel.isAdmin;
+  el.btnAttach.disabled = true;
+  el.input.placeholder = channel.isAdmin
+    ? 'Tulis pengumuman sebagai saluran…'
+    : 'Cuma admin saluran yang bisa mengirim pesan';
+}
+
+async function renderChannelPosts() {
+  if (!state.activeChannelId) return;
+  const posts = state.channelPosts.get(state.activeChannelId) || [];
+  el.messages.innerHTML = '';
+
+  if (!posts.length) {
+    const note = document.createElement('div');
+    note.className = 'system-note';
+    note.textContent = 'Belum ada pesan di saluran ini.';
+    el.messages.appendChild(note);
+    return;
+  }
+
+  let lastDay = null;
+  for (const post of posts) {
+    const label = dayLabel(post.at);
+    if (label !== lastDay) {
+      el.messages.appendChild(daySeparator(label));
+      lastDay = label;
+    }
+
+    const div = document.createElement('div');
+    div.className = 'msg channel';
+    try {
+      const raw = post.payload.mode === 'public' ? await openPublic(post.payload) : '';
+      const parsed = unpackStatus(raw);
+      const body = document.createElement('span');
+      body.className = 'msg-text';
+      body.textContent = parsed.text;
+      div.appendChild(body);
+    } catch {
+      div.classList.add('undecryptable');
+      div.appendChild(document.createTextNode('Pesan ini nggak bisa dibuka.'));
+    }
+
+    const meta = document.createElement('span');
+    meta.className = 'msg-meta';
+    meta.textContent = formatTime(post.at);
+    div.appendChild(meta);
+    el.messages.appendChild(div);
+  }
+  el.messages.scrollTop = el.messages.scrollHeight;
+}
+
+async function openChannel(channelId) {
+  const result = await emitAck('channel:open', { channelId });
+  if (!result.ok) return showToast(result.error || 'Saluran gagal dibuka.');
+
+  const channel = { ...result.channel, memberCount: result.memberCount };
+  state.activeChannelId = channel.id;
+  state.activeChannel = channel;
+  state.activeRoomId = null;
+  state.channelPosts.set(channel.id, channel.posts || []);
+  if (result.members) state.channelMembers.set(channel.id, result.members);
+  state.channels.set(channel.id, { ...(state.channels.get(channel.id) || {}), ...channel });
+
+  closeChatOptions();
+  closeMessageMenu();
+  el.emptyState.hidden = true;
+  el.chatView.hidden = false;
+  el.app.classList.add('show-chat');
+  el.composer.hidden = !channel.isAdmin;
+  renderChannelHeader();
+  renderChannelPosts();
+  renderChannels();
+}
+
+async function sendChannelPost(text) {
+  const channel = state.activeChannel;
+  if (!channel?.isAdmin) return showToast('Cuma admin saluran yang bisa mengirim pesan.');
+
+  const payload = await sealPublic(JSON.stringify({ text }));
+  const result = await emitAck('channel:post', { channelId: channel.id, payload }, 20000);
+  if (!result.ok) return showToast(result.error || 'Gagal mengirim ke saluran.');
+
+  const posts = state.channelPosts.get(channel.id) || [];
+  posts.push(result.post);
+  state.channelPosts.set(channel.id, posts);
+  renderChannelPosts();
+}
+
+async function followChannel(channelId, value) {
+  const result = await emitAck(value ? 'channel:follow' : 'channel:unfollow', { channelId });
+  if (!result.ok) return showToast(result.error || 'Gagal mengubah keikutsertaan.');
+
+  if (value) state.channels.set(channelId, { ...(state.channels.get(channelId) || {}), ...result.channel });
+  else {
+    state.channels.delete(channelId);
+    if (state.activeChannelId === channelId) {
+      state.activeChannelId = null;
+      state.activeChannel = null;
+      el.composer.hidden = false;
+      closeConversation();
+    }
+  }
+  renderChannels();
+  showToast(value ? 'Kamu mengikuti saluran ini.' : 'Kamu berhenti mengikuti saluran ini.');
+}
+
+async function uploadChannelAvatar(channelId, file) {
+  const token = await state.auth.getIdToken();
+  const body = await prepareAvatarFile(file);
+  const response = await fetch(`/api/channel/${encodeURIComponent(channelId)}/avatar`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': body.type || 'image/jpeg' },
+    body,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Gagal unggah (${response.status}).`);
+  return data.photoURL || null;
+}
+
+/** Dialog buat saluran: nama, deskripsi, dan foto opsional. */
+function openChannelCreator() {
+  openModal(`
+    <h3>Buat saluran</h3>
+    <p class="sub">Saluran itu siaran satu arah. Pengikut membaca; yang menulis cuma admin saluran, dan namanya tidak ditampilkan ke pengikut.</p>
+    <label for="channel-name">Nama saluran</label>
+    <input id="channel-name" type="text" maxlength="60" placeholder="misal: Berita Kota" autocomplete="off" />
+    <label for="channel-desc">Deskripsi (opsional)</label>
+    <textarea id="channel-desc" maxlength="500" placeholder="Tentang apa saluran ini…"></textarea>
+    <label>Foto saluran (opsional)</label>
+    <div class="channel-photo">
+      <span class="avatar" id="channel-photo-preview" data-avatar-locked="1">?</span>
+      <button type="button" class="ghost" data-pick>Pilih foto</button>
+      <input type="file" id="channel-photo-input" accept="image/png,image/jpeg,image/webp" hidden />
+    </div>
+    <div class="modal-actions">
+      <button type="button" data-close>Batal</button>
+      <button type="button" class="primary" data-create>Buat saluran</button>
+    </div>
+  `);
+
+  let file = null;
+  const preview = el.modalCard.querySelector('#channel-photo-preview');
+  const input = el.modalCard.querySelector('#channel-photo-input');
+  el.modalCard.querySelector('[data-pick]').addEventListener('click', () => input.click());
+  el.modalCard.querySelector('#channel-name').addEventListener('input', (event) => {
+    preview.dataset.hueFor = event.target.value || '?';
+    preview.style.setProperty('--hue', nameHue(event.target.value || '?'));
+    preview.textContent = initials(event.target.value);
+  });
+  input.addEventListener('change', () => {
+    const [picked] = input.files || [];
+    file = picked || null;
+    if (!file) return;
+    preview.style.backgroundImage = `url("${URL.createObjectURL(file)}")`;
+    preview.classList.add('has-photo');
+  });
+
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-create]').addEventListener('click', async () => {
+    const name = el.modalCard.querySelector('#channel-name').value.trim();
+    const description = el.modalCard.querySelector('#channel-desc').value.trim();
+    if (name.length < 2) return showToast('Nama saluran minimal 2 huruf.');
+
+    const button = el.modalCard.querySelector('[data-create]');
+    button.disabled = true;
+    const result = await emitAck('channel:create', { name, description });
+    if (!result.ok) {
+      button.disabled = false;
+      return showToast(result.error || 'Gagal membuat saluran.');
+    }
+
+    let channel = result.channel;
+    if (file) {
+      try {
+        channel.avatarUrl = await uploadChannelAvatar(channel.id, file);
+      } catch (err) {
+        showToast(`Foto saluran: ${err.message}`, 6000);
+      }
+    }
+
+    state.channels.set(channel.id, { ...(state.channels.get(channel.id) || {}), ...channel });
+    closeModal();
+    renderChannels();
+    setView('status');
+    openChannel(channel.id);
+    showToast('Saluran dibuat. Kamu jadi admin pertamanya.');
+  });
+}
+
+/** Daftar semua saluran (termasuk yang belum diikuti). */
+async function openExploreChannels() {
+  const result = await emitAck('channel:list', {});
+  if (!result.ok) return showToast(result.error || 'Daftar saluran gagal diambil.');
+
+  const list = result.channels || [];
+  openModal(`
+    <h3>Jelajahi saluran</h3>
+    <p class="sub">Tekan ikuti buat menerima siarannya. Yang menulis cuma admin saluran.</p>
+    <ul class="picker channel-explore">
+      ${
+        list.length
+          ? list
+              .map(
+                (channel) => `<li data-channel="${esc(channel.id)}">
+                  ${channelAvatarMarkup(channel)}
+                  <span class="channel-item-main" style="flex:1;min-width:0">
+                    <strong>${esc(channel.name)}</strong>
+                    <span class="muted">${channel.followers} pengikut${
+                      channel.description ? ` · ${esc(channel.description.slice(0, 60))}` : ''
+                    }</span>
+                  </span>
+                  <button type="button" class="ghost tiny" data-follow="${esc(channel.id)}" data-following="${
+                    channel.isFollowing ? '1' : '0'
+                  }">${channel.isFollowing ? 'Diikuti' : 'Ikuti'}</button>
+                </li>`
+              )
+              .join('')
+          : '<li class="muted">Belum ada saluran. Jadilah yang pertama membuatnya.</li>'
+      }
+    </ul>
+    <div class="modal-actions">
+      <button type="button" data-close>Tutup</button>
+      <button type="button" class="primary" data-create>Buat saluran</button>
+    </div>
+  `);
+
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-create]').addEventListener('click', () => {
+    closeModal();
+    openChannelCreator();
+  });
+
+  for (const li of el.modalCard.querySelectorAll('[data-channel]')) {
+    li.addEventListener('click', (event) => {
+      if (event.target.closest('[data-follow]')) return;
+      closeModal();
+      openChannel(li.dataset.channel);
+    });
+  }
+  for (const button of el.modalCard.querySelectorAll('[data-follow]')) {
+    button.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const id = button.dataset.follow;
+      const following = button.dataset.following === '1';
+      await followChannel(id, !following);
+      button.dataset.following = following ? '0' : '1';
+      button.textContent = following ? 'Ikuti' : 'Diikuti';
+    });
+  }
+  paintAvatars(el.modalCard);
+}
+
+/** Ubah nama/deskripsi saluran (admin saluran). */
+function openChannelEditor(channel) {
+  if (!channel?.isAdmin) return showToast('Cuma admin saluran yang bisa mengubah ini.');
+
+  openModal(`
+    <h3>Edit saluran</h3>
+    <label for="channel-name">Nama saluran</label>
+    <input id="channel-name" type="text" maxlength="60" value="${esc(channel.name)}" />
+    <label for="channel-desc">Deskripsi</label>
+    <textarea id="channel-desc" maxlength="500">${esc(channel.description || '')}</textarea>
+    <div class="modal-actions">
+      <button type="button" data-close>Batal</button>
+      <button type="button" class="primary" data-save>Simpan</button>
+    </div>
+  `);
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-save]').addEventListener('click', async () => {
+    const result = await emitAck('channel:update', {
+      channelId: channel.id,
+      name: el.modalCard.querySelector('#channel-name').value.trim(),
+      description: el.modalCard.querySelector('#channel-desc').value.trim(),
+    });
+    if (!result.ok) return showToast(result.error || 'Gagal menyimpan saluran.');
+
+    state.channels.set(channel.id, { ...(state.channels.get(channel.id) || {}), ...result.channel });
+    if (state.activeChannelId === channel.id) {
+      state.activeChannel = { ...state.activeChannel, ...result.channel };
+      renderChannelHeader();
+    }
+    renderChannels();
+    closeModal();
+    showToast('Saluran disimpan.');
+  });
+}
+
+/* ------------------------------------------------------------------
+ * Panel info (orang, grup, saluran)
+ * ------------------------------------------------------------------ */
+
+function showInfoPanel() {
+  el.infoPanel.hidden = false;
+  el.infoCatcher.hidden = false;
+  paintAvatars(el.infoBody);
+}
+
+function closeInfoPanel() {
+  state.info = null;
+  if (!el.infoPanel) return;
+  el.infoPanel.hidden = true;
+  el.infoCatcher.hidden = true;
+  el.infoBody.innerHTML = '';
+}
+
+const infoSwitch = (on) =>
+  `<span class="switch" aria-checked="${on ? 'true' : 'false'}"><span class="switch-dot"></span></span>`;
+
+function mediaCount(room) {
+  return room ? room.messages.filter((message) => message.attachment).length : 0;
+}
+
+function mediaItems(room) {
+  return room ? room.messages.filter((message) => message.attachment).slice().reverse() : [];
+}
+
+function starredCount(room) {
+  return room ? room.messages.filter((message) => isStarred(message, room.id)).length : 0;
+}
+
+const themeLabel = () => THEME_OPTIONS.find((option) => option.value === themeChoice)?.label || 'Otomatis';
+
+/** Empat jepretan terakhir di panel info; foto yang belum diunduh tetap punya kartu. */
+function infoMediaStrip(room) {
+  const items = mediaItems(room).slice(0, 4);
+  if (!items.length) return '';
+  return `<div class="info-media-strip">${items
+    .map((message) => {
+      const attachment = message.attachment;
+      const kind = fileKind(attachment.mime);
+      const url = attachment.localUrl || state.blobUrls.get(message.id);
+      const inner =
+        kind === 'image' && url
+          ? `<img src="${esc(url)}" alt="${esc(attachment.name || 'Foto')}" />`
+          : `<svg class="ico"><use href="${KIND_ICON[kind]}" /></svg>`;
+      return `<button type="button" class="info-media-tile" data-media-id="${esc(message.id)}" title="${esc(
+        attachment.name || KIND_LABEL[kind]
+      )}">${inner}</button>`;
+    })
+    .join('')}</div>`;
+}
+
+function openInfoChoice({ title, note, options, current, onPick }) {
+  openModal(`
+    <h3>${esc(title)}</h3>
+    ${note ? `<p class="sub">${esc(note)}</p>` : ''}
+    <div class="info-choice-list">
+      ${options
+        .map(
+          (option) => `<button type="button" class="info-item" data-choice="${esc(option.value)}">
+            <span class="label">${esc(option.label)}</span>
+            ${String(option.value) === String(current) ? '<svg class="ico"><use href="#i-check" /></svg>' : ''}
+          </button>`
+        )
+        .join('')}
+    </div>
+  `);
+  for (const button of el.modalCard.querySelectorAll('[data-choice]')) {
+    button.addEventListener('click', () => {
+      const value = button.dataset.choice;
+      closeModal();
+      onPick(value);
+    });
+  }
+}
+
+function openThemeChoice() {
+  openInfoChoice({
+    title: 'Tema obrolan',
+    note: 'Berlaku untuk seluruh aplikasi di perangkat ini.',
+    options: THEME_OPTIONS,
+    current: themeChoice,
+    onPick: (value) => {
+      setTheme(value);
+      if (state.info) refreshInfoPanel();
+    },
+  });
+}
+
+function openDisappearChoice(room) {
+  const current = Number(roomPrefs(room.id).disappearMs) || 0;
+  openInfoChoice({
+    title: 'Pesan sementara',
+    note: 'Pesan yang lebih lama dari batas ini hilang dari perangkat ini.',
+    options: [{ label: 'Mati', value: 0 }, ...DISAPPEAR_OPTIONS],
+    current,
+    onPick: (value) => {
+      setDisappearing(room, Number(value));
+      if (state.info) refreshInfoPanel();
+    },
+  });
+}
+
+function openMediaList(room) {
+  const items = mediaItems(room);
+  if (!items.length) return showToast('Belum ada media, tautan, atau dokumen di obrolan ini.');
+
+  openModal(`
+    <h3>Media, tautan, dan dokumen</h3>
+    <p class="sub">${items.length} lampiran di obrolan ini. Ketuk satu untuk membukanya.</p>
+    <div class="info-media-list">
+      ${items
+        .map((message) => {
+          const attachment = message.attachment;
+          const kind = fileKind(attachment.mime);
+          const url = attachment.localUrl || state.blobUrls.get(message.id);
+          const thumb =
+            kind === 'image' && url
+              ? `<img src="${esc(url)}" alt="" />`
+              : `<svg class="ico"><use href="${KIND_ICON[kind]}" /></svg>`;
+          return `<button type="button" class="info-media-row" data-media-message="${esc(message.id)}">
+            <span class="info-media-thumb">${thumb}</span>
+            <span class="info-media-main">
+              <strong>${esc(attachment.name || KIND_LABEL[kind])}</strong>
+              <span>${esc(KIND_LABEL[kind])} · ${esc(formatBytes(attachment.size))} · ${esc(
+                formatListTime(message.at)
+              )}</span>
+            </span>
+          </button>`;
+        })
+        .join('')}
+    </div>
+  `);
+
+  for (const button of el.modalCard.querySelectorAll('[data-media-message]')) {
+    button.addEventListener('click', () => {
+      const message = room.messages.find((entry) => String(entry.id) === button.dataset.mediaMessage);
+      if (!message?.attachment) return;
+      if (fileKind(message.attachment.mime) === 'file') return downloadAttachment(message);
+      closeModal();
+      openViewer(message);
+    });
+  }
+}
+
+function openStarredMessages(room) {
+  const messages = room.messages.filter((message) => isStarred(message, room.id));
+  if (!messages.length) return showToast('Belum ada pesan berbintang di obrolan ini.');
+
+  openModal(`
+    <h3>Pesan berbintang</h3>
+    <p class="sub">${messages.length} pesan yang kamu tandai. Ketuk satu untuk kembali ke pesannya.</p>
+    <div class="info-starred-list">
+      ${messages
+        .map(
+          (message) => `<button type="button" class="info-starred-row" data-starred-id="${esc(message.id)}">
+            <span class="info-starred-main">
+              <strong>${esc(message.from === state.me.uid ? 'Kamu' : displayName(room))}</strong>
+              <span>${esc(messagePreview(message) || 'Lampiran')}</span>
+            </span>
+            <span class="info-starred-time">${esc(formatListTime(message.at))}</span>
+          </button>`
+        )
+        .join('')}
+    </div>
+  `);
+
+  for (const button of el.modalCard.querySelectorAll('[data-starred-id]')) {
+    button.addEventListener('click', () => {
+      const id = button.dataset.starredId;
+      closeModal();
+      closeInfoPanel();
+      selectRoom(room.id);
+      setTimeout(() => scrollToMessage(id), 80);
+    });
+  }
+}
+
+function refreshInfoPanel() {
+  const info = state.info;
+  if (!info) return;
+  if (info.kind === 'user') return openInfoPanel('user', info.uid);
+  if (info.kind === 'group') return openInfoPanel('group', info.roomId);
+  if (info.kind === 'channel') return openInfoPanel('channel', info.channelId);
+}
+
+async function openAddGroupMembers(room) {
+  // Kunci publik anggota baru harus sudah ada di perangkat ini; kalau tidak,
+  // pesan berikutnya ke grup akan gagal untuk semua orang.
+  if (socket?.connected) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1800);
+      socket.emit('sync', {}, () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  const current = new Set(room.members);
+  const people = contactList().filter((person) => !current.has(person.uid));
+  const addable = people.filter((person) => peerByUid(person.uid)?.publicKey);
+  if (!people.length) return showToast('Semua kontak sudah ada di grup ini.');
+  if (!addable.length) {
+    return showToast('Belum ada kontak dengan kunci publik tersedia. Minta mereka membuka aplikasi dulu.');
+  }
+
+  openModal(`
+    <h3>Tambah anggota</h3>
+    <p class="sub">Pilih kontak yang mau dimasukkan ke ${esc(room.name)}.</p>
+    <ul class="picker">
+      ${addable
+        .map(
+          (person) => `<li><input type="checkbox" value="${esc(person.uid)}" id="gm-${esc(person.uid)}" />
+            <label for="gm-${esc(person.uid)}" style="margin:0;color:var(--ink);font-size:14px">${esc(
+              person.name
+            )}${person.online ? '' : ' · offline'}</label></li>`
+        )
+        .join('')}
+    </ul>
+    <div class="modal-actions">
+      <button type="button" data-close>Batal</button>
+      <button type="button" class="primary" data-add>Tambah</button>
+    </div>
+  `);
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-add]').addEventListener('click', () => {
+    const chosen = [...el.modalCard.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
+    if (!chosen.length) return showToast('Pilih minimal satu kontak.');
+    for (const uid of chosen) {
+      if (!room.members.includes(uid)) room.members.push(uid);
+    }
+    const names = chosen.map((uid) => peerByUid(uid)?.displayName || uid.slice(0, 8));
+    pushSystemNote(room, `${names.join(', ')} ditambahkan ke grup.`);
+    saveRooms();
+    renderChatList();
+    if (state.activeRoomId === room.id) renderPeerHeader();
+    closeModal();
+    openInfoPanel('group', room.id);
+    showToast(`${names.join(', ')} ditambahkan ke grup.`);
+  });
+}
+
+function openGroupNameEditor(room) {
+  openModal(`
+    <h3>Nama grup</h3>
+    <input id="group-name-edit" type="text" maxlength="40" value="${esc(room.name)}" />
+    <div class="modal-actions">
+      <button type="button" data-close>Batal</button>
+      <button type="button" class="primary" data-save>Simpan</button>
+    </div>
+  `);
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-save]').addEventListener('click', () => {
+    const name = el.modalCard.querySelector('#group-name-edit').value.trim();
+    if (!name) return showToast('Nama grup belum diisi.');
+    room.name = name;
+    saveRooms();
+    renderChatList();
+    if (state.activeRoomId === room.id) renderPeerHeader();
+    closeModal();
+    openInfoPanel('group', room.id);
+  });
+}
+
+function openGroupEncryption() {
+  openModal(`
+    <h3>Enkripsi</h3>
+    <p class="sub">Pesan dan panggilan di grup ini terenkripsi end-to-end. Kuncinya dibungkus terpisah untuk tiap anggota, dan server cuma jadi perantara buta.</p>
+    <p class="sub">Anggota baru bisa membaca pesan berikutnya setelah kunci publiknya tersedia di perangkat anggota lain.</p>
+    <div class="modal-actions"><button type="button" data-close>Tutup</button></div>
+  `);
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+}
+
+function roleSection(profile) {
+  const rank = state.roles.rank;
+  if (!rank || !profile?.uid || profile.uid === state.me?.uid) return '';
+  if (profile.staff === 'owner') {
+    return `<div class="info-card info-role-card"><div class="info-members-head">Jabatan</div><p class="info-note info-role-note">Owner diatur lewat ADMIN_EMAILS / ADMIN_UIDS, bukan dari sini.</p></div>`;
+  }
+
+  const allowed = (key) =>
+    rank === 'owner'
+      ? ['admin', 'moderator', 'verified'].includes(key)
+      : rank === 'admin'
+        ? ['moderator', 'verified'].includes(key)
+        : ['verified'].includes(key);
+
+  // Admin selalu memakai centang biru, jadi sakelar centangnya tidak berarti
+  // apa-apa untuk mereka. Yang tersisa cuma naik/turun jabatan.
+  const autoChecked = profile.staff === 'admin';
+  const rows = [];
+  if (autoChecked) {
+    rows.push(
+      '<p class="info-note info-role-note">Admin otomatis punya centang biru; yang bisa diubah cuma jabatannya.</p>'
+    );
+  } else {
+    if (allowed('verified')) {
+      rows.push(`
+        <button type="button" class="info-row" data-role-key="verified" data-role-value="${
+          profile.verified ? '0' : '1'
+        }">
+          <svg class="ico"><use href="#i-verified" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Centang biru</span></span>
+          ${infoSwitch(profile.verified)}
+        </button>`);
+    }
+    if (allowed('moderator')) {
+      rows.push(`
+        <button type="button" class="info-row" data-role-key="moderator" data-role-value="${
+          profile.role === 'moderator' ? '0' : '1'
+        }">
+          <svg class="ico"><use href="#i-shield" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Moderator</span></span>
+          ${infoSwitch(profile.role === 'moderator')}
+        </button>`);
+    }
+  }
+  if (allowed('admin')) {
+    rows.push(`
+      <button type="button" class="info-row" data-role-key="admin" data-role-value="${
+        profile.role === 'admin' ? '0' : '1'
+      }">
+        <svg class="ico"><use href="#i-shield" /></svg>
+        <span class="info-row-main"><span class="info-row-label">Admin</span></span>
+        ${infoSwitch(profile.role === 'admin')}
+      </button>`);
+  }
+
+  if (!rows.length) return '';
+  return `<div class="info-card info-role-card"><div class="info-members-head">Jabatan</div>${rows.join('')}</div>`;
+}
+
+async function openInfoPanel(kind, target) {
+  if (kind === 'user') {
+    const uid = String(target || '');
+    if (!uid) return;
+
+    let profile =
+      uid === state.me?.uid
+        ? { ...(state.meProfile || {}), uid, username: state.username, online: true }
+        : null;
+    if (!profile) {
+      const result = await emitAck('profile:get', { uid });
+      profile = result.ok
+        ? result.profile
+        : { ...(peerByUid(uid) || {}), uid, username: peerByUid(uid)?.displayName };
+    }
+
+    const roomId = dmRoomId(state.me.uid, uid);
+    const room = state.rooms.get(roomId);
+    const prefs = roomPrefs(roomId);
+    const muted = isMuted(roomId);
+    const name = profile.username || `pengguna ${profile.id || uid.slice(0, 8)}`;
+    const isSelf = uid === state.me.uid;
+
+    state.info = { kind, uid };
+    el.infoTitle.textContent = isSelf ? 'Profil saya' : 'Info kontak';
+    const unreadStarred = room ? starredCount(room) : 0;
+    const themeName = themeLabel();
+    const disappear = room ? Number(roomPrefs(room.id).disappearMs) || 0 : 0;
+
+    el.infoBody.innerHTML = `
+      <div class="info-hero">
+        <span class="avatar" data-uid="${esc(uid)}">${esc(initials(name))}</span>
+        <strong class="name-with-badge"><span>${esc(name)}</span>${badgeFor(uid)}</strong>
+        <span class="info-sub">${profile.online ? 'online' : 'terakhir dilihat baru-baru ini'}</span>
+        <span class="info-id">ID ${esc(profile.id || '—')}</span>
+        <div class="info-badges">
+          ${staffBadgeFor(uid)}
+          ${
+            isSelf
+              ? profile.publicProfile === false
+                ? '<span class="info-badge">Profil privat</span>'
+                : '<span class="info-badge"><svg class="ico"><use href="#i-globe" /></svg>Profil publik</span>'
+              : ''
+          }
+        </div>
+      </div>
+
+      ${
+        isSelf
+          ? ''
+          : `<div class="info-actions">
+        <button type="button" class="info-action" data-act="message"><span class="info-action-icon"><svg class="ico"><use href="#i-chat" /></svg></span>Pesan</button>
+        <button type="button" class="info-action" data-act="call"><span class="info-action-icon"><svg class="ico"><use href="#i-phone" /></svg></span>Telepon</button>
+        <button type="button" class="info-action" data-act="video"><span class="info-action-icon"><svg class="ico"><use href="#i-video" /></svg></span>Video</button>
+      </div>`
+      }
+
+      <div class="info-card">
+        <div class="info-row info-row-start">
+          <svg class="ico"><use href="#i-info" /></svg>
+          <span class="info-row-main">
+            <span class="info-row-label">Tentang</span>
+            <span class="info-row-value">${esc(profile.about || 'Belum ada status')}${
+              profile.birthYear ? ` · lahir ${esc(profile.birthYear)}` : ''
+            }</span>
+          </span>
+        </div>
+
+        ${
+          room
+            ? `<button type="button" class="info-row" data-act="media">
+          <svg class="ico"><use href="#i-doc" /></svg>
+          <span class="info-row-main">
+            <span class="info-row-label">Media, tautan, dan dokumen</span>
+            <span class="info-row-value">${mediaCount(room)} lampiran di obrolan ini</span>
+          </span>
+          <span class="info-row-side">${mediaCount(room)}</span>
+        </button>
+        ${infoMediaStrip(room)}`
+            : ''
+        }
+
+        ${
+          room && unreadStarred
+            ? `<button type="button" class="info-row" data-act="starred">
+          <svg class="ico"><use href="#i-star-filled" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Pesan berbintang</span></span>
+          <span class="info-row-side">${unreadStarred}</span>
+        </button>`
+            : ''
+        }
+
+        <button type="button" class="info-row" data-act="mute">
+          <svg class="ico"><use href="#i-bell-off" /></svg>
+          <span class="info-row-main">
+            <span class="info-row-label">Pengaturan notifikasi</span>
+            <span class="info-row-value">${muted ? 'Dibisukan' : 'Bisukan notifikasi'}</span>
+          </span>
+          ${infoSwitch(muted)}
+        </button>
+
+        <button type="button" class="info-row" data-act="favorite">
+          <svg class="ico"><use href="#i-star" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Tambah ke favorit</span></span>
+          ${infoSwitch(prefs.favorite)}
+        </button>
+
+        <button type="button" class="info-row" data-act="theme">
+          <svg class="ico"><use href="#i-sun" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Tema obrolan</span></span>
+          <span class="info-row-side">${esc(themeName)}</span>
+        </button>
+
+        ${
+          room
+            ? `<button type="button" class="info-row" data-act="disappear">
+          <svg class="ico"><use href="#i-timer" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Pesan sementara</span></span>
+          <span class="info-row-side">${esc(disappear ? disappearLabel(disappear) || 'Aktif' : 'Mati')}</span>
+        </button>`
+            : ''
+        }
+
+        ${
+          !isSelf && room?.type === 'dm'
+            ? `<button type="button" class="info-row" data-act="safety">
+          <svg class="ico"><use href="#i-lock" /></svg>
+          <span class="info-row-main">
+            <span class="info-row-label">Enkripsi</span>
+            <span class="info-row-value">Pesan terenkripsi end-to-end. Ketuk untuk info selengkapnya.</span>
+          </span>
+        </button>`
+            : ''
+        }
+      </div>
+
+      ${
+        isSelf
+          ? ''
+          : `<div class="info-card">
+        <button type="button" class="info-row info-row-danger" data-act="block">
+          <svg class="ico"><use href="#i-ban" /></svg>
+          <span class="info-row-main"><span class="info-row-label">${isPeerBlocked(uid) ? 'Buka blokir' : 'Blokir'}</span></span>
+        </button>
+        <button type="button" class="info-row info-row-danger" data-act="report">
+          <svg class="ico"><use href="#i-flag" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Laporkan</span></span>
+        </button>
+      </div>`
+      }
+      ${roleSection(profile)}
+    `;
+    showInfoPanel();
+    return;
+  }
+
+  if (kind === 'group') {
+    const room = state.rooms.get(String(target || ''));
+    if (!room) return;
+
+    const muted = isMuted(room.id);
+    const prefs = roomPrefs(room.id);
+    const showAll = Boolean(state.info?.showAllMembers);
+    const members = showAll ? room.members : room.members.slice(0, 6);
+    const remaining = room.members.length - members.length;
+    const totalStarred = starredCount(room);
+    const disappear = Number(prefs.disappearMs) || 0;
+    state.info = { kind, roomId: room.id, showAllMembers: showAll };
+    el.infoTitle.textContent = 'Info grup';
+    el.infoBody.innerHTML = `
+      <div class="info-hero">
+        <span class="avatar" data-hue-for="${esc(room.name)}">${esc(initials(room.name))}</span>
+        <div class="info-hero-title">
+          <strong>${esc(room.name)}</strong>
+          <button type="button" class="icon-btn info-name-edit" data-act="rename-group" title="Ubah nama grup">
+            <svg class="ico"><use href="#i-pencil" /></svg>
+          </button>
+        </div>
+        <span class="info-sub">Grup · ${room.members.length} anggota</span>
+      </div>
+      <div class="info-actions">
+        <button type="button" class="info-action" data-act="add-members">
+          <span class="info-action-icon"><svg class="ico"><use href="#i-user-plus" /></svg></span>Tambah
+        </button>
+        <button type="button" class="info-action" data-act="search">
+          <span class="info-action-icon"><svg class="ico"><use href="#i-search" /></svg></span>Cari
+        </button>
+      </div>
+
+      <div class="info-card">
+        <button type="button" class="info-row info-row-description" data-act="edit-description">
+          <span class="info-row-main">
+            <span class="info-row-label${room.about ? '' : ' info-row-primary'}">${esc(
+              room.about || 'Tambah deskripsi grup'
+            )}</span>
+          </span>
+          <svg class="ico"><use href="#i-pencil" /></svg>
+        </button>
+
+        <button type="button" class="info-row" data-act="media">
+          <svg class="ico"><use href="#i-doc" /></svg>
+          <span class="info-row-main">
+            <span class="info-row-label">Media, tautan, dan dok</span>
+            <span class="info-row-value">${mediaCount(room)} lampiran di grup ini</span>
+          </span>
+          <span class="info-row-side">${mediaCount(room)}</span>
+        </button>
+        ${infoMediaStrip(room)}
+
+        ${
+          totalStarred
+            ? `<button type="button" class="info-row" data-act="starred">
+          <svg class="ico"><use href="#i-star-filled" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Pesan berbintang</span></span>
+          <span class="info-row-side">${totalStarred}</span>
+        </button>`
+            : ''
+        }
+
+        <button type="button" class="info-row" data-act="mute">
+          <svg class="ico"><use href="#i-bell-off" /></svg>
+          <span class="info-row-main">
+            <span class="info-row-label">Pengaturan notifikasi</span>
+            <span class="info-row-value">${muted ? 'Dibisukan' : 'Bisukan notifikasi'}</span>
+          </span>
+          ${infoSwitch(muted)}
+        </button>
+
+        <button type="button" class="info-row" data-act="favorite">
+          <svg class="ico"><use href="#i-star" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Tambah ke favorit</span></span>
+          ${infoSwitch(prefs.favorite)}
+        </button>
+
+        <button type="button" class="info-row" data-act="theme">
+          <svg class="ico"><use href="#i-sun" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Tema obrolan</span></span>
+          <span class="info-row-side">${esc(themeLabel())}</span>
+        </button>
+
+        <button type="button" class="info-row" data-act="disappear">
+          <svg class="ico"><use href="#i-timer" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Pesan sementara</span></span>
+          <span class="info-row-side">${esc(disappear ? disappearLabel(disappear) || 'Aktif' : 'Mati')}</span>
+        </button>
+
+        <button type="button" class="info-row" data-act="encryption">
+          <svg class="ico"><use href="#i-lock" /></svg>
+          <span class="info-row-main">
+            <span class="info-row-label">Enkripsi</span>
+            <span class="info-row-value">Pesan dan panggilan terenkripsi end-to-end.</span>
+          </span>
+        </button>
+      </div>
+
+      <div class="info-card">
+        <div class="info-members-head">
+          <span>${room.members.length} anggota</span>
+        </div>
+        ${members
+          .map((uid) => {
+            const peer = peerByUid(uid);
+            const memberName = uid === state.me.uid ? state.username : peer?.displayName || 'Tidak dikenal';
+            const role =
+              uid === state.me.uid
+                ? 'kamu'
+                : peer?.staff === 'owner'
+                  ? 'Owner'
+                  : peer?.staff === 'admin'
+                    ? 'Admin'
+                    : peer?.staff === 'moderator'
+                      ? 'Moderator'
+                      : peer?.online
+                        ? 'online'
+                        : 'anggota';
+            return `<div class="info-member">
+              <span class="avatar" data-uid="${esc(uid)}">${esc(initials(memberName))}</span>
+              <span class="info-member-main"><strong>${esc(memberName)}${badgeFor(uid)}</strong><span>${esc(
+                role
+              )}</span></span>
+              <button type="button" class="icon-btn" data-act="member-info" data-uid="${esc(uid)}" title="Info">
+                <svg class="ico"><use href="#i-info" /></svg>
+              </button>
+            </div>`;
+          })
+          .join('')}
+        ${
+          remaining > 0
+            ? `<button type="button" class="info-members-more" data-act="members-all">Lihat semua (${remaining} lainnya)</button>`
+            : showAll && room.members.length > 6
+              ? '<button type="button" class="info-members-more" data-act="members-less">Tampilkan lebih sedikit</button>'
+              : ''
+        }
+      </div>
+
+      <div class="info-card">
+        <button type="button" class="info-row info-row-danger" data-act="leave-group">
+          <svg class="ico"><use href="#i-logout" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Keluar dari grup</span></span>
+        </button>
+        <button type="button" class="info-row info-row-danger" data-act="report">
+          <svg class="ico"><use href="#i-flag" /></svg>
+          <span class="info-row-main"><span class="info-row-label">Laporkan grup</span></span>
+        </button>
+      </div>
+      <p class="info-footer"><svg class="ico"><use href="#i-lock" /></svg>Pesan dan panggilan terenkripsi end-to-end.</p>
+    `;
+    showInfoPanel();
+    return;
+  }
+
+  if (kind === 'channel') {
+    const channelId = String(target || '');
+    const result = await emitAck('channel:open', { channelId });
+    if (!result.ok) return showToast(result.error || 'Info saluran gagal diambil.');
+
+    const channel = result.channel;
+    const members = result.members || state.channelMembers.get(channel.id) || null;
+    if (members) state.channelMembers.set(channel.id, members);
+
+    state.info = { kind, channelId: channel.id };
+    el.infoTitle.textContent = 'Info saluran';
+    el.infoBody.innerHTML = `
+      <div class="info-hero">
+        ${channelAvatarMarkup(channel)}
+        <strong>${esc(channel.name)}</strong>
+        <span class="muted">Saluran · ${channel.followers} pengikut</span>
+        <div class="info-badges">
+          ${channel.isAdmin ? '<span class="info-badge"><svg class="ico"><use href="#i-shield" /></svg>Admin saluran</span>' : ''}
+          <span class="info-badge"><svg class="ico"><use href="#i-megaphone" /></svg>Siaran satu arah</span>
+        </div>
+      </div>
+      <div class="info-actions">
+        <button type="button" class="info-action" data-act="channel-follow">
+          <span class="info-action-icon"><svg class="ico"><use href="#i-${channel.isFollowing ? 'close' : 'plus'}" /></svg></span>${
+            channel.isFollowing ? 'Berhenti' : 'Ikuti'
+          }
+        </button>
+        <button type="button" class="info-action" data-act="channel-open">
+          <span class="info-action-icon"><svg class="ico"><use href="#i-megaphone" /></svg></span>Buka
+        </button>
+        ${
+          channel.isAdmin
+            ? '<button type="button" class="info-action" data-act="channel-edit"><span class="info-action-icon"><svg class="ico"><use href="#i-pencil" /></svg></span>Edit</button>'
+            : ''
+        }
+      </div>
+      <div class="info-section">
+        <h3>Deskripsi</h3>
+        <p>${esc(channel.description || 'Belum ada deskripsi.')}</p>
+      </div>
+      <div class="info-section">
+        <h3>Pengikut</h3>
+        ${
+          channel.isAdmin
+            ? members && members.length
+              ? members
+                  .map(
+                    (member) => `<div class="info-member">
+                      <span class="avatar" data-uid="${esc(member.uid)}">${esc(initials(member.displayName))}</span>
+                      <span class="info-member-main"><strong>${esc(member.displayName)}${badgeFor(member.uid)}</strong><span>${
+                        member.uid === channel.owner ? 'pemilik saluran' : 'pengikut'
+                      }</span></span>
+                    </div>`
+                  )
+                  .join('')
+              : '<p class="note info-note">Belum ada pengikut.</p>'
+            : '<p class="note info-note">Daftar anggota cuma bisa dilihat admin saluran. Pengikut lain hanya melihat jumlahnya.</p>'
+        }
+      </div>
+      ${channel.isAdmin ? `<button type="button" class="info-item" data-act="channel-photo">
+        <svg class="ico"><use href="#i-camera" /></svg><span class="label">Ganti foto saluran</span>
+      </button>` : ''}
+    `;
+    showInfoPanel();
+  }
+}
+
+function infoRoom() {
+  const info = state.info;
+  if (!info) return null;
+  if (info.kind === 'group') return state.rooms.get(info.roomId) || null;
+  if (info.kind === 'user') return state.rooms.get(dmRoomId(state.me.uid, info.uid)) || null;
+  return null;
+}
+
+async function handleInfoAction(action, button) {
+  const info = state.info;
+  if (!info) return;
+  const room = infoRoom();
+
+  if (action === 'theme') {
+    openThemeChoice();
+  } else if (action === 'disappear' && room) {
+    openDisappearChoice(room);
+  } else if (action === 'media' && room) {
+    openMediaList(room);
+  } else if (action === 'starred' && room) {
+    openStarredMessages(room);
+  } else if (action === 'add-members' && info.kind === 'group' && room) {
+    await openAddGroupMembers(room);
+  } else if (action === 'rename-group' && info.kind === 'group' && room) {
+    openGroupNameEditor(room);
+  } else if (action === 'members-all' && info.kind === 'group') {
+    state.info.showAllMembers = true;
+    refreshInfoPanel();
+  } else if (action === 'members-less' && info.kind === 'group') {
+    state.info.showAllMembers = false;
+    refreshInfoPanel();
+  } else if (action === 'encryption' && info.kind === 'group') {
+    openGroupEncryption();
+  } else if (action === 'message' && info.kind === 'user') {
+    const profile = publicProfileOf(info.uid) || {};
+    closeInfoPanel();
+    openContactRoom(info.uid, profile.username || profile.displayName);
+  } else if ((action === 'call' || action === 'video') && info.kind === 'user') {
+    const roomId = dmRoomId(state.me.uid, info.uid);
+    const profile = publicProfileOf(info.uid) || {};
+    ensureRoom({
+      id: roomId,
+      name: profile.username || profile.displayName || info.uid.slice(0, 8),
+      type: 'dm',
+      members: [state.me.uid, info.uid],
+    });
+    saveRooms();
+    closeInfoPanel();
+    selectRoom(roomId);
+    startCall(action === 'video');
+  } else if ((action === 'call' || action === 'video') && info.kind === 'group') {
+    closeInfoPanel();
+    selectRoom(info.roomId);
+    startCall(action === 'video');
+  } else if (action === 'search' && room) {
+    closeInfoPanel();
+    selectRoom(room.id);
+    openChatSearch();
+  } else if (action === 'mute' && room) {
+    setMute(room, isMuted(room.id) ? 0 : 8 * 60 * 60 * 1000);
+    if (info.kind === 'group') openInfoPanel('group', room.id);
+    else openInfoPanel('user', info.uid);
+  } else if (action === 'favorite' && room) {
+    const prefs = roomPrefs(room.id);
+    prefs.favorite = !prefs.favorite;
+    saveChatPrefs();
+    renderChatList();
+    if (info.kind === 'group') openInfoPanel('group', room.id);
+    else openInfoPanel('user', info.uid);
+  } else if (action === 'safety' && info.kind === 'user' && room) {
+    closeInfoPanel();
+    selectRoom(room.id);
+    openSafetyNumber();
+  } else if (action === 'block' && info.kind === 'user') {
+    const blockRoom = room || { id: dmRoomId(state.me.uid, info.uid), type: 'dm', members: [state.me.uid, info.uid] };
+    toggleBlock(blockRoom);
+    openInfoPanel('user', info.uid);
+  } else if (action === 'report') {
+    closeInfoPanel();
+    if (info.kind === 'user') {
+      const roomId = dmRoomId(state.me.uid, info.uid);
+      const profile = publicProfileOf(info.uid) || {};
+      ensureRoom({
+        id: roomId,
+        name: profile.username || profile.displayName || info.uid.slice(0, 8),
+        type: 'dm',
+        members: [state.me.uid, info.uid],
+      });
+      saveRooms();
+      selectRoom(roomId);
+    } else if (room) {
+      selectRoom(room.id);
+    }
+    openReportModal();
+  } else if (action === 'edit-description' && info.kind === 'group' && room) {
+    openModal(`
+      <h3>Deskripsi grup</h3>
+      <textarea id="group-about" maxlength="500" placeholder="Tentang grup ini…">${esc(room.about || '')}</textarea>
+      <div class="modal-actions">
+        <button type="button" data-close>Batal</button>
+        <button type="button" class="primary" data-save>Simpan</button>
+      </div>
+    `);
+    el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+    el.modalCard.querySelector('[data-save]').addEventListener('click', () => {
+      room.about = el.modalCard.querySelector('#group-about').value.trim();
+      saveRooms();
+      closeModal();
+      openInfoPanel('group', room.id);
+    });
+  } else if (action === 'member-info' && button?.dataset.uid) {
+    openInfoPanel('user', button.dataset.uid);
+  } else if (action === 'leave-group' && info.kind === 'group' && room) {
+    closeInfoPanel();
+    removeChat(room);
+  } else if (action === 'channel-follow' && info.kind === 'channel') {
+    const channel = state.channels.get(info.channelId) || state.activeChannel;
+    await followChannel(info.channelId, !(channel?.isFollowing));
+    openInfoPanel('channel', info.channelId);
+  } else if (action === 'channel-open' && info.kind === 'channel') {
+    closeInfoPanel();
+    openChannel(info.channelId);
+  } else if (action === 'channel-edit' && info.kind === 'channel') {
+    const channel = state.channels.get(info.channelId) || state.activeChannel;
+    closeInfoPanel();
+    openChannelEditor(channel);
+  } else if (action === 'channel-photo' && info.kind === 'channel') {
+    pickChannelAvatar(info.channelId);
+  }
+}
+
+function pickChannelAvatar(channelId) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/png,image/jpeg,image/webp';
+  input.addEventListener('change', async () => {
+    const [file] = input.files || [];
+    if (!file) return;
+    try {
+      const photoURL = await uploadChannelAvatar(channelId, file);
+      const channel = state.channels.get(channelId) || state.activeChannel;
+      if (channel) {
+        channel.avatarUrl = photoURL;
+        state.channels.set(channelId, channel);
+        if (state.activeChannelId === channelId) {
+          state.activeChannel = { ...state.activeChannel, avatarUrl: photoURL };
+          renderChannelHeader();
+        }
+      }
+      renderChannels();
+      if (state.info?.kind === 'channel') openInfoPanel('channel', channelId);
+      showToast('Foto saluran diperbarui.');
+    } catch (err) {
+      showToast(`Foto saluran: ${err.message}`, 6000);
+    }
+  });
+  input.click();
+}
+
 /** Label + tombol notifikasi di panel Pengaturan, selalu mencerminkan izin asli browser. */
 function paintNotificationSetting() {
   const note = el.panelSettings?.querySelector('[data-notify-note]');
@@ -4699,9 +6222,14 @@ function renderSettings() {
   if (!state.me) return;
   const name = state.username || state.profile?.displayName || '—';
 
-  el.meName.textContent = name;
+  // Nama + centang biru (kalau akun ini sudah diverifikasi) di kartu profil.
+  el.meName.innerHTML = `<span class="name-with-badge"><span>${esc(name)}</span>${badgeFor(
+    state.me.uid
+  )}</span>`;
   el.displayName.value = name;
   el.nameTag.textContent = `@${state.username || '—'}`;
+
+  paintProfileFields();
 
   el.meAvatar.textContent = initials(name);
   el.meAvatar.dataset.hueFor = name;
@@ -4713,6 +6241,111 @@ function renderSettings() {
   paintNotificationSetting();
   paintTheme();
   paintAvatars(el.panelSettings);
+}
+
+/** Isi kartu profil: ID, status, tahun lahir, dan sakelar profil publik. */
+function paintProfileFields() {
+  const me = meProfile();
+
+  if (el.meId) el.meId.textContent = me.id ? `ID ${me.id}` : 'ID —';
+  if (el.meAbout) el.meAbout.textContent = me.about || 'Belum ada status';
+  if (el.meBirth) {
+    el.meBirth.hidden = !me.birthYear;
+    el.meBirth.textContent = me.birthYear ? `Lahir ${me.birthYear}` : '';
+  }
+  if (el.publicToggle) {
+    el.publicToggle.setAttribute('aria-checked', String(me.publicProfile !== false));
+  }
+  if (el.publicNote) {
+    el.publicNote.textContent =
+      me.publicProfile !== false
+        ? 'Siapa pun bisa melihat foto dan statusmu'
+        : 'Cuma orang yang pernah chat denganmu yang bisa melihat status';
+  }
+}
+
+/**
+ * Simpan status, tahun lahir, dan sakelar profil publik. Namanya tetap lewat
+ * profile:update karena satu nama cuma boleh dipakai satu akun.
+ */
+async function saveProfileSettings(patch) {
+  const result = await emitAck('profile:settings', patch);
+  if (!result.ok) {
+    showToast(result.error || 'Gagal menyimpan profil.', 5000);
+    return false;
+  }
+  state.meProfile = { ...(state.meProfile || {}), ...(result.me || {}) };
+  renderSettings();
+  renderChatList();
+  renderPeerHeader();
+  return true;
+}
+
+function openEditProfile() {
+  const me = meProfile();
+  openModal(`
+    <h3>Edit profil</h3>
+    <p class="sub">Nama, status, dan tahun lahir. ID pengguna dibuat server dan tidak bisa diganti.</p>
+    <label for="edit-name">Nama</label>
+    <input id="edit-name" type="text" maxlength="20" value="${esc(
+      state.username || ''
+    )}" autocomplete="off" />
+    <label for="edit-about">Status</label>
+    <input id="edit-about" type="text" maxlength="139" value="${esc(
+      me.about || ''
+    )}" placeholder="Tersedia, sibuk, atau apa pun…" autocomplete="off" />
+    <label for="edit-birth">Tahun lahir</label>
+    <input id="edit-birth" type="number" min="1900" max="${new Date().getFullYear()}" value="${
+      me.birthYear || ''
+    }" placeholder="misal 2000" />
+    <p class="sub">ID kamu: <strong>${esc(me.id || '—')}</strong> — bagikan angka ini ke orang yang mau menambahkanmu.</p>
+    <div class="modal-actions">
+      <button type="button" data-close>Batal</button>
+      <button type="button" class="primary" data-save>Simpan</button>
+    </div>
+  `);
+
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-save]').addEventListener('click', async () => {
+    const name = el.modalCard.querySelector('#edit-name').value.trim();
+    const about = el.modalCard.querySelector('#edit-about').value.trim();
+    const birthYear = el.modalCard.querySelector('#edit-birth').value.trim();
+
+    if (name && name !== state.username) {
+      const renamed = await emitAck('profile:update', { displayName: name });
+      if (!renamed.ok) return showToast(renamed.error || 'Nama gagal disimpan.', 5000);
+      await state.auth.setDisplayName(renamed.username).catch(() => {});
+      applyUsername(renamed.username);
+    }
+
+    const saved = await saveProfileSettings({ about, birthYear: birthYear || null });
+    if (!saved) return;
+    closeModal();
+    showToast('Profil disimpan.');
+  });
+}
+
+function openEditStatus() {
+  const me = meProfile();
+  openModal(`
+    <h3>Edit status</h3>
+    <p class="sub">Status ini tampil di profilmu, bukan status 24 jam.</p>
+    <textarea id="edit-status-text" maxlength="139" placeholder="Apa yang sedang kamu lakukan?">${esc(
+      me.about || ''
+    )}</textarea>
+    <div class="modal-actions">
+      <button type="button" data-close>Batal</button>
+      <button type="button" class="primary" data-save>Simpan</button>
+    </div>
+  `);
+  el.modalCard.querySelector('[data-close]').addEventListener('click', closeModal);
+  el.modalCard.querySelector('[data-save]').addEventListener('click', async () => {
+    const about = el.modalCard.querySelector('#edit-status-text').value.trim();
+    if (await saveProfileSettings({ about })) {
+      closeModal();
+      showToast('Status diperbarui.');
+    }
+  });
 }
 
 /** Simpan username baru lewat namespace yang sama dengan klaim pertama. */
@@ -4803,14 +6436,17 @@ function chatPartnerUids() {
 }
 
 /**
- * Status yang boleh dilihat di perangkat ini: punyamu sendiri, plus punya orang
- * yang sudah pernah chat. Saringan ini juga yang menyembunyikan status lama
- * yang dulu disiarkan ke semua orang sebelum aturannya berubah.
+ * Status yang boleh dilihat di perangkat ini: punyamu sendiri, punya orang yang
+ * sudah pernah chat, dan status publik siapa pun (envelope-nya membawa kunci
+ * sendiri). Saringan ini juga yang menyembunyikan status lama yang dulu
+ * disiarkan ke semua orang sebelum aturannya berubah.
  */
 const liveStatuses = () => {
   const partners = chatPartnerUids();
   return state.statuses.filter(
-    (status) => status.at > Date.now() - STATUS_TTL_MS && (status.from === state.me?.uid || partners.has(status.from))
+    (status) =>
+      status.at > Date.now() - STATUS_TTL_MS &&
+      (status.from === state.me?.uid || partners.has(status.from) || status.payload?.mode === 'public')
   );
 };
 
@@ -4861,15 +6497,24 @@ function renderStatuses() {
   for (const dot of [el.railStatusDot, el.tabStatusDot]) if (dot) dot.hidden = !unseen;
 
   for (const uid of owners) {
-    const name = peerByUid(uid)?.displayName || uid.slice(0, 8);
+    const name = statusAuthorName(uid);
     const unseen = unseenStatusCount(uid) > 0;
     const last = statusesFrom(uid).at(-1);
+    // Foto dari direktori kalau dia online; kalau tidak, pakai foto yang ikut
+    // dikirim bersama statusnya.
+    const author = statusAuthor(uid);
+    const photo = peerByUid(uid)?.photoURL || author?.photoURL;
+    const avatarAttrs = peerByUid(uid)
+      ? `data-uid="${esc(uid)}"`
+      : photo
+        ? `data-avatar-locked="1" style="background-image:url('${esc(photo)}')"`
+        : '';
 
     const li = document.createElement('li');
     li.className = 'status-item';
     li.dataset.uid = uid;
     li.innerHTML = `
-      <span class="avatar ${unseen ? 'ring' : 'ring-seen'}" data-uid="${esc(uid)}">${esc(initials(name))}</span>
+      <span class="avatar ${unseen ? 'ring' : 'ring-seen'}${photo && !peerByUid(uid) ? ' has-photo' : ''}" ${avatarAttrs}>${esc(initials(name))}</span>
       <span class="status-item-text">
         <strong>${esc(name)}</strong>
         <span class="muted">${unseen ? 'Belum dilihat' : 'Sudah dilihat'} · ${formatListTime(last.at)}</span>
@@ -4901,10 +6546,16 @@ async function decodeStatus(status) {
 
   let decoded;
   try {
-    // A status can arrive from somebody this device has not met yet.
-    if (!peerByUid(status.from)) await new Promise((resolve) => socket.emit('sync', {}, resolve));
-    const key = await sharedKeyWith(status.from);
-    decoded = unpackStatus(await decryptMessage(status.payload, state.me.uid, key));
+    if (status.payload?.mode === 'public') {
+      // Status publik membawa kuncinya sendiri: siapa pun yang boleh melihat
+      // statusnya bisa membuka, tanpa perlu kunci bersama dengan penulisnya.
+      decoded = unpackStatus(await openPublic(status.payload));
+    } else {
+      // A status can arrive from somebody this device has not met yet.
+      if (!peerByUid(status.from)) await new Promise((resolve) => socket.emit('sync', {}, resolve));
+      const key = await sharedKeyWith(status.from);
+      decoded = unpackStatus(await decryptMessage(status.payload, state.me.uid, key));
+    }
     decoded.error = null;
   } catch (err) {
     decoded = { text: '', color: null, attachment: null, error: err.message };
@@ -5032,11 +6683,23 @@ async function renderStatusView() {
 
   const status = list[view.index];
   const mine = view.uid === state.me.uid;
-  const name = mine ? `@${state.username || 'aku'}` : peerByUid(view.uid)?.displayName || 'Tidak dikenal';
+  const name = mine ? `@${state.username || 'aku'}` : statusAuthorName(view.uid);
 
   el.statusViewerName.textContent = name;
   el.statusViewerAvatar.textContent = initials(name);
-  el.statusViewerAvatar.dataset.uid = view.uid;
+  const viewerPhoto = peerByUid(view.uid)?.photoURL || statusAuthor(view.uid)?.photoURL;
+  if (peerByUid(view.uid)) {
+    el.statusViewerAvatar.dataset.uid = view.uid;
+    el.statusViewerAvatar.style.removeProperty('background-image');
+    el.statusViewerAvatar.classList.remove('has-photo');
+  } else if (viewerPhoto) {
+    el.statusViewerAvatar.dataset.avatarLocked = '1';
+    el.statusViewerAvatar.dataset.uid = '';
+    el.statusViewerAvatar.style.backgroundImage = `url("${viewerPhoto}")`;
+    el.statusViewerAvatar.classList.add('has-photo');
+  } else {
+    el.statusViewerAvatar.dataset.uid = view.uid;
+  }
   el.statusViewerTime.textContent = formatListTime(status.at);
   el.statusViewerCount.textContent = `${view.index + 1} dari ${list.length}`;
   el.statusViewerMenu.hidden = !mine;
@@ -5086,29 +6749,38 @@ async function paintStatusStage(decoded, hint = '') {
 }
 
 async function publishStatus({ text, color, attachment }) {
-  // Kunci statusnya cuma dibungkus buat orang yang sudah pernah chat: status
-  // bukan siaran publik lagi, dan server cuma meneruskan ke daftar ini.
-  const partners = [...chatPartnerUids()].filter((uid) => peerByUid(uid)?.publicKey);
-  const audience = [...new Set([...partners, state.me.uid])];
+  const body = JSON.stringify({ text, color, attachment: attachment || null });
+  // Dua jalur, mengikuti sakelar "Profil Publik":
+  //   publik   → envelope membawa kuncinya sendiri, siapa pun boleh membuka.
+  //   privat   → satu kunci per kontak yang pernah chat, seperti sebelumnya.
+  const isPublic = meProfile().publicProfile !== false;
+  let payload;
+  let members = [];
+  let mode = 'contacts';
 
-  const keys = new Map();
-  for (const uid of audience) {
-    try {
-      keys.set(uid, await sharedKeyWith(uid));
-    } catch {
-      /* tanpa kunci publiknya dia memang nggak bisa baca */
+  if (isPublic) {
+    payload = await sealPublic(body);
+    mode = 'public';
+  } else {
+    const partners = [...chatPartnerUids()].filter((uid) => peerByUid(uid)?.publicKey);
+    const audience = [...new Set([...partners, state.me.uid])];
+
+    const keys = new Map();
+    for (const uid of audience) {
+      try {
+        keys.set(uid, await sharedKeyWith(uid));
+      } catch {
+        /* tanpa kunci publiknya dia memang nggak bisa baca */
+      }
     }
+    payload = await encryptMessage(body, keys);
+    members = [...keys.keys()];
   }
-
-  const payload = await encryptMessage(
-    JSON.stringify({ text, color, attachment: attachment || null }),
-    keys
-  );
 
   const result = await new Promise((resolve) => {
     if (!socket?.connected) return resolve({ ok: false, error: 'Belum tersambung ke server.' });
     const timer = setTimeout(() => resolve({ ok: false, error: 'Server nggak menjawab.' }), 20000);
-    socket.emit('status:publish', { payload, members: [...keys.keys()] }, (answer) => {
+    socket.emit('status:publish', { payload, members, mode }, (answer) => {
       clearTimeout(timer);
       resolve(answer || {});
     });
@@ -5138,8 +6810,11 @@ function openStatusComposer() {
     <h3>Buat status</h3>
     <p class="sub">Hilang sendiri setelah 24 jam. Isinya terenkripsi end-to-end — server cuma lihat blob.</p>
     <p class="sub">
-      Cuma orang yang <strong>sudah pernah chat</strong> dengan kamu yang bisa lihat ini
-      (${chatPartnerUids().size} orang).
+      ${
+        meProfile().publicProfile !== false
+          ? 'Profilmu <strong>publik</strong>, jadi siapa pun yang memakai aplikasi ini bisa melihat status ini.'
+          : `Profilmu <strong>privat</strong>, jadi cuma orang yang sudah pernah chat denganmu yang bisa melihat ini (${chatPartnerUids().size} orang).`
+      }
     </p>
     <textarea id="status-text" maxlength="280" placeholder="Tulis sesuatu…"></textarea>
     <div class="swatch-row" id="status-colors">
@@ -5411,6 +7086,76 @@ el.panelSettings.querySelector('[data-remove-photo]').addEventListener('click', 
     showToast(`Foto profil: ${err.message}`, 6000);
   }
 });
+// Profil publik: satu sakelar yang menentukan siapa boleh melihat status.
+el.publicToggle?.addEventListener('click', async () => {
+  const next = el.publicToggle.getAttribute('aria-checked') !== 'true';
+  // Umpan balik langsung; kalau server menolak, tampilannya dikembalikan.
+  el.publicToggle.setAttribute('aria-checked', String(next));
+  const saved = await saveProfileSettings({ publicProfile: next });
+  if (!saved) return paintProfileFields();
+  showToast(
+    next
+      ? 'Profilmu publik: siapa pun bisa melihat foto dan statusmu.'
+      : 'Profilmu privat: status cuma bisa dilihat orang yang pernah chat.'
+  );
+});
+el.btnEditProfile?.addEventListener('click', openEditProfile);
+el.btnEditStatus?.addEventListener('click', openEditStatus);
+
+/* Saluran */
+el.btnExploreChannels?.addEventListener('click', openExploreChannels);
+el.btnCreateChannel?.addEventListener('click', openChannelCreator);
+
+/* Panel info */
+el.infoClose?.addEventListener('click', closeInfoPanel);
+el.infoCatcher?.addEventListener('click', closeInfoPanel);
+el.peerName.addEventListener('click', () => {
+  if (state.activeChannelId) return openChannelInfo();
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room) return;
+  if (room.type === 'dm') openInfoPanel('user', otherUid(room));
+  else openInfoPanel('group', room.id);
+});
+el.peerAvatar.addEventListener('click', () => {
+  if (state.activeChannelId) return openChannelInfo();
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room) return;
+  if (room.type === 'dm') openInfoPanel('user', otherUid(room));
+  else openInfoPanel('group', room.id);
+});
+
+// Jabatan dan aksi di panel info memakai satu pendengar: isinya dibangun ulang
+// tiap panel dibuka, jadi pendengar per tombol akan menumpuk.
+el.infoBody.addEventListener('click', (event) => {
+  const mediaButton = event.target.closest('[data-media-id]');
+  if (mediaButton) {
+    const room = infoRoom();
+    const message = room?.messages.find((entry) => String(entry.id) === mediaButton.dataset.mediaId);
+    if (message?.attachment) {
+      if (fileKind(message.attachment.mime) === 'file') downloadAttachment(message);
+      else openViewer(message);
+    }
+    return;
+  }
+
+  const roleButton = event.target.closest('[data-role-key]');
+  if (roleButton) {
+    const uid = state.info?.uid;
+    if (!uid) return;
+    const key = roleButton.dataset.roleKey;
+    const value = roleButton.dataset.roleValue === '1';
+    emitAck('role:set', { uid, key, value }).then((result) => {
+      if (!result.ok) return showToast(result.error || 'Gagal mengubah jabatan.', 5000);
+      showToast('Jabatan diperbarui.');
+      openInfoPanel('user', uid);
+    });
+    return;
+  }
+
+  const actionButton = event.target.closest('[data-act]');
+  if (actionButton) handleInfoAction(actionButton.dataset.act, actionButton);
+});
+
 el.panelSettings.querySelector('[data-notify-toggle]').addEventListener('click', async () => {
   if (!state.notifier) return;
   if (state.notifier.state().enabled) {
@@ -5530,6 +7275,8 @@ el.search.addEventListener('input', renderChatList);
 /* ---- Menu obrolan, pencarian di obrolan, dan pilih pesan ---- */
 el.btnChatMore.addEventListener('click', (event) => {
   event.stopPropagation();
+  // Saluran punya menunya sendiri: tidak ada pesan sementara, blokir, dsb.
+  if (state.activeChannelId) return openChannelInfo();
   if (el.chatOptions.hidden) openChatOptions();
   else closeChatOptions();
 });
@@ -5618,6 +7365,16 @@ el.uploadCancel.addEventListener('click', () => {
 el.composer.addEventListener('submit', (event) => {
   event.preventDefault();
   const text = el.input.value;
+  // Di saluran, isi komposer adalah pengumuman — bukan pesan terenkripsi
+  // per anggota, dan tanpa permintaan merekam suara.
+  if (state.activeChannelId) {
+    if (!text.trim()) return;
+    el.input.value = '';
+    el.input.style.height = 'auto';
+    paintComposerAction();
+    sendChannelPost(text).catch((err) => showToast(err.message));
+    return;
+  }
   // Komposer kosong = permintaan merekam, bukan mengirim pesan kosong.
   if (!text.trim()) return startVoiceNote();
 

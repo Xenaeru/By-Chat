@@ -37,6 +37,7 @@
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.3"/><path d="M15.7 15.7 20.4 20.4"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14.5 12H4.6m0 0 3.3-3.3M4.6 12l3.3 3.3"/><path d="M11.4 5.6A6.6 6.6 0 0 1 20.4 12a6.6 6.6 0 0 1-9 6.4"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.1 12a8.1 8.1 0 1 1-2.4-5.8"/><path d="M20.4 4v4.6h-4.6"/></symbol>
+  <symbol id="i-verified" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6" fill="currentColor" stroke="none"/><path d="M8 12.3l2.7 2.7 5.4-5.6" stroke="var(--badge-ink, #fff)" stroke-width="2.2" fill="none"/></symbol>
 </svg>
 
 <div id="boot" class="boot"><div class="spinner"></div></div>
@@ -85,7 +86,8 @@
     <h1>Akun ini nggak punya akses admin</h1>
     <p class="muted" id="denied-detail">—</p>
     <p class="muted small">
-      Daftar admin ditentukan server lewat <code>ADMIN_EMAILS</code> atau <code>ADMIN_UIDS</code>.
+      Owner ditentukan server lewat <code>ADMIN_EMAILS</code> atau <code>ADMIN_UIDS</code>;
+      admin lain diberikan oleh owner dari halaman ini atau panel info di aplikasi chat.
       Halaman ini nggak bisa mengubahnya sendiri.
     </p>
     <button id="denied-chat" class="primary">Buka aplikasi chat</button>

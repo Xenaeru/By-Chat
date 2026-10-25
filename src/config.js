@@ -127,6 +127,23 @@ const credentialStore = registeredStore(
   'registry/credentials.json'
 );
 
+// Profil publik: ID pengguna, status, tahun lahir, sakelar profil publik,
+// centang biru, jabatan, dan catatan siapa yang pernah chat dengan siapa.
+const profileStore = registeredStore(
+  'PROFILE_STORE',
+  'PROFILE_STORE_OBJECT',
+  'profiles.json',
+  'registry/profiles.json'
+);
+
+// Saluran siaran: pengikut, admin saluran, dan postingan terenkripsinya.
+const channelStore = registeredStore(
+  'CHANNEL_STORE',
+  'CHANNEL_STORE_OBJECT',
+  'channels.json',
+  'registry/channels.json'
+);
+
 /* ------------------------------------------------------------------ *
  * Web Push (dering walau aplikasinya belum dibuka)
  * ------------------------------------------------------------------ */
@@ -191,6 +208,8 @@ export const config = {
   moderation: moderationStore,
   accounts: accountStore,
   credentials: credentialStore,
+  profiles: profileStore,
+  channels: channelStore,
   push: {
     ...pushStore,
     subject: env.VAPID_SUBJECT || 'mailto:admin@bychat.app',
