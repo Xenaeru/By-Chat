@@ -2858,6 +2858,10 @@ body.menu-open .lists { filter: blur(3px); opacity: .45; pointer-events: none; }
   .admin-tab { min-height: 44px; }
   .settings-row { align-items: flex-start; flex-direction: column; }
   .settings-row .ghost { width: 100%; }
+  /* Kartu Profil Publik tetap satu baris di layar sempit: ikon, keterangan,
+     lalu sakelar. Kalau ditumpuk seperti baris lain, satu sakelar saja makan
+     tinggi tiga baris dan ikonnya mengapung di tengah tanpa alasan. */
+  .settings-row.profile-public { flex-direction: row; align-items: center; }
 }
 
 @media (max-width: 480px) {
