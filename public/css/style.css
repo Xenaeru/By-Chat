@@ -477,7 +477,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .username-field.bad { border-color: var(--danger); }
 .username-field.bad .mark { color: var(--danger); }
 
-.field-note { margin: 10px 0 0 !important; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
+.field-note { margin: 10px 0 0 !important; font-size: 13px; line-height: 1.6; color: var(--text-muted); }
 .field-note.good { color: var(--success); }
 .field-note.bad { color: var(--danger); }
 
@@ -618,6 +618,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* Di dalam panel, badan pengaturan & daftar yang menggulung sendiri. */
 .settings-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 24px; }
+
+/* Label di panel Pengaturan ikut gaya label modal: kecil dan redup, bukan
+   16px hitam bawaan browser. Jarak atasnya memisahkan label dari judul
+   bagian ("AKUN") yang tadinya menempel persis di atasnya. */
+#panel-settings .settings-body > label {
+  display: block;
+  margin: 12px 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
 
 .settings-profile { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
 .settings-profile-text { min-width: 0; display: flex; flex-direction: column; }
@@ -1419,9 +1430,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   background: var(--cloud);
   border: 1px solid var(--border);
 }
-.settings-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .settings-row-text strong { font-size: 14px; font-weight: 600; }
-.settings-row-text .muted { font-size: 12px; line-height: 1.5; }
+.settings-row-text .muted { font-size: 12px; line-height: 1.55; }
 .settings-row .ghost { flex: none; }
 
 /* ── Panggilan (panel sendiri) ─────────────────────────────────────── */
@@ -1678,8 +1689,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* ── Pengaturan: foto profil & pembuat status ──────────────────────── */
 .photo-row { display: flex; align-items: flex-start; gap: 16px; margin: 4px 0 8px; }
-.photo-actions { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.photo-actions .sub { flex-basis: 100%; margin: 2px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+/* Jarak atas memisahkan tombol dari catatan username di atasnya; dulu
+   tombolnya menempel langsung di baris terakhir catatan itu. */
+.photo-actions {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 16px;
+}
+.photo-actions .sub { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
 
 .ghost {
   min-height: 40px;

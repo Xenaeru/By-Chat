@@ -91,8 +91,11 @@ function paintTheme() {
   if (meta) meta.content = theme === 'dark' ? '#0b141a' : '#f7f8fa';
 
   if (el.themeNote) {
-    el.themeNote.textContent =
-      themeChoice === 'system' ? `Ikut perangkat — sekarang ${label}` : `${label} di perangkat ini`;
+    // Dropdown sudah menyebut pilihannya sendiri, jadi keterangan cuma dipakai
+    // untuk mode otomatis — di situ ada satu hal yang nggak kelihatan dari
+    // dropdown: tema mana yang sedang dipakai perangkat.
+    el.themeNote.hidden = themeChoice !== 'system';
+    el.themeNote.textContent = themeChoice === 'system' ? `Ikut perangkat — ${label}` : '';
   }
   // Dropdown tetap menunjuk pilihan tersimpan, termasuk saat tema berubah
   // sendiri karena perangkatnya beralih ke mode gelap.
@@ -6322,8 +6325,7 @@ function paintNotificationSetting() {
   }
 
   if (status.enabled) {
-    note.textContent =
-      'Aktif. Pesan baru muncul di luar jendela ini, dan bisa dibalas langsung dari notifikasi kalau browser mendukung.';
+    note.textContent = 'Aktif — pesan baru muncul di luar jendela ini.';
     button.textContent = 'Matikan';
     button.disabled = false;
     return;
@@ -6333,8 +6335,8 @@ function paintNotificationSetting() {
   button.disabled = status.permission === 'denied';
   note.textContent =
     status.permission === 'denied'
-      ? 'Izin notifikasi diblokir. Buka pengaturan situs di browser, izinkan notifikasi, lalu muat ulang halaman.'
-      : 'Pesan baru muncul di luar jendela ini — bisa dibalas langsung dari notifikasi di Chrome Android.';
+      ? 'Izin diblokir browser — aktifkan di pengaturan situs.'
+      : 'Pesan baru muncul di luar jendela ini.';
 }
 
 /**
@@ -6384,8 +6386,8 @@ function paintProfileFields() {
   if (el.publicNote) {
     el.publicNote.textContent =
       me.publicProfile !== false
-        ? 'Siapa pun bisa melihat foto dan statusmu'
-        : 'Cuma orang yang pernah chat denganmu yang bisa melihat status';
+        ? 'Siapa pun bisa melihat profilmu'
+        : 'Hanya kontak yang bisa melihat statusmu';
   }
 }
 

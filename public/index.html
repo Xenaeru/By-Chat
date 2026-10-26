@@ -381,7 +381,7 @@
         <span class="settings-icon"><svg class="ico"><use href="#i-globe" /></svg></span>
         <div class="settings-row-text">
           <strong>Profil Publik</strong>
-          <span class="muted" data-public-note>Siapa pun bisa melihat foto dan statusmu</span>
+          <span class="muted" data-public-note>Siapa pun bisa melihat profilmu</span>
         </div>
         <button type="button" class="switch" id="public-profile-toggle" role="switch" aria-checked="true" aria-label="Profil publik">
           <span class="switch-dot"></span>
@@ -395,12 +395,12 @@
         <button type="button" class="primary" data-save>Simpan</button>
       </div>
       <p class="field-note" data-name-note>
-        Orang lain lihat kamu sebagai <strong data-name-tag>@—</strong>. Boleh pakai huruf besar/kecil — ejaannya tampil apa adanya, tapi <em>Andi</em> dan <em>andi</em> tetap dianggap nama yang sama, jadi nggak bisa dipakai orang lain.
+        Orang lain melihatmu sebagai <strong data-name-tag>@—</strong>.
       </p>
 
       <div class="photo-actions">
         <button type="button" class="ghost" data-remove-photo>Hapus foto</button>
-        <span class="sub">PNG, JPEG, atau WebP — maksimal 2 MB. Foto profil <strong>tidak</strong> terenkripsi, jadi jangan pakai foto yang kamu nggak mau orang lihat.</span>
+        <span class="sub">PNG, JPEG, WebP · maks 2 MB · <strong>tidak</strong> terenkripsi.</span>
       </div>
       <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp" hidden />
       <input type="file" id="cover-input" accept="image/png,image/jpeg,image/webp" hidden />
@@ -412,7 +412,7 @@
       <div class="settings-row theme-row">
         <label class="settings-row-text" for="theme-select">
           <strong>Tampilan</strong>
-          <span class="muted" data-theme-note>Terang</span>
+          <span class="muted" data-theme-note hidden>Terang</span>
         </label>
         <div class="theme-select">
           <select id="theme-select">
@@ -436,7 +436,7 @@
       <div class="settings-row">
         <div class="settings-row-text">
           <strong>Keluar</strong>
-          <span class="muted">Identitas dan riwayat di browser ini akan dihapus dan nggak bisa dibuka lagi.</span>
+          <span class="muted">Data di browser ini akan dihapus.</span>
         </div>
         <button type="button" class="ghost danger" id="btn-logout">Keluar</button>
       </div>
