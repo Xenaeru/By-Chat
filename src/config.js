@@ -160,6 +160,21 @@ const pushStore = registeredStore(
 );
 
 /* ------------------------------------------------------------------ *
+ * Aplikasi Android (Trusted Web Activity)
+ * ------------------------------------------------------------------ */
+
+// APK-nya bukan program terpisah: isinya aplikasi web ini yang dibuka di dalam
+// Chrome. Supaya Chrome mau membukanya layar penuh (tanpa address bar), domain
+// ini harus menyatakan bahwa APK dengan package name di bawah memang miliknya.
+// Pernyataan itu dilayani /.well-known/assetlinks.json dan berisi sidik jari
+// sertifikat yang dipakai menandatangani APK.
+const androidPackage = (env.ANDROID_PACKAGE_NAME || '').trim();
+const androidFingerprints = (env.ANDROID_SHA256_CERT_FINGERPRINTS || '')
+  .split(/[,\s]+/)
+  .map((fp) => fp.trim().toUpperCase())
+  .filter((fp) => /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(fp));
+
+/* ------------------------------------------------------------------ *
  * TURN (needed for calls on real networks, not just LAN)
  * ------------------------------------------------------------------ */
 
@@ -222,11 +237,35 @@ export const config = {
     emails: adminEmails,
   },
 
+  android: {
+    packageName: androidPackage,
+    fingerprints: androidFingerprints,
+  },
+
   secrets: {
     supabaseUrl,
     supabaseServiceKey,
   },
 };
+
+/**
+ * Isi /.well-known/assetlinks.json. Daftar kosong artinya server ini belum
+ * dihubungkan ke APK mana pun, dan Chrome akan menampilkan APK sebagai Custom
+ * Tab biasa (lengkap dengan address bar).
+ */
+export function assetLinks() {
+  if (!config.android.packageName || !config.android.fingerprints.length) return [];
+  return [
+    {
+      relation: ['delegate_permission/common.handle_all_urls'],
+      target: {
+        namespace: 'android_app',
+        package_name: config.android.packageName,
+        sha256_cert_fingerprints: config.android.fingerprints,
+      },
+    },
+  ];
+}
 
 /** The subset of the config that is safe to hand to the browser. */
 export function publicConfig(pushPublicKey = '') {

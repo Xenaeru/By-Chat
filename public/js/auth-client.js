@@ -29,6 +29,20 @@ function b64urlUtf8(str) {
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+/**
+ * Apakah halaman ini sedang berjalan sebagai aplikasi terpasang (APK/PWA)?
+ * Di dalam APK Android, `document.referrer` berisi `android-app://<package>`
+ * karena APK-nya menitipkan halamannya ke Chrome.
+ */
+function insideInstalledApp() {
+  if (document.referrer.startsWith('android-app://')) return true;
+  try {
+    return window.matchMedia('(display-mode: standalone)').matches;
+  } catch {
+    return false;
+  }
+}
+
 const profileFromUser = (user) => ({
   uid: user.uid,
   displayName: user.displayName || user.phoneNumber || `user-${user.uid.slice(0, 6)}`,
@@ -73,6 +87,14 @@ async function createFirebaseAuth(authConfig) {
 
     async signInWithGoogle() {
       const provider = new fbAuth.GoogleAuthProvider();
+      // Di dalam APK tidak ada jendela popup, jadi signInWithPopup gagal dan
+      // halamannya malah terlempar keluar aplikasi. Redirect tetap di dalam
+      // aplikasi karena Chrome-nya sama. Hasilnya tidak dikembalikan di sini:
+      // setelah balik dari Google, onAuthStateChanged di atas yang mengabari.
+      if (insideInstalledApp()) {
+        await fbAuth.signInWithRedirect(auth, provider);
+        return null;
+      }
       const result = await fbAuth.signInWithPopup(auth, provider);
       return profileFromUser(result.user);
     },

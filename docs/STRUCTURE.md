@@ -44,8 +44,14 @@ By-Chat/
 │   ├── browser-check.mjs
 │   └── screenshot.mjs
 │
+├── android/              Project APK (Trusted Web Activity, dibuat Bubblewrap)
+│   ├── twa-manifest.json Sumber nilai: package, domain, warna, ikon
+│   ├── app/              Project Gradle hasil generate `bubblewrap update`
+│   └── keystore.properties  Sandi kunci penandatangan (tidak di-commit)
+│
 ├── test/                 Test otomatis `node --test`
 ├── docs/STRUCTURE.md     Dokumen ini
+├── docs/ANDROID.md       Cara memasang + membangun ulang APK
 ├── data/                 Dibuat saat runtime oleh driver local (tidak di-commit)
 ├── DESIGN.md             Sistem desain UI
 ├── render.yaml           Blueprint deploy Render
@@ -96,6 +102,7 @@ Autentikasi REST memakai header `Authorization: Bearer <ID token>`
 | GET | `/admin.html` | publik (UI) | `public/admin.html`; keputusan admin tetap dicek server |
 | GET | `/config.json` | publik | Config browser + kunci publik VAPID (`Cache-Control: no-store`) |
 | GET | `/healthz` | publik | Status server: auth, storage, jumlah user/room/laporan |
+| GET | `/.well-known/assetlinks.json` | publik | Pernyataan pemilik domain untuk APK Android (isi dari `ANDROID_PACKAGE_NAME` + `ANDROID_SHA256_CERT_FINGERPRINTS`) |
 | POST | `/api/push/subscribe` | Bearer | Simpan subscription Web Push milik uid |
 | POST | `/api/push/unsubscribe` | Bearer | Hapus subscription berdasarkan endpoint |
 | GET | `/api/avatar/:uid` | publik | Ambil foto profil (binary) |

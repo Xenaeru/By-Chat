@@ -1,0 +1,42 @@
+{
+  "packageId": "id.my.zizzy",
+  "host": "zizzy.my.id",
+  "name": "By Chat",
+  "launcherName": "By Chat",
+  "display": "standalone",
+  "themeColor": "#FFFFFF",
+  "themeColorDark": "#111B21",
+  "navigationColor": "#FFFFFF",
+  "navigationColorDark": "#111B21",
+  "navigationDividerColor": "#E9EDEF",
+  "navigationDividerColorDark": "#2A3942",
+  "backgroundColor": "#F7F8FA",
+  "enableNotifications": true,
+  "startUrl": "/",
+  "iconUrl": "https://zizzy.my.id/assets/icon-512.png",
+  "maskableIconUrl": "https://zizzy.my.id/assets/icon-512.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "android"
+  },
+  "appVersion": "1.0.0",
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://zizzy.my.id/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://zizzy.my.id/",
+  "minSdkVersion": 24,
+  "orientation": "default",
+  "fingerprints": [],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": []
+}

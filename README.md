@@ -45,6 +45,18 @@ Mode pengembangan menolak berjalan ketika `NODE_ENV=production`.
 | Verifikasi | Safety number untuk memastikan tidak ada penyisipan kunci. |
 | Notifikasi | Notifikasi sistem untuk pesan baru dengan opsi balas langsung (Chrome Android), serta notifikasi panggilan masuk melalui Web Push dengan tombol Terima dan Tolak, termasuk saat aplikasi ditutup. |
 
+## Versi Android (APK)
+
+Folder `android/` berisi project yang membungkus aplikasi web ini menjadi APK
+(Trusted Web Activity): ikon sendiri, layar penuh tanpa address bar, tapi tetap
+dijalankan Chrome yang ada di HP. Itu yang membuat Web Push, panggilan, dan
+enkripsi di browser ikut berfungsi tanpa kode terpisah. Syaratnya satu: situsnya
+harus hidup di domain HTTPS, dan domain itu harus menyatakan pemilik APK-nya
+lewat `/.well-known/assetlinks.json` (dilayani `src/server.js`, diisi lewat
+`ANDROID_PACKAGE_NAME` + `ANDROID_SHA256_CERT_FINGERPRINTS`).
+
+Langkah pasang dan build ulang: [`docs/ANDROID.md`](docs/ANDROID.md).
+
 ## Konfigurasi untuk lingkungan produksi
 
 ```bash

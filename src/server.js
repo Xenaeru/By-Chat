@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Server } from 'socket.io';
 
-import { config, publicConfig } from './config.js';
+import { config, publicConfig, assetLinks } from './config.js';
 import { createVerifier } from './auth.js';
 import { createStorage, isSafePath, newBlobPath, resolveLocalPath, sniffImageType } from './storage.js';
 import { createUsernameRegistry, createUsernameStore } from './usernames.js';
@@ -223,6 +223,16 @@ app.use((_req, res, next) => {
 app.get('/config.json', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json(publicConfig(push.publicKey()));
+});
+
+/* ---- Verifikasi APK Android ------------------------------------- *
+ * Dibaca Chrome sekali saat APK dibuka. Kalau isinya cocok dengan package
+ * name + sidik jari sertifikat APK, aplikasinya tampil layar penuh tanpa
+ * address bar. Tanpa file ini APK tetap jalan, cuma jadi Custom Tab biasa.
+ */
+app.get('/.well-known/assetlinks.json', (_req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=600');
+  res.type('application/json').send(JSON.stringify(assetLinks(), null, 2));
 });
 
 app.get('/healthz', (_req, res) => {

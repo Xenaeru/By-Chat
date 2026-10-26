@@ -22,3 +22,18 @@ __pycache__/
 
 # Indeks lokal CodeGraph (dibuat ulang lewat `codegraph init`).
 .codegraph/
+
+# Android — kunci penandatangan APK. Kalau file ini hilang, APK berikutnya tidak
+# bisa dipasang sebagai pembaruan (Android menolak tanda tangan berbeda) dan
+# assetlinks-nya ikut berubah. Simpan salinannya di tempat aman.
+android/android.keystore
+android/keystore.properties
+
+# Hasil build Android.
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
