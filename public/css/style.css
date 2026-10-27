@@ -677,6 +677,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   background-position: center;
 }
 .avatar.big { width: 88px; height: 88px; font-size: 32px; border-radius: 50%; }
+.avatar.ai-avatar { background-color: var(--primary); }
+.avatar.ai-avatar .ico { width: 22px; height: 22px; }
 
 .icon-btn {
   background: none;

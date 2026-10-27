@@ -193,6 +193,41 @@ if (turnUrls.length) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Asisten AI (By AI)
+ * ------------------------------------------------------------------ */
+
+// Server cuma meneruskan percakapan ke penyedia yang kompatibel dengan API
+// OpenAI (/chat/completions). Itu artinya Gemini, Groq, DeepSeek, OpenRouter,
+// sampai Ollama lokal semuanya bisa dipakai tanpa mengubah kode.
+// Percakapan AI TIDAK end-to-end encrypted: server harus membacanya untuk
+// diteruskan. Chat antarmanusia tetap E2EE karena tidak pernah lewat sini.
+const aiApiKey = env.AI_API_KEY || '';
+const aiBaseUrl = (env.AI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(
+  /\/+$/,
+  ''
+);
+const aiModel = env.AI_MODEL || 'gemini-3.8-flash';
+const aiEnabled = bool(env.AI_ENABLED ?? (aiApiKey ? 'true' : 'false'));
+// 0 = tanpa batas dari sisi aplikasi. Penyedia AI tetap punya kuotanya sendiri.
+const aiDailyLimitValue = String(env.AI_DAILY_LIMIT ?? '').trim();
+const aiDailyLimit =
+  aiDailyLimitValue === '' ? 100 : Math.max(0, Number(aiDailyLimitValue) || 0);
+// Kunci AI Studio baru (AQ.) hanya diterima endpoint native Gemini. Aktif
+// otomatis untuk base URL Gemini; AI_GEMINI_NATIVE=true memaksa jalur yang sama
+// kalau penyedia Gemini dipasang di balik domain/proxy lain.
+const aiGeminiNative = bool(env.AI_GEMINI_NATIVE) || aiBaseUrl.includes('generativelanguage.googleapis.com');
+// Cari di web + baca URL yang ditempel. Hanya jalur native Gemini yang punya
+// tool ini; provider OpenAI-compat mengabaikannya.
+const aiWeb = bool(env.AI_WEB ?? 'true');
+// Penyedia cadangan (mis. Ollama llama3.2). Dipakai otomatis kalau penyedia
+// utama menolak/kehabisan kuota. Aktif kalau base URL dan modelnya diisi.
+const aiFallbackBaseUrl = (env.AI_FALLBACK_BASE_URL || '').replace(/\/+$/, '');
+const aiFallbackModel = env.AI_FALLBACK_MODEL || '';
+const aiFallbackApiKey = env.AI_FALLBACK_API_KEY || '';
+const aiFallbackGeminiNative =
+  bool(env.AI_FALLBACK_GEMINI_NATIVE) || aiFallbackBaseUrl.includes('generativelanguage.googleapis.com');
+
+/* ------------------------------------------------------------------ *
  * Exported shapes
  * ------------------------------------------------------------------ */
 
@@ -241,6 +276,29 @@ export const config = {
   android: {
     packageName: androidPackage,
     fingerprints: androidFingerprints,
+  },
+
+  ai: {
+    enabled: aiEnabled,
+    baseUrl: aiBaseUrl,
+    apiKey: aiApiKey,
+    model: aiModel,
+    dailyLimit: aiDailyLimit,
+    geminiNative: aiGeminiNative,
+    web: aiWeb,
+    fallback:
+      aiFallbackBaseUrl && aiFallbackModel
+        ? {
+            baseUrl: aiFallbackBaseUrl,
+            apiKey: aiFallbackApiKey,
+            model: aiFallbackModel,
+            geminiNative: aiFallbackGeminiNative,
+          }
+        : null,
+    maxTokens: Math.max(64, Number(env.AI_MAX_TOKENS) || 800),
+    systemPrompt:
+      env.AI_SYSTEM_PROMPT ||
+      'Kamu adalah By AI, asisten di aplikasi pesan By Chat. Jawab dalam bahasa yang dipakai pengguna, ringkas, ramah, dan jujur. Kalau tidak tahu, bilang tidak tahu.',
   },
 
   secrets: {
@@ -304,6 +362,12 @@ export function publicConfig(pushPublicKey = '') {
       reasons: REPORT_REASONS.map((reason) => ({ ...reason })),
       maxDetail: MAX_DETAIL,
       adminMode: config.admins.uids.length > 0 || config.admins.emails.length > 0,
+    },
+    // Key dan base URL penyedia tidak ikut: browser cuma perlu tahu fiturnya
+    // hidup dan berapa kuota hariannya.
+    ai: {
+      enabled: config.ai.enabled,
+      dailyLimit: config.ai.dailyLimit,
     },
   };
 }

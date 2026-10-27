@@ -120,6 +120,15 @@ const statuses = new Map();
  */
 const sentMessages = new Map();
 
+/**
+ * uid -> { day, count } untuk kuota harian By AI.
+ *
+ * Disimpan di memori: restart server mengulang kuota. Itu cukup untuk menahan
+ * penyalahgunaan ringan; kalau butuh kuota yang benar-benar tahan restart,
+ * pindahkan ke store bersama (mis. tabel Supabase).
+ */
+const aiUsage = new Map();
+
 const MAX_INBOX = 500;
 const MAX_SENT_MESSAGES = 4000;
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
@@ -254,6 +263,203 @@ app.get('/healthz', (_req, res) => {
     push: { enabled: push.enabled, subscriptions: push.count() },
     moderation: { bans: moderation.bannedCount(), openReports: moderation.openReportCount() },
   });
+});
+
+/* ---- By AI ------------------------------------------------------- *
+ * Server meneruskan percakapan ke penyedia AI. Yang dikirim cuma pesan yang
+ * diketik pengguna di ruang By AI, tidak pernah riwayat chat E2EE antarmanusia.
+ * Kuota harian per akun menahan biaya.
+ */
+
+const aiUpstreamError = (message) => Object.assign(new Error(message), { upstream: true });
+const aiInputError = (message) => Object.assign(new Error(message), { input: true });
+
+const AI_MAX_FILES = 2;
+const AI_MAX_FILE_BYTES = 6 * 1024 * 1024;
+const AI_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
+const AI_TEXT_MAX_CHARS = 20_000;
+const AI_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic', 'image/heif']);
+const AI_TEXT_TYPES =
+  /^text\/|^application\/(json|xml|x-yaml|yaml|javascript|typescript|x-sh|sql|csv|x-httpd-php)$/i;
+
+/** Foto/PDF dikirim sebagai inlineData; file teks dibaca lalu ditempel ke prompt. */
+function normalizeAiAttachments(raw) {
+  if (!Array.isArray(raw)) return [];
+  const result = [];
+  let total = 0;
+
+  for (const item of raw.slice(0, AI_MAX_FILES)) {
+    const name = String(item?.name || 'lampiran').slice(0, 120);
+    const mime = String(item?.mime || '').toLowerCase().slice(0, 100);
+    const data = String(item?.data || '');
+    if (!data || !/^[A-Za-z0-9+/=\r\n]+$/.test(data)) {
+      throw aiInputError(`Lampiran ${name} tidak valid.`);
+    }
+
+    const bytes = Buffer.from(data, 'base64');
+    if (!bytes.length) continue;
+    if (bytes.length > AI_MAX_FILE_BYTES) throw aiInputError(`${name} lebih dari 6 MB.`);
+    total += bytes.length;
+    if (total > AI_MAX_TOTAL_BYTES) throw aiInputError('Total lampiran lebih dari 10 MB.');
+
+    if (AI_IMAGE_TYPES.has(mime) || mime === 'application/pdf') {
+      result.push({ name, mime, data });
+    } else if (
+      AI_TEXT_TYPES.test(mime) ||
+      /\.(txt|md|csv|json|xml|ya?ml|js|ts|css|html|py|java|c|cpp|rs|go|sql|sh)$/i.test(name)
+    ) {
+      result.push({ name, mime, text: bytes.toString('utf8').slice(0, AI_TEXT_MAX_CHARS) });
+    } else {
+      throw aiInputError(`Jenis file ${name} belum didukung. Kirim foto, PDF, atau file teks.`);
+    }
+  }
+  return result;
+}
+
+/**
+ * Kunci Google AI Studio sekarang berawalan `AQ.` (auth key). Kunci itu
+ * ditolak endpoint OpenAI-compat (`/openai/chat/completions`, "Invalid Auth
+ * key"), tapi diterima endpoint native Gemini lewat header `x-goog-api-key`.
+ * Jadi kalau base URL-nya Gemini, pakai jalur native; provider lain tetap
+ * lewat API OpenAI-compat.
+ */
+async function callAiProvider(provider, messages, attachments, { maxTokens, systemPrompt, web }) {
+  const { baseUrl, apiKey, model, geminiNative } = provider;
+  const signal = AbortSignal.timeout(30_000);
+
+  if (geminiNative) {
+    const root = baseUrl.replace(/\/openai\/?$/, '');
+    const response = await fetch(`${root}/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: messages.map((message, index) => {
+          const parts = [];
+          if (message.content) parts.push({ text: message.content });
+          // Lampiran cuma menempel di pesan user terakhir, bukan seluruh riwayat.
+          if (index === messages.length - 1 && message.role === 'user') {
+            for (const attachment of attachments) {
+              parts.push(
+                attachment.text !== undefined
+                  ? { text: `\n\n[Isi file ${attachment.name}]\n${attachment.text}` }
+                  : { inlineData: { mimeType: attachment.mime, data: attachment.data } }
+              );
+            }
+          }
+          return { role: message.role === 'assistant' ? 'model' : 'user', parts };
+        }),
+        // Browsing: model boleh mencari di Google dan membuka URL yang ditempel.
+        ...(web ? { tools: [{ google_search: {} }, { url_context: {} }] } : {}),
+        generationConfig: { maxOutputTokens: maxTokens },
+      }),
+      signal,
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw aiUpstreamError(data?.error?.message || `Penyedia AI menjawab ${response.status}.`);
+    }
+    const reply = (data?.candidates?.[0]?.content?.parts || [])
+      .map((part) => part.text || '')
+      .join('')
+      .trim();
+    if (!reply) throw aiUpstreamError('Penyedia AI tidak mengirim jawaban.');
+    return reply;
+  }
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      messages: [{ role: 'system', content: systemPrompt }, ...messages],
+    }),
+    signal,
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw aiUpstreamError(data?.error?.message || `Penyedia AI menjawab ${response.status}.`);
+  }
+  const reply = data?.choices?.[0]?.message?.content;
+  if (typeof reply !== 'string' || !reply.trim()) {
+    throw aiUpstreamError('Penyedia AI tidak mengirim jawaban.');
+  }
+  return reply.trim();
+}
+
+/**
+ * Coba penyedia utama; kalau gagal (kuota habis, key ditolak, timeout, dsb.)
+ * dan ada cadangan, ulangi sekali di cadangan. Lampiran tidak ikut ke cadangan
+ * non-Gemini supaya file tidak hilang diam-diam.
+ */
+async function requestAiReply(messages, attachments = []) {
+  const { maxTokens, systemPrompt, web, fallback } = config.ai;
+  const primary = {
+    baseUrl: config.ai.baseUrl,
+    apiKey: config.ai.apiKey,
+    model: config.ai.model,
+    geminiNative: config.ai.geminiNative,
+  };
+  const options = { maxTokens, systemPrompt, web };
+
+  try {
+    return await callAiProvider(primary, messages, attachments, options);
+  } catch (err) {
+    if (!fallback || (attachments.length && !fallback.geminiNative)) throw err;
+    console.warn(`⚠️  By AI: ${primary.model} gagal (${err.message}); mencoba ${fallback.model}.`);
+    return callAiProvider(fallback, messages, attachments, options);
+  }
+}
+
+app.post('/api/ai/chat', authenticateRequest, express.json({ limit: '16mb' }), async (req, res) => {
+  if (!config.ai.enabled) {
+    return res.status(503).json({ error: 'Fitur AI belum diaktifkan di server ini.' });
+  }
+
+  const incoming = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const messages = incoming
+    .filter((m) => (m?.role === 'user' || m?.role === 'assistant') && typeof m?.content === 'string')
+    .slice(-20)
+    .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
+  if (!messages.some((m) => m.role === 'user')) {
+    return res.status(400).json({ error: 'Pesan tidak boleh kosong.' });
+  }
+
+  const day = new Date().toISOString().slice(0, 10);
+  const usage = aiUsage.get(req.profile.uid);
+  const count = usage?.day === day ? usage.count : 0;
+  if (config.ai.dailyLimit > 0 && count >= config.ai.dailyLimit) {
+    return res.status(429).json({
+      error: `Kuota By AI hari ini habis (${config.ai.dailyLimit} pesan). Coba lagi besok.`,
+    });
+  }
+
+  try {
+    const attachments = normalizeAiAttachments(req.body?.attachments);
+    if (attachments.length && !config.ai.geminiNative) {
+      throw aiInputError('Lampiran cuma didukung saat By AI memakai Gemini.');
+    }
+    const reply = await requestAiReply(messages, attachments);
+    aiUsage.set(req.profile.uid, { day, count: count + 1 });
+    res.json({
+      ok: true,
+      reply,
+      remaining: config.ai.dailyLimit > 0 ? Math.max(0, config.ai.dailyLimit - count - 1) : null,
+    });
+  } catch (err) {
+    if (err.input) return res.status(400).json({ error: String(err.message).slice(0, 300) });
+    const timeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    const detail = timeout
+      ? 'Penyedia AI terlalu lama menjawab.'
+      : err.upstream
+        ? String(err.message).slice(0, 300)
+        : 'Gagal menghubungi penyedia AI.';
+    res.status(502).json({ error: detail });
+  }
 });
 
 /* ---- Web Push --------------------------------------------------- *
