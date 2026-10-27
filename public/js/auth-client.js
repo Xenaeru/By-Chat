@@ -63,6 +63,14 @@ async function createFirebaseAuth(authConfig) {
   const app = initializeApp(authConfig.firebase);
   const auth = fbAuth.getAuth(app);
 
+  // Balik dari halaman Google belum berarti selesai: hasilnya baru dibaca di
+  // sini. Tanpa pemanggilan ini, kegagalan (domain belum diizinkan di Firebase,
+  // popup ditutup, dsb.) hilang tanpa jejak dan tombolnya seolah tidak bekerja.
+  let redirectError = null;
+  const redirectReady = fbAuth.getRedirectResult(auth).catch((err) => {
+    redirectError = err;
+  });
+
   if (authConfig.emulatorHost) {
     fbAuth.connectAuthEmulator(auth, `http://${authConfig.emulatorHost}`, { disableWarnings: true });
   }
@@ -95,8 +103,31 @@ async function createFirebaseAuth(authConfig) {
         await fbAuth.signInWithRedirect(auth, provider);
         return null;
       }
-      const result = await fbAuth.signInWithPopup(auth, provider);
-      return profileFromUser(result.user);
+      try {
+        const result = await fbAuth.signInWithPopup(auth, provider);
+        return profileFromUser(result.user);
+      } catch (err) {
+        // APK yang belum lolos verifikasi domain dibuka sebagai Custom Tab,
+        // dan di sana popup tetap tidak bisa dipakai. Redirect juga jalan di
+        // sana, jadi jangan berhenti di galat popup.
+        if (
+          err.code === 'auth/popup-blocked' ||
+          err.code === 'auth/operation-not-supported-in-this-environment' ||
+          err.code === 'auth/web-storage-unsupported'
+        ) {
+          await fbAuth.signInWithRedirect(auth, provider);
+          return null;
+        }
+        throw err;
+      }
+    },
+
+    /** Galat dari baliknya redirect Google, sekali ambil saja. */
+    async takeRedirectError() {
+      await redirectReady;
+      const err = redirectError;
+      redirectError = null;
+      return err;
     },
 
     async setDisplayName(name) {
@@ -350,6 +381,8 @@ export async function createAuthClient(serverConfig) {
       await password.signOut();
       return provider.signInWithGoogle();
     },
+
+    takeRedirectError: () => provider.takeRedirectError?.() ?? Promise.resolve(null),
 
     async signInAs(name) {
       await password.signOut();

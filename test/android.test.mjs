@@ -28,7 +28,7 @@ process.env.CREDENTIAL_STORE = path.join(TMP, 'credentials.json');
 process.env.PROFILE_STORE = path.join(TMP, 'profiles.json');
 process.env.CHANNEL_STORE = path.join(TMP, 'channels.json');
 process.env.PORT = process.env.ANDROID_TEST_PORT || '4398';
-process.env.ANDROID_PACKAGE_NAME = 'id.my.zizzy';
+process.env.ANDROID_PACKAGE_NAME = 'id.web.bychat';
 process.env.ANDROID_SHA256_CERT_FINGERPRINTS = FINGERPRINT;
 
 const { assetLinks } = await import('../src/config.js');
@@ -64,7 +64,7 @@ test('domain menyatakan APK mana yang berhak membukanya', async () => {
       relation: ['delegate_permission/common.handle_all_urls'],
       target: {
         namespace: 'android_app',
-        package_name: 'id.my.zizzy',
+        package_name: 'id.web.bychat',
         sha256_cert_fingerprints: [FINGERPRINT],
       },
     },
@@ -76,7 +76,7 @@ test('tanpa konfigurasi APK, jawabannya daftar kosong — bukan error', async ()
   // mana pun", dan APK-nya tetap jalan sebagai Custom Tab biasa.
   assert.deepEqual(await assetLinksWith({}), []);
   assert.deepEqual(
-    await assetLinksWith({ ANDROID_PACKAGE_NAME: 'id.my.zizzy', ANDROID_SHA256_CERT_FINGERPRINTS: '' }),
+    await assetLinksWith({ ANDROID_PACKAGE_NAME: 'id.web.bychat', ANDROID_SHA256_CERT_FINGERPRINTS: '' }),
     []
   );
   assert.equal(assetLinks().length, 1);
@@ -84,7 +84,7 @@ test('tanpa konfigurasi APK, jawabannya daftar kosong — bukan error', async ()
 
 test('sidik jari yang salah ketik dibuang, yang benar tetap dipakai', async () => {
   const links = await assetLinksWith({
-    ANDROID_PACKAGE_NAME: 'id.my.zizzy',
+    ANDROID_PACKAGE_NAME: 'id.web.bychat',
     ANDROID_SHA256_CERT_FINGERPRINTS: `bukan-sidik-jari, ${FINGERPRINT.toLowerCase()}`,
   });
 

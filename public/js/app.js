@@ -751,6 +751,13 @@ async function boot() {
 
   // The dev driver has no remote session to restore, so nudge it manually.
   state.auth.resume?.();
+
+  // Balik dari Google tapi tidak jadi masuk? Tampilkan alasannya.
+  state.auth.takeRedirectError?.().then((err) => {
+    if (!err) return;
+    el.loginError.textContent = googleError(err);
+    el.loginError.hidden = false;
+  });
 }
 
 function showLogin() {
