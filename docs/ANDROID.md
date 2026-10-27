@@ -118,11 +118,41 @@ dari Play Console, bukan dari `android.keystore` lokal.
 Popup tidak ada di dalam TWA, jadi `signInWithPopup` akan gagal di sana.
 `public/js/auth-client.js` mendeteksi aplikasi terpasang
 (`document.referrer` berawalan `android-app://`) dan memakai
-`signInWithRedirect`. Karena Chrome-nya sama, halaman Google tetap terbuka di
-dalam aplikasi dan kembali sendiri.
+`signInWithRedirect`, lalu `getRedirectResult` membaca hasilnya saat halaman
+kembali dari Google.
 
-Syaratnya domain sudah terdaftar di **Firebase → Authentication → Settings →
-Authorized domains**. Login username + kata sandi tidak terpengaruh sama sekali.
+Supaya alur itu tidak berakhir di layar login lagi, tiga hal harus benar:
+
+1. **Domain terdaftar** di **Firebase → Authentication → Settings →
+   Authorized domains**.
+2. **`FIREBASE_AUTH_DOMAIN` diisi domain aplikasi ini sendiri**, bukan
+   `<project>.firebaseapp.com`. Nilai itu yang dikirim server lewat
+   `/config.json`, dan Firebase JS SDK memakainya untuk menyusun alamat
+   halaman login: `https://<domain>/__/auth/handler`.
+3. **Server meneruskan `/__/auth/*`** ke `<project>.firebaseapp.com`
+   (`src/firebase-auth-proxy.js`). Jadi halaman login itu tetap berada di
+   origin yang sama dengan aplikasi.
+
+Kalau `FIREBASE_AUTH_DOMAIN` dibiarkan `firebaseapp.com`, halaman login ada di
+origin lain. Chrome mempartisi penyimpanan per situs teratas, jadi hasil login
+yang ditulis di sana tidak pernah terbaca oleh halaman aplikasi — dan di APK,
+navigasi ke domain lain itu membawa orangnya keluar aplikasi. Gejalanya persis:
+sudah memilih akun Google, lalu balik lagi ke layar login. Ini juga yang
+dijelaskan dokumentasi Firebase ("Best practices for using
+`signInWithRedirect` on browsers that block third-party storage access",
+Option 1 + Option 3).
+
+Satu langkah di luar repo ikut wajib: tambahkan
+`https://<domain>/__/auth/handler` ke *Authorized redirect URIs* OAuth client
+yang dipakai Firebase (Google Cloud Console → APIs & Services → Credentials →
+"Web client (auto created by Google Service)"). Tanpa itu Google menolak
+dengan `redirect_uri_mismatch`.
+
+**Urutan deploy penting:** naikkan dulu kode server yang punya proxy `/__/auth`,
+baru ubah `FIREBASE_AUTH_DOMAIN`. Kalau dibalik, alamat login menunjuk ke
+`/__/auth/handler` yang belum ada dan tombol Google gagal total.
+
+Login username + kata sandi tidak terpengaruh sama sekali.
 
 Kalau Google menolak, aplikasi sekarang menampilkan alasannya di kotak merah
 bawah tombol (misalnya "Domain ini belum didaftarkan…"). Sebelumnya kegagalan
@@ -208,6 +238,7 @@ di assetlinks ikut berubah.
 | Address bar muncul di atas layar | Assetlinks belum cocok. Cek `https://<domain>/.well-known/assetlinks.json`, pastikan package name + sidik jari sama dengan APK-nya, lalu pasang ulang APK-nya (Chrome menyimpan hasil verifikasi). Bandingkan dulu `apksigner verify --print-certs` dari APK yang terpasang dengan isi assetlinks — kalau berbeda, APK-nya dibangun dengan kunci lain. |
 | Login Google gagal padahal domain sudah di Authorized domains | Sama akarnya: APK tidak lolos verifikasi. Di Custom Tab tidak ada popup dan `document.referrer` bukan `android-app://`, jadi alurnya salah. Pastikan APK bertanda tangan `android.keystore` (SHA-256 `775DAA91…DD8A`). |
 | Layar putih / "Can't open page" | Server mati atau domain belum mengarah ke server. Buka dulu alamatnya di Chrome HP. |
+| Sudah memilih akun Google, lalu balik ke layar login | `FIREBASE_AUTH_DOMAIN` masih `firebaseapp.com`, atau redirect URI `https://<domain>/__/auth/handler` belum didaftarkan. Lihat bagian 3. |
 | Tombol Google tidak melakukan apa-apa | Domain belum ada di Firebase Authorized domains, atau Chrome di HP terlalu tua (TWA butuh Chrome 72+). |
 | Notifikasi tidak muncul | Izin notifikasi belum diberikan. Buka Setelan → Notifikasi di aplikasi. Pada APK yang dipasang manual, notifikasi web dikirim oleh Chrome; kalau diabaikan, buka Chrome → Setelan situs → domain ini → Notifikasi. |
 | Panggilan gagal di jaringan seluler | Itu bukan soal APK. Isi `TURN_URLS` / `TURN_USERNAME` / `TURN_CREDENTIAL` di server (lihat `README.md`). |
@@ -247,6 +278,7 @@ TLS      Caddy menerbitkan sertifikat sendiri setelah DNS aktif
    ```bash
    ANDROID_PACKAGE_NAME=id.web.bychat
    ANDROID_SHA256_CERT_FINGERPRINTS=77:5D:AA:91:E0:76:C2:EF:C9:98:38:C4:05:79:2E:27:9B:A9:92:67:B6:C4:1E:BF:F8:CD:11:86:32:C3:DD:8A
+   FIREBASE_AUTH_DOMAIN=bychat.web.id
    ```
 
    Sidik jari SHA-256 **tidak berubah**: kuncinya tetap `android.keystore` yang sama.

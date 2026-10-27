@@ -205,6 +205,7 @@ export const config = {
     emulatorHost: env.FIREBASE_AUTH_EMULATOR_HOST || '',
     firebase: {
       projectId: firebaseProjectId,
+      authDomain: firebaseAuthDomain,
       serviceAccount: env.FIREBASE_SERVICE_ACCOUNT || '',
     },
   },

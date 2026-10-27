@@ -47,10 +47,22 @@ check(
   !!projectId && !isPlaceholder(projectId),
   isPlaceholder(projectId) ? 'MASIH NILAI CONTOH (namaproyek) — isi project id aslimu' : 'ok'
 );
+// Dua-duanya sah: domain firebaseapp.com (bawaan) atau domain aplikasi ini
+// sendiri. Yang kedua lebih baik — /__/auth/* dilayani server ini, jadi login
+// Google tidak pindah origin dan tetap jalan di dalam APK.
+const authDomainLooksValid = !!authDomain && !isPlaceholder(authDomain) && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(authDomain);
 check(
   'FIREBASE_AUTH_DOMAIN',
-  !!authDomain && !isPlaceholder(authDomain) && authDomain.endsWith('.firebaseapp.com'),
-  isPlaceholder(authDomain) ? 'MASIH NILAI CONTOH' : authDomain.endsWith('.firebaseapp.com') ? 'ok' : 'harus <project>.firebaseapp.com'
+  authDomainLooksValid,
+  isPlaceholder(authDomain)
+    ? 'MASIH NILAI CONTOH'
+    : !authDomain
+      ? 'KOSONG — tombol Google nggak akan muncul'
+      : authDomainLooksValid
+        ? authDomain.endsWith('.firebaseapp.com')
+          ? 'ok (bawaan) — login Google di APK lebih aman pakai domain sendiri'
+          : 'ok (domain sendiri, /__/auth/* diteruskan ke Firebase)'
+        : 'harus berupa nama domain'
 );
 check(
   'FIREBASE_API_KEY',
@@ -66,7 +78,7 @@ check('FIREBASE_MESSAGING_SENDER_ID', !!senderId && /^\d{8,}$/.test(senderId), !
 
 // Domain mismatch is a classic: the key belongs to another project, so login
 // fails with auth/invalid-api-key and nothing looks wrong in the console.
-if (projectId && authDomain && !authDomain.startsWith(projectId)) {
+if (projectId && authDomain && authDomain.endsWith('.firebaseapp.com') && !authDomain.startsWith(projectId)) {
   check('project id vs auth domain', false, `nggak nyambung: project "${projectId}" tapi domain "${authDomain}"`, 'warn');
 }
 

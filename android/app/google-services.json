@@ -9,12 +9,49 @@
       "client_info": {
         "mobilesdk_app_id": "1:86611066371:android:c9f91d1ef6484921cf1836",
         "android_client_info": {
-          "package_name": "id.web.bychat"
+          "package_name": "id.my.zizzy"
         }
       },
       "oauth_client": [
         {
           "client_id": "86611066371-13k1o1lp6p6295l8736vgllsfngifs9r.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "id.my.zizzy",
+            "certificate_hash": "5e8e84982a3148fb1de7025de507bd3ec63bdeda"
+          }
+        },
+        {
+          "client_id": "86611066371-rc7fk7beev6bp2nhcqa210dln28f4391.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA4RdjdztEGDcGJWhm7edXSs0Ua82QPP8A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "86611066371-rc7fk7beev6bp2nhcqa210dln28f4391.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:86611066371:android:623a7699045a43fccf1836",
+        "android_client_info": {
+          "package_name": "id.web.bychat"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "86611066371-ib8sknjdsiug16r6d86ujuv6pa91i0dq.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
             "package_name": "id.web.bychat",

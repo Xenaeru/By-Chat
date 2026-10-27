@@ -106,7 +106,8 @@ STORAGE_DRIVER=supabase      # jangan 'local' di disk 4 GB
 MAX_UPLOAD_BYTES=47185920    # 45 MiB, di bawah batas 50 MB paket Supabase gratis
 
 FIREBASE_API_KEY=...
-FIREBASE_AUTH_DOMAIN=namaproyek.firebaseapp.com
+FIREBASE_AUTH_DOMAIN=bychat.web.id        # domain aplikasi, bukan <project>.firebaseapp.com
+                                         # (halaman login diteruskan lewat /__/auth)
 FIREBASE_PROJECT_ID=namaproyek
 FIREBASE_APP_ID=...
 FIREBASE_MESSAGING_SENDER_ID=...
@@ -257,6 +258,7 @@ Tetap butuh port 80/443 terbuka. Jangan lupa menambahkan `${IP}.sslip.io` ke Aut
 | `502 Bad Gateway` | Service mati atau crash saat boot | `journalctl -u secure-chat -n 50 --no-pager` |
 | Service langsung berhenti dengan pesan `AUTH_MODE=dev nggak boleh...` | `.env` belum berisi kredensial Firebase | Isi 5 nilai Firebase + service account, `npm run check-env` |
 | `auth/unauthorized-domain` | Domain belum terdaftar di Firebase | Langkah 5 |
+| Login Google: sudah memilih akun, lalu balik ke layar login lagi | `FIREBASE_AUTH_DOMAIN` masih `namaproyek.firebaseapp.com`, jadi halaman login berjalan di origin lain dan hasilnya tidak sampai ke aplikasi (Chrome mempartisi penyimpanan; di APK malah keluar aplikasi) | Set `FIREBASE_AUTH_DOMAIN=<domain sendiri>`, tambahkan `https://<domain>/__/auth/handler` ke *Authorized redirect URIs* OAuth client di Google Cloud Console, lalu restart service |
 | Unggah file gagal `new row violates row-level security policy` | Memakai publishable/anon key | Pakai `sb_secret_...` atau `service_role` JWT |
 | Login berhasil tapi pesan tidak terkirim | WebSocket diblokir proxy/firewall | Cek `wss://bychat.my.id/socket.io/` di DevTools → Network; pastikan tidak ada proxy yang memutus upgrade |
 | Panggilan tersambung tapi tanpa suara | Tidak ada TURN | Isi `TURN_URLS`/`TURN_USERNAME`/`TURN_CREDENTIAL`, restart |

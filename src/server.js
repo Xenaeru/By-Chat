@@ -25,6 +25,7 @@ import { Server } from 'socket.io';
 
 import { config, publicConfig, assetLinks } from './config.js';
 import { createVerifier } from './auth.js';
+import { createFirebaseAuthProxy, firebaseAuthUpstream } from './firebase-auth-proxy.js';
 import { createStorage, isSafePath, newBlobPath, resolveLocalPath, sniffImageType } from './storage.js';
 import { createUsernameRegistry, createUsernameStore } from './usernames.js';
 import { createModeration, createModerationStore, REPORT_REASONS } from './moderation.js';
@@ -321,6 +322,16 @@ app.post('/api/auth/login', express.json({ limit: '4kb' }), async (req, res) => 
 
   res.json({ token: credentials.issueSession(result.profile), profile: result.profile });
 });
+
+/* ---- Login Google dari domain sendiri --------------------------- *
+ * Halaman pembantu login Firebase dilayani dari /. Ilmu lengkapnya ada di
+ * src/firebase-auth-proxy.js: kalau dibiarkan di firebaseapp.com, hasil login
+ * tidak pernah sampai ke halaman ini, dan di APK alurnya keluar aplikasi.
+ */
+const firebaseAuthDomainUpstream = firebaseAuthUpstream(config.auth.firebase.projectId);
+if (config.auth.mode === 'firebase' && firebaseAuthDomainUpstream) {
+  app.use('/__/auth', createFirebaseAuthProxy({ upstream: firebaseAuthDomainUpstream }));
+}
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -1894,6 +1905,16 @@ if (!process.env.NO_LISTEN) {
       console.log('   Admin   : belum ada — isi ADMIN_EMAILS atau ADMIN_UIDS supaya /admin.html bisa dipakai');
     }
     console.log(`   Foto    : ${avatars.size} foto profil`);
+    if (config.auth.mode === 'firebase') {
+      // Login Google lewat redirect butuh halaman pembantu Firebase di domain
+      // sendiri. Tanpa itu, di APK alurnya keluar aplikasi dan berakhir di
+      // layar login lagi (lihat src/firebase-auth-proxy.js).
+      const authDomain = config.auth.firebase.authDomain;
+      const ownDomain = Boolean(authDomain) && !authDomain.endsWith('.firebaseapp.com');
+      console.log(
+        `   Login   : ${ownDomain ? `authDomain ${authDomain}, /__/auth diteruskan ke Firebase` : `authDomain ${authDomain || '-'} — login Google di APK bisa balik ke layar login, lihat docs/ANDROID.md`}`
+      );
+    }
     console.log(`   TURN    : ${config.iceServers.some((s) => String(s.urls).includes('turn:')) ? 'ada' : 'nggak ada — panggilan bisa gagal di NAT ketat'}`);
   });
 }

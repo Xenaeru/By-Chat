@@ -30,16 +30,45 @@ function b64urlUtf8(str) {
 }
 
 /**
- * Apakah halaman ini sedang berjalan sebagai aplikasi terpasang (APK/PWA)?
- * Di dalam APK Android, `document.referrer` berisi `android-app://<package>`
- * karena APK-nya menitipkan halamannya ke Chrome.
+ * Apakah halaman ini dibuka dari APK Android? Di dalam APK, `document.referrer`
+ * berisi `android-app://<package>` karena APK-nya menitipkan halamannya ke
+ * Chrome. Hanya APK yang dites begini: PWA terpasang di desktop tetap bisa
+ * memakai popup, jadi tidak perlu dipaksa redirect.
  */
-function insideInstalledApp() {
-  if (document.referrer.startsWith('android-app://')) return true;
+function insideAndroidApp() {
+  return document.referrer.startsWith('android-app://');
+}
+
+/* Penanda "sedang menunggu balik dari Google". Disimpan di sessionStorage
+ * karena sifatnya satu tab: kalau aplikasinya dibuka ulang, penandanya memang
+ * tidak berlaku lagi. */
+const REDIRECT_PENDING_KEY = 'securechat.google.pending';
+const REDIRECT_RELOAD_KEY = 'securechat.google.reloads';
+const REDIRECT_STALE_MS = 10 * 60 * 1000;
+
+function readPendingSince() {
   try {
-    return window.matchMedia('(display-mode: standalone)').matches;
+    const raw = JSON.parse(sessionStorage.getItem(REDIRECT_PENDING_KEY) || 'null');
+    return Number(raw?.at) || null;
   } catch {
-    return false;
+    return null;
+  }
+}
+
+function markRedirectPending() {
+  try {
+    sessionStorage.setItem(REDIRECT_PENDING_KEY, JSON.stringify({ at: Date.now() }));
+  } catch {
+    /* storage dimatikan: alur tetap jalan, cuma tanpa pemulihan otomatis */
+  }
+}
+
+function clearRedirectPending() {
+  try {
+    sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+    sessionStorage.removeItem(REDIRECT_RELOAD_KEY);
+  } catch {
+    /* abaikan */
   }
 }
 
@@ -53,6 +82,43 @@ const profileFromUser = (user) => ({
 /* ------------------------------------------------------------------ *
  * Firebase
  * ------------------------------------------------------------------ */
+
+/**
+ * Memulihkan login Google yang selesai di luar halaman ini.
+ *
+ * Hanya untuk APK: di browser biasa hasil redirect selalu dibaca oleh halaman
+ * yang sama, jadi tidak ada yang perlu dipulihkan.
+ */
+function installRedirectRecovery(auth, fbAuth) {
+  const since = readPendingSince();
+  if (!since) return;
+  if (Date.now() - since > REDIRECT_STALE_MS) return clearRedirectPending();
+
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState !== 'visible') return;
+    if (auth.currentUser) return clearRedirectPending();
+    if (!readPendingSince()) return;
+
+    const result = await fbAuth.getRedirectResult(auth).catch(() => null);
+    if (result?.user) return clearRedirectPending();
+
+    let reloads = 0;
+    try {
+      reloads = Number(sessionStorage.getItem(REDIRECT_RELOAD_KEY) || 0);
+      // Satu kali cukup: sesi yang sudah tersimpan di perangkat terbaca saat
+      // halaman dimuat. Lebih dari itu cuma mengulang kalau orangnya memang
+      // membatalkan login.
+      if (reloads >= 1) return clearRedirectPending();
+      sessionStorage.setItem(REDIRECT_RELOAD_KEY, String(reloads + 1));
+    } catch {
+      // Tanpa sessionStorage penghitungnya tidak bisa diandalkan, dan memuat
+      // ulang tanpa batas jauh lebih buruk daripada tetap di layar login.
+      return;
+    }
+
+    location.reload();
+  });
+}
 
 async function createFirebaseAuth(authConfig) {
   const [{ initializeApp }, fbAuth] = await Promise.all([
@@ -77,9 +143,15 @@ async function createFirebaseAuth(authConfig) {
 
   const listeners = new Set();
   fbAuth.onAuthStateChanged(auth, (user) => {
+    if (user) clearRedirectPending();
     const profile = user ? profileFromUser(user) : null;
     for (const fn of listeners) fn(profile);
   });
+
+  // Di APK, Chrome kadang menyelesaikan login Google di tab lain sementara
+  // halaman ini tetap di layar login. Begitu aplikasi terlihat lagi, hasilnya
+  // dibaca ulang (kalau tetap kosong, halaman dimuat ulang sekali-dua kali).
+  if (insideAndroidApp()) installRedirectRecovery(auth, fbAuth);
 
   return {
     mode: 'firebase',
@@ -99,7 +171,8 @@ async function createFirebaseAuth(authConfig) {
       // halamannya malah terlempar keluar aplikasi. Redirect tetap di dalam
       // aplikasi karena Chrome-nya sama. Hasilnya tidak dikembalikan di sini:
       // setelah balik dari Google, onAuthStateChanged di atas yang mengabari.
-      if (insideInstalledApp()) {
+      if (insideAndroidApp()) {
+        markRedirectPending();
         await fbAuth.signInWithRedirect(auth, provider);
         return null;
       }
@@ -112,9 +185,12 @@ async function createFirebaseAuth(authConfig) {
         // sana, jadi jangan berhenti di galat popup.
         if (
           err.code === 'auth/popup-blocked' ||
+          err.code === 'auth/popup-closed-by-user' ||
+          err.code === 'auth/cancelled-popup-request' ||
           err.code === 'auth/operation-not-supported-in-this-environment' ||
           err.code === 'auth/web-storage-unsupported'
         ) {
+          markRedirectPending();
           await fbAuth.signInWithRedirect(auth, provider);
           return null;
         }
