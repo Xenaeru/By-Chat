@@ -317,15 +317,49 @@ function normalizeAiAttachments(raw) {
 }
 
 /**
+ * Model yang mendukung `thinkingConfig.thinkingLevel` cuma Gemini 3 ke atas;
+ * model lama membalas 400 kalau field itu ikut dikirim.
+ */
+function supportsThinkingLevel(model) {
+  const match = /gemini-(\d+)/i.exec(String(model || ''));
+  return Boolean(match) && Number(match[1]) >= 3;
+}
+
+/**
+ * Kenapa penyedia tidak mengirim teks? Tanpa ini semua kegagalan tampil sama
+ * ("tidak mengirim jawaban"), padahal penyebabnya beda dan jalan keluarnya
+ * juga beda: batas token, filter keamanan, atau model yang balas kosong.
+ */
+const AI_SAFETY_FINISH = new Set(['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'IMAGE_SAFETY', 'SPII']);
+
+function aiEmptyReason(data, candidate) {
+  const finish = String(candidate?.finishReason || '').toUpperCase();
+  const blocked = String(data?.promptFeedback?.blockReason || '').toUpperCase();
+  if (finish === 'MAX_TOKENS') {
+    return 'Jawaban By AI kepotong karena batas token. Naikkan AI_MAX_TOKENS di server.';
+  }
+  if (AI_SAFETY_FINISH.has(finish) || (blocked && blocked !== 'BLOCK_REASON_UNSPECIFIED')) {
+    return 'By AI menolak menjawab permintaan itu (filter keamanan).';
+  }
+  if (finish === 'RECITATION') return 'By AI berhenti karena jawabannya mirip materi berhak cipta.';
+  return 'Penyedia AI tidak mengirim jawaban.';
+}
+
+/**
  * Kunci Google AI Studio sekarang berawalan `AQ.` (auth key). Kunci itu
  * ditolak endpoint OpenAI-compat (`/openai/chat/completions`, "Invalid Auth
  * key"), tapi diterima endpoint native Gemini lewat header `x-goog-api-key`.
  * Jadi kalau base URL-nya Gemini, pakai jalur native; provider lain tetap
  * lewat API OpenAI-compat.
  */
-async function callAiProvider(provider, messages, attachments, { maxTokens, systemPrompt, web }) {
+async function callAiProvider(
+  provider,
+  messages,
+  attachments,
+  { maxTokens, systemPrompt, web, thinking, timeoutMs }
+) {
   const { baseUrl, apiKey, model, geminiNative } = provider;
-  const signal = AbortSignal.timeout(30_000);
+  const signal = AbortSignal.timeout(timeoutMs);
 
   if (geminiNative) {
     const root = baseUrl.replace(/\/openai\/?$/, '');
@@ -351,7 +385,15 @@ async function callAiProvider(provider, messages, attachments, { maxTokens, syst
         }),
         // Browsing: model boleh mencari di Google dan membuka URL yang ditempel.
         ...(web ? { tools: [{ google_search: {} }, { url_context: {} }] } : {}),
-        generationConfig: { maxOutputTokens: maxTokens },
+        generationConfig: {
+          maxOutputTokens: maxTokens,
+          // Tanpa ini Gemini 3 memakai thinking "high": token pertama baru
+          // muncul setelah puluhan detik, dan thinking-nya memakan jatah
+          // maxOutputTokens sampai jawaban tidak tersisa.
+          ...(thinking && supportsThinkingLevel(model)
+            ? { thinkingConfig: { thinkingLevel: thinking.toUpperCase() } }
+            : {}),
+        },
       }),
       signal,
     });
@@ -359,11 +401,15 @@ async function callAiProvider(provider, messages, attachments, { maxTokens, syst
     if (!response.ok) {
       throw aiUpstreamError(data?.error?.message || `Penyedia AI menjawab ${response.status}.`);
     }
-    const reply = (data?.candidates?.[0]?.content?.parts || [])
+    const candidate = data?.candidates?.[0];
+    const reply = (candidate?.content?.parts || [])
+      // Bagian bertanda "thought" adalah proses berpikir model, bukan jawaban.
+      // Kalau ikut digabung, pengguna melihat monolog internal, bukan jawaban.
+      .filter((part) => !part.thought)
       .map((part) => part.text || '')
       .join('')
       .trim();
-    if (!reply) throw aiUpstreamError('Penyedia AI tidak mengirim jawaban.');
+    if (!reply) throw aiUpstreamError(aiEmptyReason(data, candidate));
     return reply;
   }
 
@@ -397,21 +443,38 @@ async function callAiProvider(provider, messages, attachments, { maxTokens, syst
  * non-Gemini supaya file tidak hilang diam-diam.
  */
 async function requestAiReply(messages, attachments = []) {
-  const { maxTokens, systemPrompt, web, fallback } = config.ai;
+  const { maxTokens, systemPrompt, web, fallback, thinking, timeoutMs } = config.ai;
   const primary = {
     baseUrl: config.ai.baseUrl,
     apiKey: config.ai.apiKey,
     model: config.ai.model,
     geminiNative: config.ai.geminiNative,
   };
-  const options = { maxTokens, systemPrompt, web };
+  const options = { maxTokens, systemPrompt, web, thinking, timeoutMs };
+  const startedAt = Date.now();
 
   try {
     return await callAiProvider(primary, messages, attachments, options);
   } catch (err) {
     if (!fallback || (attachments.length && !fallback.geminiNative)) throw err;
+    // Seluruh permintaan berbagi satu anggaran waktu, bukan dua. Kalau penyedia
+    // utama sudah menghabiskan hampir semuanya, mencoba cadangan berarti
+    // menembus batas ~100 detik proxy (Cloudflare) — dan yang muncul di layar
+    // bukan lagi pesan error dari aplikasi, tapi halaman 502 dari proxy.
+    const remaining = timeoutMs - (Date.now() - startedAt);
+    if (remaining < 2_000) throw err;
     console.warn(`⚠️  By AI: ${primary.model} gagal (${err.message}); mencoba ${fallback.model}.`);
-    return callAiProvider(fallback, messages, attachments, options);
+    try {
+      return await callAiProvider(fallback, messages, attachments, {
+        ...options,
+        timeoutMs: remaining,
+      });
+    } catch (fallbackErr) {
+      // Baris ini yang membuat penyebab aslinya (mis. Gemini timeout) tetap
+      // kelihatan di log, bukan cuma kegagalan cadangannya.
+      console.warn(`⚠️  By AI: cadangan ${fallback.model} juga gagal (${fallbackErr.message}).`);
+      throw fallbackErr;
+    }
   }
 }
 
@@ -454,10 +517,11 @@ app.post('/api/ai/chat', authenticateRequest, express.json({ limit: '16mb' }), a
     if (err.input) return res.status(400).json({ error: String(err.message).slice(0, 300) });
     const timeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
     const detail = timeout
-      ? 'Penyedia AI terlalu lama menjawab.'
+      ? `Penyedia AI terlalu lama menjawab (lebih dari ${Math.round(config.ai.timeoutMs / 1000)} detik).`
       : err.upstream
         ? String(err.message).slice(0, 300)
-        : 'Gagal menghubungi penyedia AI.';
+        : 'Gagal menghubungi penyedia AI. Cek AI_BASE_URL di server.';
+    console.warn(`⚠️  By AI gagal: ${detail}`);
     res.status(502).json({ error: detail });
   }
 });

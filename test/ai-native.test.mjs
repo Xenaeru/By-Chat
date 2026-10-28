@@ -77,7 +77,10 @@ test('kunci AQ. memakai endpoint native Gemini dengan x-goog-api-key', async () 
     upstream.lastRequest.body.contents.map((entry) => entry.role),
     ['user', 'model']
   );
-  assert.equal(upstream.lastRequest.body.generationConfig.maxOutputTokens, 800);
+  assert.equal(upstream.lastRequest.body.generationConfig.maxOutputTokens, 2048);
+  // Model uji ini bukan Gemini 3, jadi thinkingLevel tidak boleh dikirim:
+  // model lama membalas 400 kalau field itu ada.
+  assert.equal(upstream.lastRequest.body.generationConfig.thinkingConfig, undefined);
   assert.deepEqual(upstream.lastRequest.body.tools, [{ google_search: {} }, { url_context: {} }]);
 });
 

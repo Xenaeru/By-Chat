@@ -1548,7 +1548,13 @@ async function sendAiMessage(room, text, attachments = []) {
   try {
     const token = await state.auth.getIdToken();
     const messages = room.messages
-      .filter((message) => !message.system && message.text)
+      // Pesan ⚠️ dan pesan sistem adalah kegagalan/bukaan, bukan ucapan By AI.
+      // Kalau ikut dikirim sebagai riwayat, model mengira dia pernah menjawab
+      // begitu dan menirunya di jawaban berikutnya.
+      .filter(
+        (message) =>
+          !message.system && !message.error && message.text && !message.text.startsWith('⚠️')
+      )
       .slice(-20)
       .map((message) => ({
         role: message.from === state.me.uid ? 'user' : 'assistant',
@@ -1562,8 +1568,17 @@ async function sendAiMessage(room, text, attachments = []) {
         attachments: list.map(({ name, mime, data }) => ({ name, mime, data })),
       }),
     });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'By AI tidak menjawab.');
+    const raw = await response.text().catch(() => '');
+    let data = {};
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      // Reverse proxy (nginx/Cloudflare) membalas HTML saat timeout, bukan JSON.
+    }
+    if (!response.ok) {
+      throw new Error(data.error || `By AI gagal (HTTP ${response.status}).`);
+    }
+    if (!data.reply) throw new Error('By AI mengirim jawaban kosong.');
     room.messages.push({ id: `ai:${Date.now()}`, from: AI_FROM, text: data.reply, at: Date.now() });
   } catch (err) {
     room.messages.push({
@@ -1571,6 +1586,7 @@ async function sendAiMessage(room, text, attachments = []) {
       from: AI_FROM,
       text: `⚠️ ${err.message}`,
       at: Date.now(),
+      error: true,
     });
   } finally {
     typing.delete('By AI');

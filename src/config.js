@@ -207,7 +207,15 @@ const aiBaseUrl = (env.AI_BASE_URL || 'https://generativelanguage.googleapis.com
   ''
 );
 const aiModel = env.AI_MODEL || 'gemini-3.8-flash';
-const aiEnabled = bool(env.AI_ENABLED ?? (aiApiKey ? 'true' : 'false'));
+// AI lokal (Ollama di mesin yang sama) tidak punya API key. Kalau syaratnya
+// "harus ada key", memasang Ollama saja tidak cukup: fiturnya tetap dianggap
+// mati dan ruang By AI tidak pernah muncul. Jadi base URL ke alamat lokal /
+// jaringan privat juga dihitung sebagai aktif.
+const aiLocalBaseUrl =
+  /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/i.test(
+    aiBaseUrl
+  );
+const aiEnabled = bool(env.AI_ENABLED ?? (aiApiKey || aiLocalBaseUrl ? 'true' : 'false'));
 // 0 = tanpa batas dari sisi aplikasi. Penyedia AI tetap punya kuotanya sendiri.
 const aiDailyLimitValue = String(env.AI_DAILY_LIMIT ?? '').trim();
 const aiDailyLimit =
@@ -226,6 +234,22 @@ const aiFallbackModel = env.AI_FALLBACK_MODEL || '';
 const aiFallbackApiKey = env.AI_FALLBACK_API_KEY || '';
 const aiFallbackGeminiNative =
   bool(env.AI_FALLBACK_GEMINI_NATIVE) || aiFallbackBaseUrl.includes('generativelanguage.googleapis.com');
+// Gemini 3 menghitung token thinking sebagai bagian dari maxOutputTokens.
+// Dengan 800 token, model kehabisan jatah saat berpikir, lalu jawaban yang
+// sampai ke pengguna kosong atau kepotong — di aplikasi tampak sebagai
+// "Penyedia AI tidak mengirim jawaban."
+const aiMaxTokens = Math.max(64, Number(env.AI_MAX_TOKENS) || 2048);
+// Kedalaman berpikir Gemini 3: minimal | low | medium | high. Kosong = jangan
+// diatur (model memakai bawaannya). Default "low": obrolan biasa tidak butuh
+// penalaran mahal, sedangkan bawaan Gemini 3 (high) menahan token pertama
+// sampai 20-35 detik.
+const AI_THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'];
+const aiThinkingValue = String(env.AI_THINKING ?? 'low').trim().toLowerCase();
+const aiThinking = AI_THINKING_LEVELS.includes(aiThinkingValue) ? aiThinkingValue : '';
+// Batas satu panggilan ke penyedia. 30 detik terlalu ketat untuk model yang
+// berpikir dulu: permintaan yang wajar ikut dipotong tepat saat jawabannya
+// hampir siap. Masih di bawah batas 100 detik proxy Cloudflare/Render.
+const aiTimeoutMs = Math.max(1_000, Number(env.AI_TIMEOUT_MS) || 90_000);
 
 /* ------------------------------------------------------------------ *
  * Exported shapes
@@ -295,7 +319,9 @@ export const config = {
             geminiNative: aiFallbackGeminiNative,
           }
         : null,
-    maxTokens: Math.max(64, Number(env.AI_MAX_TOKENS) || 800),
+    maxTokens: aiMaxTokens,
+    thinking: aiThinking,
+    timeoutMs: aiTimeoutMs,
     systemPrompt:
       env.AI_SYSTEM_PROMPT ||
       'Kamu adalah By AI, asisten di aplikasi pesan By Chat. Jawab dalam bahasa yang dipakai pengguna, ringkas, ramah, dan jujur. Kalau tidak tahu, bilang tidak tahu.',

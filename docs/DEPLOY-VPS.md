@@ -238,6 +238,67 @@ Dengan `STORAGE_DRIVER=supabase`, data yang perlu diselamatkan ada di dua tempat
 
 Kunci VAPID untuk Web Push: kalau `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` tidak diisi di `.env`, server membuatnya sekali dan menyimpannya di `registry/push.json` (Supabase) atau `data/push.json` (driver local). Ganti kunci = semua langganan push lama tidak berlaku.
 
+## 9. By AI tanpa biaya token (Ollama di VPS)
+
+Kalau kuota penyedia cloud (Gemini dan sejenisnya) habis, By AI bisa dijalankan
+sepenuhnya di mesin ini lewat [Ollama](https://ollama.com). Server hanya butuh
+endpoint yang kompatibel dengan API OpenAI, dan Ollama punya `/v1/chat/completions`.
+
+```bash
+# 1. Pasang Ollama (sekali saja, ikut systemd sendiri)
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 2. Unduh model. Di VPS 2 vCPU / 2 GB RAM pakai yang 1B.
+#    llama3.2 (3B) butuh ± 2,5 GB RAM dan akan berebut dengan Node + Caddy.
+ollama pull llama3.2:1b
+
+# 3. Pastikan cuma mendengarkan di localhost, jangan pernah dibuka ke internet
+ss -ltnp | grep 11434
+curl -s http://127.0.0.1:11434/api/tags | head -c 200
+```
+
+Lalu `.env` (ganti blok `AI_*` yang lama, dan **kosongkan** `AI_FALLBACK_*`
+supaya tidak ada percobaan ke Gemini yang kuotanya sudah habis):
+
+```ini
+AI_ENABLED=true
+AI_BASE_URL=http://127.0.0.1:11434/v1
+AI_MODEL=llama3.2:1b
+AI_API_KEY=
+AI_MAX_TOKENS=512
+AI_DAILY_LIMIT=50
+#AI_FALLBACK_BASE_URL=
+#AI_FALLBACK_MODEL=
+```
+
+```bash
+sudo systemctl restart secure-chat
+sudo journalctl -u secure-chat -n 5 --no-pager | grep -i "by ai"
+```
+
+Verifikasi dari luar:
+
+```bash
+curl -s https://DOMAIN/config.json | grep -A3 '"ai"'     # "enabled": true
+```
+
+Setelah itu kirim satu pesan di ruang By AI. Kalau gagal, baris
+`⚠️  By AI gagal: …` di `journalctl -u secure-chat -f` menyebut penyebabnya.
+
+Yang berubah dibanding memakai Gemini:
+
+| Kemampuan | Gemini | Ollama lokal |
+|---|---|---|
+| Teks | ya | ya |
+| Cari di web / baca tautan | ya | **tidak** |
+| Kirim foto / PDF | ya | **tidak** — server menolak dengan pesan yang jelas |
+| Biaya per pesan | per token | listrik + CPU |
+| Kecepatan di 2 vCPU | 2–10 detik | 2–15 detik tergantung panjang jawaban |
+
+Catatan kapasitas: model tetap harus muat di RAM bersama Node (± 150 MB) dan
+Caddy. `llama3.2:1b` ± 1,3 GB, jadi dengan swap 1 GB masih aman; model 3B ke atas
+sebaiknya tidak dipasang di VPS 2 GB.
+
 ## Tanpa domain (sementara)
 
 Untuk mencoba dulu sebelum DNS selesai, pakai domain gratis berbasis IP:
