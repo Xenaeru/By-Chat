@@ -10,6 +10,7 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import puppeteer from 'puppeteer-core';
@@ -37,6 +38,33 @@ process.env.CHANNEL_STORE = path.join(TMP, 'channels.json');
 // akun lain ditolak.
 process.env.ADMIN_UIDS = `dev-${crypto.createHash('sha256').update('andi').digest('hex').slice(0, 20)}`;
 process.env.PORT = process.env.PORT || '4400';
+
+/**
+ * Penyedia AI palsu yang benar-benar mengalir: kata pertama dikirim langsung,
+ * sisanya 400 ms kemudian. Itu yang membedakan streaming sungguhan dari
+ * "tunggu selesai, lalu tampilkan semuanya".
+ */
+const AI_FIRST = 'Halo dari ';
+const AI_LAST = 'model lokal.';
+const aiUpstream = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (chunk) => (body += chunk));
+  req.on('end', () => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: AI_FIRST } }] })}\n\n`);
+    setTimeout(() => {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: AI_LAST } }] })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    }, 400).unref();
+  });
+});
+await new Promise((resolve) => aiUpstream.listen(0, '127.0.0.1', resolve));
+
+process.env.AI_ENABLED = 'true';
+process.env.AI_API_KEY = '';
+process.env.AI_BASE_URL = `http://127.0.0.1:${aiUpstream.address().port}/v1`;
+process.env.AI_MODEL = 'llama3.2:1b';
 
 const { server, directory, inbox, statuses, moderation, profiles } = await import('../src/server.js');
 // Token dev yang sama dengan yang dipakai browser, buat satu klien mentah di
@@ -914,6 +942,23 @@ function writeSampleImage() {
 }
 
 /**
+ * Buka obrolan dengan satu orang dari daftar. Dicari lewat nama, bukan
+ * "baris pertama", karena ruang By AI selalu nangkring paling atas.
+ */
+async function openChatWith(page, name) {
+  await page.waitForSelector('.chat-item', { timeout: 15000 });
+  const found = await page.evaluate((needle) => {
+    const row = [...document.querySelectorAll('.chat-item')].find((node) =>
+      new RegExp(needle, 'i').test(node.textContent)
+    );
+    row?.click();
+    return Boolean(row);
+  }, name);
+  check(`Obrolan dengan ${name} bisa dibuka dari daftar`, found);
+  await page.waitForSelector('#chat-view:not([hidden])', { timeout: 10000 });
+}
+
+/**
  * Buka halaman tambah kontak, cari satu orang, dan kembalikan hasil teratasnya.
  * Ini jalur yang sekarang dipakai setiap percakapan baru, jadi dipakai berkali-kali.
  */
@@ -932,6 +977,83 @@ async function findContact(page, query) {
     text: li.textContent,
     avatar: li.querySelector('.avatar')?.style.backgroundImage || '',
   }));
+}
+
+/**
+ * Ruang By AI diuji dari UI aslinya: pesan terkirim, jawaban muncul bertahap,
+ * dan akhirnya utuh di satu gelembung.
+ *
+ * Penyedia palsu di atas sengaja menahan bagian kedua 400 ms. Tanpa jeda itu,
+ * "tampilkan semuanya setelah selesai" juga akan lolos — padahal itulah yang
+ * mau ditangkap: jawaban harus mengalir, bukan menunggu.
+ */
+async function checkAiStreaming(andi) {
+  await goView(andi.page, 'chats');
+  await andi.page.waitForSelector('.chat-item', { timeout: 15000 });
+
+  const roomFound = await andi.page.evaluate(() => {
+    const row = [...document.querySelectorAll('.chat-item')].find((node) => /By AI/.test(node.textContent));
+    row?.click();
+    return Boolean(row);
+  });
+  check('Ruang By AI muncul di daftar obrolan', roomFound);
+  check(
+    'Ruang By AI menjelaskan bahwa percakapannya bukan E2EE',
+    await andi.page.evaluate(() =>
+      [...document.querySelectorAll('.system-note')].some((note) =>
+        /tidak terenkripsi end-to-end/i.test(note.textContent)
+      )
+    )
+  );
+
+  const startedAt = Date.now();
+  await andi.page.type('#composer-input', 'halo by ai');
+  await andi.page.click('.send');
+
+  const sawFirst = await andi.page
+    .waitForFunction(
+      (text) => [...document.querySelectorAll('.msg')].some((m) => m.textContent.includes(text)),
+      { timeout: 4000 },
+      AI_FIRST
+    )
+    .then(() => true)
+    .catch(() => false);
+  check('Bagian pertama jawaban By AI sampai lebih dulu', sawFirst);
+  const firstAt = Date.now() - startedAt;
+
+  const sawLast = await andi.page
+    .waitForFunction(
+      (text) => [...document.querySelectorAll('.msg')].some((m) => m.textContent.includes(text)),
+      { timeout: 10000 },
+      AI_LAST
+    )
+    .then(() => true)
+    .catch(() => false);
+  check('Sisa jawaban menyusul di gelembung yang sama', sawLast);
+  const fullAt = Date.now() - startedAt;
+
+  check(
+    'By AI menulis bertahap, bukan sekali jadi',
+    sawFirst && sawLast && fullAt - firstAt >= 250,
+    `pertama ${firstAt} ms, lengkap ${fullAt} ms`
+  );
+
+  const bubbles = await andi.page.evaluate(() =>
+    [...document.querySelectorAll('.msg')].map((m) => m.textContent.replace(/\s+/g, ' ').trim())
+  );
+  check(
+    'Jawaban utuh di satu gelembung, tanpa catatan gagal',
+    bubbles.some((text) => text.includes(AI_FIRST) && text.includes(AI_LAST)) &&
+      !bubbles.some((text) => text.includes('⚠️')),
+    bubbles.filter((text) => text.includes('Halo dari') || text.includes('⚠️')).join(' | ')
+  );
+  check(
+    'Ruang By AI berisi satu pesan Andi dan satu jawaban',
+    await andi.page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.msg')];
+      return rows.length === 2 && rows.filter((row) => row.classList.contains('out')).length === 1;
+    })
+  );
 }
 
 /**
@@ -1512,8 +1634,7 @@ try {
   const badge = await budi.page.$eval('.chat-item .badge', (el) => el.textContent).catch(() => null);
   check('Budi melihat badge belum dibaca', badge === '1', `badge=${badge}`);
 
-  await budi.page.click('.chat-item');
-  await budi.page.waitForSelector('#chat-view:not([hidden])');
+  await openChatWith(budi.page, 'andi');
   await budi.page.waitForFunction(
     (t) => [...document.querySelectorAll('.msg')].some((m) => m.textContent.includes(t)),
     { timeout: 10000 },
@@ -2500,10 +2621,7 @@ try {
   );
   await goView(budi.page, 'chats');
 
-  if (await budi.page.$eval('#chat-view', (node) => node.hidden)) {
-    await budi.page.click('.chat-item');
-    await budi.page.waitForSelector('#chat-view:not([hidden])', { timeout: 10000 });
-  }
+  if (await budi.page.$eval('#chat-view', (node) => node.hidden)) await openChatWith(budi.page, 'andi');
   const chatDocked = await budi.page.evaluate(() => ({
     tabbar: getComputedStyle(document.querySelector('#tabbar')).display,
     chatVisible: getComputedStyle(document.querySelector('.chat')).display !== 'none',
@@ -3314,6 +3432,10 @@ try {
   );
   check('Nama saluran bisa diganti dari panel info', true);
 
+  // Terakhir: ruang By AI membawa Andi keluar dari percakapannya, jadi tes ini
+  // sengaja ditaruh paling akhir.
+  await checkAiStreaming(andi);
+
   console.log('');
   for (const r of results) console.log(`  ✔ ${r.label}`);
   console.log(`\n${results.length} cek browser lulus.\n`);
@@ -3347,5 +3469,6 @@ try {
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));
+  await new Promise((resolve) => aiUpstream.close(resolve));
   fs.rmSync(TMP, { recursive: true, force: true });
 }

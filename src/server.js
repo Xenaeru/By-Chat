@@ -352,89 +352,201 @@ function aiEmptyReason(data, candidate) {
  * Jadi kalau base URL-nya Gemini, pakai jalur native; provider lain tetap
  * lewat API OpenAI-compat.
  */
-async function callAiProvider(
-  provider,
-  messages,
-  attachments,
-  { maxTokens, systemPrompt, web, thinking, timeoutMs }
-) {
-  const { baseUrl, apiKey, model, geminiNative } = provider;
-  const signal = AbortSignal.timeout(timeoutMs);
 
-  if (geminiNative) {
-    const root = baseUrl.replace(/\/openai\/?$/, '');
-    const response = await fetch(`${root}/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: messages.map((message, index) => {
-          const parts = [];
-          if (message.content) parts.push({ text: message.content });
-          // Lampiran cuma menempel di pesan user terakhir, bukan seluruh riwayat.
-          if (index === messages.length - 1 && message.role === 'user') {
-            for (const attachment of attachments) {
-              parts.push(
-                attachment.text !== undefined
-                  ? { text: `\n\n[Isi file ${attachment.name}]\n${attachment.text}` }
-                  : { inlineData: { mimeType: attachment.mime, data: attachment.data } }
-              );
-            }
-          }
-          return { role: message.role === 'assistant' ? 'model' : 'user', parts };
-        }),
-        // Browsing: model boleh mencari di Google dan membuka URL yang ditempel.
-        ...(web ? { tools: [{ google_search: {} }, { url_context: {} }] } : {}),
-        generationConfig: {
-          maxOutputTokens: maxTokens,
-          // Tanpa ini Gemini 3 memakai thinking "high": token pertama baru
-          // muncul setelah puluhan detik, dan thinking-nya memakan jatah
-          // maxOutputTokens sampai jawaban tidak tersisa.
-          ...(thinking && supportsThinkingLevel(model)
-            ? { thinkingConfig: { thinkingLevel: thinking.toUpperCase() } }
-            : {}),
-        },
-      }),
-      signal,
-    });
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw aiUpstreamError(data?.error?.message || `Penyedia AI menjawab ${response.status}.`);
-    }
-    const candidate = data?.candidates?.[0];
-    const reply = (candidate?.content?.parts || [])
-      // Bagian bertanda "thought" adalah proses berpikir model, bukan jawaban.
-      // Kalau ikut digabung, pengguna melihat monolog internal, bukan jawaban.
-      .filter((part) => !part.thought)
-      .map((part) => part.text || '')
-      .join('')
-      .trim();
-    if (!reply) throw aiUpstreamError(aiEmptyReason(data, candidate));
-    return reply;
-  }
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      messages: [{ role: 'system', content: systemPrompt }, ...messages],
+/**
+ * Body jalur native Gemini. Dipakai dua kali (sekali-jalan dan streaming),
+ * jadi lebih baik satu fungsi daripada dua salinan yang bisa berbeda diam-diam.
+ */
+function geminiBody({ model, messages, attachments, systemPrompt, web, thinking, maxTokens }) {
+  return {
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents: messages.map((message, index) => {
+      const parts = [];
+      if (message.content) parts.push({ text: message.content });
+      // Lampiran cuma menempel di pesan user terakhir, bukan seluruh riwayat.
+      if (index === messages.length - 1 && message.role === 'user') {
+        for (const attachment of attachments) {
+          parts.push(
+            attachment.text !== undefined
+              ? { text: `\n\n[Isi file ${attachment.name}]\n${attachment.text}` }
+              : { inlineData: { mimeType: attachment.mime, data: attachment.data } }
+          );
+        }
+      }
+      return { role: message.role === 'assistant' ? 'model' : 'user', parts };
     }),
-    signal,
+    // Browsing: model boleh mencari di Google dan membuka URL yang ditempel.
+    ...(web ? { tools: [{ google_search: {} }, { url_context: {} }] } : {}),
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      // Tanpa ini Gemini 3 memakai thinking "high": token pertama baru
+      // muncul setelah puluhan detik, dan thinking-nya memakan jatah
+      // maxOutputTokens sampai jawaban tidak tersisa.
+      ...(thinking && supportsThinkingLevel(model)
+        ? { thinkingConfig: { thinkingLevel: thinking.toUpperCase() } }
+        : {}),
+    },
+  };
+}
+
+/** Body jalur OpenAI-compat: Ollama, Groq, DeepSeek, OpenRouter, dst. */
+function openAiBody({ model, messages, systemPrompt, maxTokens, stream = false }) {
+  return {
+    model,
+    max_tokens: maxTokens,
+    ...(stream ? { stream: true } : {}),
+    messages: [{ role: 'system', content: systemPrompt }, ...messages],
+  };
+}
+
+function aiEndpoint(provider, { stream }) {
+  const { baseUrl, model, geminiNative } = provider;
+  if (!geminiNative) return `${baseUrl}/chat/completions`;
+  const root = baseUrl.replace(/\/openai\/?$/, '');
+  const action = stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
+  return `${root}/models/${encodeURIComponent(model)}:${action}`;
+}
+
+function aiHeaders(provider) {
+  const { apiKey, geminiNative } = provider;
+  // Gemini native memakai header sendiri; provider OpenAI-compat memakai
+  // Bearer, dan tetap boleh kosong (Ollama lokal tidak butuh kunci).
+  if (geminiNative) return { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey };
+  return {
+    'Content-Type': 'application/json',
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  };
+}
+
+/** Batas waktu satu panggilan, ditambah pembatalan dari pemanggil kalau ada. */
+function aiSignal(timeoutMs, outer) {
+  const limit = AbortSignal.timeout(timeoutMs);
+  return outer ? AbortSignal.any([limit, outer]) : limit;
+}
+
+/**
+ * Gabungkan teks jawaban dari satu kandidat Gemini. Bagian bertanda "thought"
+ * adalah proses berpikir model, bukan jawaban: kalau ikut digabung, pengguna
+ * melihat monolog internal. Berlaku sama untuk balasan utuh dan streaming.
+ */
+function geminiText(candidate) {
+  return (candidate?.content?.parts || [])
+    .filter((part) => !part.thought)
+    .map((part) => part.text || '')
+    .join('');
+}
+
+async function callAiProvider(provider, messages, attachments, options) {
+  const { maxTokens, systemPrompt, web, thinking, timeoutMs, signal } = options;
+  const { model, geminiNative } = provider;
+  const body = geminiNative
+    ? geminiBody({ model, messages, attachments, systemPrompt, web, thinking, maxTokens })
+    : openAiBody({ model, messages, systemPrompt, maxTokens });
+
+  const response = await fetch(aiEndpoint(provider, { stream: false }), {
+    method: 'POST',
+    headers: aiHeaders(provider),
+    body: JSON.stringify(body),
+    signal: aiSignal(timeoutMs, signal),
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     throw aiUpstreamError(data?.error?.message || `Penyedia AI menjawab ${response.status}.`);
+  }
+
+  if (geminiNative) {
+    const candidate = data?.candidates?.[0];
+    const reply = geminiText(candidate).trim();
+    if (!reply) throw aiUpstreamError(aiEmptyReason(data, candidate));
+    return reply;
   }
   const reply = data?.choices?.[0]?.message?.content;
   if (typeof reply !== 'string' || !reply.trim()) {
     throw aiUpstreamError('Penyedia AI tidak mengirim jawaban.');
   }
   return reply.trim();
+}
+
+/**
+ * Baca aliran Server-Sent Events jadi potongan JSON. Dipakai dua jalur:
+ * Gemini (`streamGenerateContent?alt=sse`) dan OpenAI-compat (`stream: true`).
+ */
+async function* ssePayloads(response) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  for await (const chunk of response.body) {
+    // Gemini mengakhiri baris dengan CRLF, penyedia lain dengan LF. Disamakan
+    // dulu supaya pemisah blok di bawah tidak pernah meleset.
+    buffer = (buffer + decoder.decode(chunk, { stream: true })).replace(/\r\n/g, '\n');
+    let split;
+    // Satu blok SSE dipisahkan baris kosong; potongan bisa terbelah di tengah
+    // blok, jadi sisanya disimpan untuk giliran berikutnya.
+    while ((split = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, split);
+      buffer = buffer.slice(split + 2);
+      for (const line of block.split('\n')) {
+        if (!line.startsWith('data:')) continue; // komentar/keepalive penyedia
+        const raw = line.slice(5).trim();
+        if (!raw || raw === '[DONE]') continue;
+        try {
+          yield JSON.parse(raw);
+        } catch {
+          // Potongan yang bukan JSON dilewati; bukan alasan menggagalkan balasan.
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Versi streaming dari callAiProvider: menghasilkan potongan teks begitu model
+ * mengirimnya. Untuk model lokal di CPU ini yang menentukan: kata pertama bisa
+ * keluar dalam 1-2 detik walau jawaban utuhnya butuh 30 detik.
+ */
+async function* streamAiProvider(provider, messages, attachments, options) {
+  const { maxTokens, systemPrompt, web, thinking, timeoutMs, signal } = options;
+  const { model, geminiNative } = provider;
+  const body = geminiNative
+    ? geminiBody({ model, messages, attachments, systemPrompt, web, thinking, maxTokens })
+    : openAiBody({ model, messages, systemPrompt, maxTokens, stream: true });
+
+  const response = await fetch(aiEndpoint(provider, { stream: true }), {
+    method: 'POST',
+    headers: aiHeaders(provider),
+    body: JSON.stringify(body),
+    signal: aiSignal(timeoutMs, signal),
+  });
+
+  if (!response.ok || !response.body) {
+    const data = await response.json().catch(() => null);
+    throw aiUpstreamError(data?.error?.message || `Penyedia AI menjawab ${response.status}.`);
+  }
+
+  let produced = false;
+  for await (const payload of ssePayloads(response)) {
+    let text = '';
+    if (geminiNative) {
+      const candidate = payload?.candidates?.[0];
+      text = geminiText(candidate);
+      // Alasan berhenti cuma dikirim di potongan terakhir: kalau kosong dan
+      // bukan STOP, ada yang salah dan pengguna berhak tahu sebabnya.
+      const finish = String(candidate?.finishReason || '').toUpperCase();
+      if (!text && finish && finish !== 'STOP') throw aiUpstreamError(aiEmptyReason(payload, candidate));
+    } else {
+      const choice = payload?.choices?.[0];
+      text = choice?.delta?.content || '';
+      const finish = String(choice?.finish_reason || '').toLowerCase();
+      if (!text && finish && finish !== 'stop') {
+        throw aiUpstreamError(`Penyedia AI berhenti (${finish}).`);
+      }
+    }
+    if (!text) continue;
+    produced = true;
+    yield text;
+  }
+
+  if (!produced) throw aiUpstreamError('Penyedia AI tidak mengirim jawaban.');
 }
 
 /**
@@ -478,51 +590,174 @@ async function requestAiReply(messages, attachments = []) {
   }
 }
 
-app.post('/api/ai/chat', authenticateRequest, express.json({ limit: '16mb' }), async (req, res) => {
-  if (!config.ai.enabled) {
-    return res.status(503).json({ error: 'Fitur AI belum diaktifkan di server ini.' });
-  }
-
+/**
+ * Ambil pesan + lampiran dari body permintaan, atau alasan penolakannya.
+ * Dipakai jalur sekali-jalan dan streaming supaya aturannya tidak bercabang.
+ */
+function readAiRequest(req) {
   const incoming = Array.isArray(req.body?.messages) ? req.body.messages : [];
   const messages = incoming
     .filter((m) => (m?.role === 'user' || m?.role === 'assistant') && typeof m?.content === 'string')
     .slice(-20)
     .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }));
-  if (!messages.some((m) => m.role === 'user')) {
-    return res.status(400).json({ error: 'Pesan tidak boleh kosong.' });
-  }
-
-  const day = new Date().toISOString().slice(0, 10);
-  const usage = aiUsage.get(req.profile.uid);
-  const count = usage?.day === day ? usage.count : 0;
-  if (config.ai.dailyLimit > 0 && count >= config.ai.dailyLimit) {
-    return res.status(429).json({
-      error: `Kuota By AI hari ini habis (${config.ai.dailyLimit} pesan). Coba lagi besok.`,
-    });
-  }
+  if (!messages.some((m) => m.role === 'user')) return { error: 'Pesan tidak boleh kosong.' };
 
   try {
     const attachments = normalizeAiAttachments(req.body?.attachments);
     if (attachments.length && !config.ai.geminiNative) {
-      throw aiInputError('Lampiran cuma didukung saat By AI memakai Gemini.');
+      return { error: 'Lampiran cuma didukung saat By AI memakai Gemini.' };
     }
-    const reply = await requestAiReply(messages, attachments);
-    aiUsage.set(req.profile.uid, { day, count: count + 1 });
+    return { messages, attachments };
+  } catch (err) {
+    return { error: String(err.message).slice(0, 300) };
+  }
+}
+
+/** Sisa kuota hari ini untuk satu akun. */
+function aiQuota(uid) {
+  const day = new Date().toISOString().slice(0, 10);
+  const usage = aiUsage.get(uid);
+  const count = usage?.day === day ? usage.count : 0;
+  const left = config.ai.dailyLimit > 0 ? Math.max(0, config.ai.dailyLimit - count) : null;
+  return {
+    day,
+    count,
+    left,
+    usedUp: config.ai.dailyLimit > 0 && count >= config.ai.dailyLimit,
+  };
+}
+
+const aiQuotaError = () => `Kuota By AI hari ini habis (${config.ai.dailyLimit} pesan). Coba lagi besok.`;
+
+/** Sebab kegagalan dalam bahasa yang bisa ditindaklanjuti. */
+function aiErrorDetail(err) {
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+    return `Penyedia AI terlalu lama menjawab (lebih dari ${Math.round(config.ai.timeoutMs / 1000)} detik).`;
+  }
+  if (err?.upstream) return String(err.message).slice(0, 300);
+  return 'Gagal menghubungi penyedia AI. Cek AI_BASE_URL di server.';
+}
+
+/**
+ * Versi streaming dari requestAiReply. Aturannya sama: satu anggaran waktu,
+ * dan cadangan hanya dipakai kalau belum ada teks yang terkirim. Kalau sudah
+ * ada, dua model akan terlihat berbicara bergantian dalam satu balasan.
+ */
+async function* streamAiReply(messages, attachments = [], { signal } = {}) {
+  const { maxTokens, systemPrompt, web, fallback, thinking, timeoutMs } = config.ai;
+  const primary = {
+    baseUrl: config.ai.baseUrl,
+    apiKey: config.ai.apiKey,
+    model: config.ai.model,
+    geminiNative: config.ai.geminiNative,
+  };
+  const options = { maxTokens, systemPrompt, web, thinking, timeoutMs, signal };
+  const startedAt = Date.now();
+  let produced = false;
+
+  try {
+    for await (const delta of streamAiProvider(primary, messages, attachments, options)) {
+      produced = true;
+      yield delta;
+    }
+  } catch (err) {
+    if (produced || !fallback || (attachments.length && !fallback.geminiNative)) throw err;
+    const remaining = timeoutMs - (Date.now() - startedAt);
+    if (remaining < 2_000) throw err;
+    console.warn(`⚠️  By AI: ${primary.model} gagal (${err.message}); mencoba ${fallback.model}.`);
+    try {
+      yield* streamAiProvider(fallback, messages, attachments, { ...options, timeoutMs: remaining });
+    } catch (fallbackErr) {
+      console.warn(`⚠️  By AI: cadangan ${fallback.model} juga gagal (${fallbackErr.message}).`);
+      throw fallbackErr;
+    }
+  }
+}
+
+app.post('/api/ai/chat', authenticateRequest, express.json({ limit: '16mb' }), async (req, res) => {
+  if (!config.ai.enabled) {
+    return res.status(503).json({ error: 'Fitur AI belum diaktifkan di server ini.' });
+  }
+
+  const parsed = readAiRequest(req);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+  const quota = aiQuota(req.profile.uid);
+  if (quota.usedUp) return res.status(429).json({ error: aiQuotaError() });
+
+  try {
+    const reply = await requestAiReply(parsed.messages, parsed.attachments);
+    aiUsage.set(req.profile.uid, { day: quota.day, count: quota.count + 1 });
     res.json({
       ok: true,
       reply,
-      remaining: config.ai.dailyLimit > 0 ? Math.max(0, config.ai.dailyLimit - count - 1) : null,
+      remaining: quota.left === null ? null : Math.max(0, quota.left - 1),
     });
   } catch (err) {
-    if (err.input) return res.status(400).json({ error: String(err.message).slice(0, 300) });
-    const timeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
-    const detail = timeout
-      ? `Penyedia AI terlalu lama menjawab (lebih dari ${Math.round(config.ai.timeoutMs / 1000)} detik).`
-      : err.upstream
-        ? String(err.message).slice(0, 300)
-        : 'Gagal menghubungi penyedia AI. Cek AI_BASE_URL di server.';
+    const detail = aiErrorDetail(err);
     console.warn(`⚠️  By AI gagal: ${detail}`);
     res.status(502).json({ error: detail });
+  }
+});
+
+/**
+ * Jalur streaming: potongan jawaban dikirim begitu model menghasilkannya.
+ *
+ * Ini yang membuat By AI terasa hidup di model lokal: jawaban 30 detik tetap
+ * 30 detik, tapi kata pertamanya muncul dalam 1-2 detik, bukan layar diam.
+ * Protokolnya SSE sederhana — satu baris `data: {"delta":…}` per potongan,
+ * lalu `{"done":true}` atau `{"error":…}`.
+ */
+app.post('/api/ai/stream', authenticateRequest, express.json({ limit: '16mb' }), async (req, res) => {
+  if (!config.ai.enabled) {
+    return res.status(503).json({ error: 'Fitur AI belum diaktifkan di server ini.' });
+  }
+
+  const parsed = readAiRequest(req);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+  const quota = aiQuota(req.profile.uid);
+  if (quota.usedUp) return res.status(429).json({ error: aiQuotaError() });
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  // no-transform: proxy tidak boleh mengompres atau menggabung aliran, kalau
+  // tidak teksnya baru sampai setelah semuanya selesai — persis yang dihindari.
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (payload) => {
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+  // Koneksi yang menganggur diputus proxy; komentar SSE menahannya tetap hidup
+  // saat model masih berpikir dan belum ada satu kata pun.
+  const beat = setInterval(() => {
+    if (!res.writableEnded) res.write(': ping\n\n');
+  }, 10_000);
+
+  // Tab ditutup atau pindah halaman: hentikan juga panggilan ke penyedia, jangan
+  // biarkan CPU server sibuk menghasilkan jawaban yang tidak dibaca siapa pun.
+  const abort = new AbortController();
+  res.on('close', () => abort.abort());
+
+  let reply = '';
+  try {
+    for await (const delta of streamAiReply(parsed.messages, parsed.attachments, {
+      signal: abort.signal,
+    })) {
+      reply += delta;
+      send({ delta });
+    }
+    if (!reply.trim()) throw aiUpstreamError('Penyedia AI tidak mengirim jawaban.');
+    aiUsage.set(req.profile.uid, { day: quota.day, count: quota.count + 1 });
+    send({ done: true, remaining: quota.left === null ? null : Math.max(0, quota.left - 1) });
+  } catch (err) {
+    const detail = aiErrorDetail(err);
+    console.warn(`⚠️  By AI (stream) gagal: ${detail}`);
+    send({ error: detail });
+  } finally {
+    clearInterval(beat);
+    if (!res.writableEnded) res.end();
   }
 });
 

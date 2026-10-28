@@ -285,6 +285,13 @@ curl -s https://DOMAIN/config.json | grep -A3 '"ai"'     # "enabled": true
 Setelah itu kirim satu pesan di ruang By AI. Kalau gagal, baris
 `⚠️  By AI gagal: …` di `journalctl -u secure-chat -f` menyebut penyebabnya.
 
+Jawaban dikirim **bertahap** lewat SSE (`/api/ai/stream`), jadi kata pertama
+muncul dalam hitungan detik walau jawaban utuhnya butuh 30 detik di CPU. Yang
+perlu dijaga: `Cache-Control: no-transform` di respons itu tidak boleh diganti
+proxy mana pun — kalau isinya dikompres atau ditampung dulu, streaming-nya mati
+dan teksnya baru muncul setelah semuanya selesai. Caddy dan Cloudflare meneruskan
+SSE apa adanya dengan setelan bawaan repo ini.
+
 Yang berubah dibanding memakai Gemini:
 
 | Kemampuan | Gemini | Ollama lokal |

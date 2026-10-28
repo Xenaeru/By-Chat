@@ -1519,8 +1519,65 @@ const sendMessage = (text, attachment, options) =>
   sendToRoom(state.rooms.get(state.activeRoomId), text, attachment, options);
 
 /**
+ * Baca aliran SSE dari server: satu baris `data: {...}` per potongan. Bentuknya
+ * sama dengan yang dikirim /api/ai/stream di src/server.js.
+ */
+async function* readSseStream(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    // Samakan akhir baris (CRLF dari sebagian proxy) sebelum dipecah per blok.
+    buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n');
+    let split;
+    // Satu blok dipisahkan baris kosong, dan potongan bisa terbelah di tengah
+    // blok — sisanya disimpan untuk bacaan berikutnya.
+    while ((split = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, split);
+      buffer = buffer.slice(split + 2);
+      for (const line of block.split('\n')) {
+        if (!line.startsWith('data:')) continue; // komentar keepalive server
+        const raw = line.slice(5).trim();
+        if (!raw) continue;
+        try {
+          yield JSON.parse(raw);
+        } catch {
+          // Bukan JSON: bukan alasan menghentikan balasan.
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Tulis teks gelembung yang sedang mengalir. Sengaja hanya menyentuh satu node:
+ * render ulang seluruh daftar obrolan puluhan kali per detik akan membuat
+ * gelembung lain berkedip dan posisi gulir melompat.
+ */
+function streamIntoBubble(messageId, text) {
+  const room = state.rooms.get(state.activeRoomId);
+  if (!room || room.id !== AI_ROOM_ID) return;
+  const node = el.messages.querySelector(`.msg[data-id="${CSS.escape(String(messageId))}"]`);
+  if (!node) return renderMessages();
+  let body = node.querySelector('.msg-text');
+  if (!body) {
+    body = document.createElement('span');
+    body.className = 'msg-text';
+    node.insertBefore(body, node.querySelector('.msg-meta') || null);
+  }
+  body.textContent = text;
+  el.messages.scrollTop = el.messages.scrollHeight;
+}
+
+/**
  * Kirim ke By AI. Riwayat yang dikirim cuma pesan di ruang ini — tidak pernah
  * chat E2EE lain — dan server meneruskannya ke penyedia AI.
+ *
+ * Jawaban dibaca sebagai aliran, jadi teks muncul sambil model menulis. Untuk
+ * model lokal di CPU ini penting: balasan utuh bisa 30 detik, kata pertamanya
+ * tidak.
  */
 async function sendAiMessage(room, text, attachments = []) {
   const list = Array.isArray(attachments) ? attachments.slice(0, 1) : [];
@@ -1545,6 +1602,28 @@ async function sendAiMessage(room, text, attachments = []) {
   renderChatList();
   saveRooms();
 
+  // Gelembung jawaban baru dipasang saat potongan pertama tiba, supaya tidak
+  // ada gelembung kosong yang menganggur selama model berpikir.
+  const reply = { id: `ai:${Date.now()}`, from: AI_FROM, text: '', at: Date.now(), streaming: true };
+  let attached = false;
+  const attachReply = () => {
+    if (attached) return;
+    attached = true;
+    room.messages.push(reply);
+    if (state.activeRoomId === room.id) renderMessages();
+  };
+
+  // Server mengirim potongan sangat cepat; melukisnya ~16 kali per detik sudah
+  // lebih dari cukup dan jauh lebih ringan.
+  let paintTimer = null;
+  const paint = () => {
+    if (paintTimer) return;
+    paintTimer = setTimeout(() => {
+      paintTimer = null;
+      if (attached) streamIntoBubble(reply.id, reply.text);
+    }, 60);
+  };
+
   try {
     const token = await state.auth.getIdToken();
     const messages = room.messages
@@ -1553,14 +1632,19 @@ async function sendAiMessage(room, text, attachments = []) {
       // begitu dan menirunya di jawaban berikutnya.
       .filter(
         (message) =>
-          !message.system && !message.error && message.text && !message.text.startsWith('⚠️')
+          !message.system &&
+          !message.error &&
+          !message.streaming &&
+          message.text &&
+          !message.text.startsWith('⚠️')
       )
       .slice(-20)
       .map((message) => ({
         role: message.from === state.me.uid ? 'user' : 'assistant',
         content: message.text,
       }));
-    const response = await fetch('/api/ai/chat', {
+
+    const response = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1568,27 +1652,51 @@ async function sendAiMessage(room, text, attachments = []) {
         attachments: list.map(({ name, mime, data }) => ({ name, mime, data })),
       }),
     });
-    const raw = await response.text().catch(() => '');
-    let data = {};
-    try {
-      data = raw ? JSON.parse(raw) : {};
-    } catch {
-      // Reverse proxy (nginx/Cloudflare) membalas HTML saat timeout, bukan JSON.
+
+    // Server lama (belum punya /api/ai/stream) atau galat sebelum aliran dimulai
+    // membalas JSON biasa, bukan SSE. Jangan buang kemampuannya: baca apa adanya.
+    const type = response.headers.get('content-type') || '';
+    if (!type.includes('text/event-stream')) {
+      const raw = await response.text().catch(() => '');
+      let data = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        // Reverse proxy (Cloudflare) membalas HTML saat timeout, bukan JSON.
+      }
+      if (!response.ok) throw new Error(data.error || `By AI gagal (HTTP ${response.status}).`);
+      if (!data.reply) throw new Error('By AI mengirim jawaban kosong.');
+      reply.text = data.reply;
+      attachReply();
+      return;
     }
-    if (!response.ok) {
-      throw new Error(data.error || `By AI gagal (HTTP ${response.status}).`);
+
+    for await (const event of readSseStream(response.body)) {
+      if (event.delta) {
+        reply.text += event.delta;
+        attachReply();
+        paint();
+      } else if (event.error) {
+        throw new Error(event.error);
+      } else if (event.done) {
+        break;
+      }
     }
-    if (!data.reply) throw new Error('By AI mengirim jawaban kosong.');
-    room.messages.push({ id: `ai:${Date.now()}`, from: AI_FROM, text: data.reply, at: Date.now() });
+    if (!reply.text.trim()) throw new Error('By AI mengirim jawaban kosong.');
   } catch (err) {
+    // Sudah ada sebagian teks? Biarkan, lalu tambahkan catatan bahwa sisanya
+    // gagal — lebih berguna daripada membuang jawaban yang sudah terbaca.
+    if (reply.text.trim()) attachReply();
     room.messages.push({
       id: `ai:err:${Date.now()}`,
       from: AI_FROM,
-      text: `⚠️ ${err.message}`,
+      text: `${reply.text.trim() ? '⚠️ Terputus: ' : '⚠️ '}${err.message}`,
       at: Date.now(),
       error: true,
     });
   } finally {
+    if (paintTimer) clearTimeout(paintTimer);
+    delete reply.streaming;
     typing.delete('By AI');
     if (!typing.size) state.typingPeers.delete(room.id);
     if (state.activeRoomId === room.id) renderMessages();
