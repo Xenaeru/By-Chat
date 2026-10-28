@@ -617,7 +617,11 @@ const KIND_LABEL = { image: 'Foto', video: 'Video', audio: 'Audio', file: 'Lampi
 function messagePreview(message) {
   if (message.call) return callLabel(message.call);
   if (message.deleted) return 'Pesan ini sudah dihapus';
-  if (message.error) return 'Pesan nggak bisa dibuka';
+  if (message.error) {
+    // Galat By AI disimpan sebagai penanda boolean; teksnya justru penjelasan
+    // yang berguna, bukan pesan terenkripsi yang gagal dibuka.
+    return message.error === true ? message.text || 'By AI tidak menjawab' : 'Pesan nggak bisa dibuka';
+  }
   const attachment = message.attachment;
   if (message.voice) {
     const length = message.duration ? ` · ${formatClock(message.duration)}` : '';
@@ -4514,9 +4518,12 @@ function renderMessages() {
     }
 
     const mine = message.from === state.me.uid;
+    // Pesan galat By AI tetap dibaca sebagai teks biasa: isinya penjelasan dari
+    // server, bukan pesan terenkripsi yang gagal dibuka.
+    const broken = Boolean(message.error) && !isAiRoom(room);
     const div = document.createElement('div');
     div.className =
-      'msg' + (mine ? ' out' : '') + (message.error ? ' undecryptable' : '') + (message.deleted ? ' deleted' : '');
+      'msg' + (mine ? ' out' : '') + (broken ? ' undecryptable' : '') + (message.deleted ? ' deleted' : '');
     div.dataset.id = serverIdOf(message) || message.id;
     div.dataset.mine = mine ? '1' : '0';
 
@@ -4545,7 +4552,7 @@ function renderMessages() {
 
     if (message.deleted) {
       div.appendChild(deletedNode());
-    } else if (message.error) {
+    } else if (broken) {
       div.appendChild(document.createTextNode(`Pesan ini nggak bisa dibuka (${message.error})`));
     } else {
       if (message.forwarded) div.appendChild(forwardedNode());
