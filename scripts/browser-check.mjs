@@ -998,12 +998,16 @@ async function checkAiStreaming(andi) {
   });
   check('Ruang By AI muncul di daftar obrolan', roomFound);
   check(
-    'Ruang By AI menjelaskan bahwa percakapannya bukan E2EE',
-    await andi.page.evaluate(() =>
-      [...document.querySelectorAll('.system-note')].some((note) =>
-        /tidak terenkripsi end-to-end/i.test(note.textContent)
-      )
-    )
+    'Ruang By AI memakai label Asisten AI tanpa catatan non-E2EE',
+    await andi.page.evaluate(() => {
+      const notes = [...document.querySelectorAll('.system-note')];
+      const sub = document.querySelector('#peer-sub')?.textContent || '';
+      return sub.trim() === 'Asisten AI' && !notes.some((note) => /E2EE|terenkripsi/i.test(note.textContent));
+    })
+  );
+  check(
+    'Ruang By AI tidak menawarkan lampiran',
+    await andi.page.evaluate(() => document.querySelector('#btn-attach')?.hidden === true)
   );
 
   const startedAt = Date.now();

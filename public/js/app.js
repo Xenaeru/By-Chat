@@ -30,13 +30,10 @@ const chatPrefsKey = (uid) => `securechat.chatprefs.v1.${uid}`;
 const listsKey = (uid) => `securechat.lists.v1.${uid}`;
 const blockedKey = (uid) => `securechat.blocked.v1.${uid}`;
 
-// Ruang By AI bukan percakapan antar-orang: isinya diteruskan server ke
-// penyedia AI, jadi tidak lewat jalur E2EE.
+// Ruang By AI: percakapan dengan asisten, bukan chat antar-orang.
 const AI_ROOM_ID = 'ai:assistant';
 const AI_FROM = 'by-ai';
 const isAiRoom = (room) => room?.type === 'ai';
-const AI_MAX_FILE_BYTES = 6 * 1024 * 1024;
-const AI_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic', 'image/heif']);
 
 const store = {
   get(key, fallback = null) {
@@ -690,11 +687,7 @@ const displayName = (room) =>
       ? room.name
       : peerByUid(otherUid(room))?.displayName || room.name || 'Tidak dikenal';
 
-/**
- * Ruang By AI selalu ada selama fiturnya aktif. Pesan pembuka menjelaskan
- * terus terang bahwa percakapan ini bukan E2EE, supaya janji enkripsi di
- * bagian lain aplikasi tidak ikut diklaim di sini.
- */
+/** Ruang By AI selalu ada selama fiturnya aktif. */
 function ensureAiRoom() {
   if (!state.me || !state.config?.ai?.enabled) return null;
   let room = state.rooms.get(AI_ROOM_ID);
@@ -702,12 +695,9 @@ function ensureAiRoom() {
     room = { id: AI_ROOM_ID, name: 'By AI', type: 'ai', members: [state.me.uid], messages: [] };
     state.rooms.set(AI_ROOM_ID, room);
   }
-  if (!room.messages.some((message) => message.system)) {
-    room.messages.unshift({
-      system: true,
-      at: Date.now(),
-      text: 'Percakapan dengan By AI tidak terenkripsi end-to-end: pesan di sini dibaca server lalu diteruskan ke penyedia AI. Chat antarmanusia tetap E2EE.',
-    });
+  // Catatan pembuka versi lama tidak dipakai lagi.
+  if (room.messages.some((message) => message.system)) {
+    room.messages = room.messages.filter((message) => !message.system);
   }
   return room;
 }
@@ -1454,7 +1444,7 @@ async function sendToRoom(
   if (!room) return;
   if (!String(text || '').trim() && !attachment) return;
   if (isAiRoom(room)) {
-    if (attachment) return showToast('By AI cuma menerima teks, foto, atau file.');
+    if (attachment) return showToast('By AI cuma menerima teks.');
     return sendAiMessage(room, text);
   }
   // Pesan ke kontak yang diblokir tidak dikirim: blokir yang cuma menyembunyikan
@@ -1579,20 +1569,15 @@ function streamIntoBubble(messageId, text) {
  * model lokal di CPU ini penting: balasan utuh bisa 30 detik, kata pertamanya
  * tidak.
  */
-async function sendAiMessage(room, text, attachments = []) {
-  const list = Array.isArray(attachments) ? attachments.slice(0, 1) : [];
-  const body = String(text || '').trim() || (list.length ? 'Jelaskan lampiran ini.' : '');
+async function sendAiMessage(room, text) {
+  const body = String(text || '').trim();
   if (!body) return;
   if (!state.config?.ai?.enabled) return showToast('Fitur AI belum diaktifkan di server ini.');
 
-  const first = list[0];
   room.messages.push({
     id: `local:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`,
     from: state.me.uid,
     text: body,
-    attachment: first
-      ? { name: first.name, mime: first.mime, size: first.size, localUrl: first.localUrl || null, inline: true }
-      : null,
     at: Date.now(),
   });
   const typing = state.typingPeers.get(room.id) || new Set();
@@ -1647,10 +1632,7 @@ async function sendAiMessage(room, text, attachments = []) {
     const response = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages,
-        attachments: list.map(({ name, mime, data }) => ({ name, mime, data })),
-      }),
+      body: JSON.stringify({ messages }),
     });
 
     // Server lama (belum punya /api/ai/stream) atau galat sebelum aliran dimulai
@@ -2517,71 +2499,10 @@ function openMediaPreview(files) {
   });
 }
 
-/** Foto/PDF dikirim apa adanya, file teks dibaca server; sisanya ditolak. */
-function aiFileAllowed(mime, name = '') {
-  const type = String(mime || '').toLowerCase();
-  if (AI_IMAGE_TYPES.has(type) || type === 'application/pdf') return true;
-  if (/^text\//.test(type)) return true;
-  if (/^application\/(json|xml|x-yaml|yaml|javascript|typescript|x-sh|sql|csv)$/.test(type)) return true;
-  return /\.(txt|md|csv|json|xml|ya?ml|js|ts|css|html|py|java|c|cpp|rs|go|sql|sh)$/i.test(name);
-}
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      resolve(result.slice(result.indexOf(',') + 1));
-    };
-    reader.onerror = () => reject(reader.error || new Error('File tidak bisa dibaca.'));
-    reader.readAsDataURL(file);
-  });
-}
-
-/** Jalur lampiran By AI: tanpa enkripsi/unggah, file langsung ikut ke prompt. */
-async function sendAiFiles(files) {
-  const room = state.rooms.get(state.activeRoomId);
-  if (!isAiRoom(room)) return;
-  const list = Array.from(files || []);
-  if (!list.length) return;
-  if (list.length > 1) showToast('By AI menerima satu lampiran per pesan. Yang dikirim file pertama.');
-  const file = list[0];
-  const mime = file.type || '';
-
-  if (!aiFileAllowed(mime, file.name)) {
-    return showToast('By AI menerima foto, PDF, atau file teks.');
-  }
-  if (file.size > AI_MAX_FILE_BYTES) {
-    return showToast('Lampiran untuk By AI maksimal 6 MB.', 6000);
-  }
-
-  let data;
-  try {
-    data = await fileToBase64(file);
-  } catch (err) {
-    return showToast(err.message);
-  }
-
-  const text = el.input.value.trim();
-  el.input.value = '';
-  el.input.style.height = 'auto';
-  paintComposerAction();
-
-  await sendAiMessage(room, text, [
-    {
-      name: file.name || 'lampiran',
-      mime: mime || 'application/octet-stream',
-      size: file.size,
-      data,
-      localUrl: mime.startsWith('image/') ? URL.createObjectURL(file) : null,
-    },
-  ]);
-}
-
 async function sendFiles(files) {
   const room = state.rooms.get(state.activeRoomId);
   if (!room || !files?.length) return;
-  if (isAiRoom(room)) return sendAiFiles(files);
+  if (isAiRoom(room)) return showToast('By AI cuma menerima teks.');
 
   const token = ++state.uploadToken;
   el.uploadBar.hidden = false;
@@ -2844,18 +2765,19 @@ function renderPeerHeader() {
     delete el.peerAvatar.dataset.avatarLocked;
     delete el.peerAvatar.dataset.photoUrl;
     delete el.peerAvatar.dataset.uid;
-    el.peerSub.textContent = 'Asisten AI · bukan E2EE';
+    el.peerSub.textContent = 'Asisten AI';
     el.btnCallAudio.hidden = true;
     el.btnCallVideo.hidden = true;
     el.blockedBar.hidden = true;
     el.input.disabled = false;
     el.btnSend.disabled = false;
-    el.btnAttach.disabled = false;
-    el.btnAttach.hidden = false;
-    el.input.placeholder = 'Tanya, tempel tautan, atau kirim foto/file…';
+    el.btnAttach.disabled = true;
+    el.btnAttach.hidden = true;
+    el.input.placeholder = 'Tanya atau tempel tautan…';
     return;
   }
   el.peerAvatar.classList.remove('ai-avatar');
+  el.btnAttach.hidden = false;
 
   const name = displayName(room);
   const headerName = room.type === 'group' ? room.name : name;
