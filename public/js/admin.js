@@ -517,14 +517,14 @@ el.tabs.addEventListener('click', (event) => {
 });
 
 el.btnRefresh.addEventListener('click', () => loadOverview());
-el.btnChat.addEventListener('click', () => window.open('/', '_blank', 'noopener'));
+el.btnChat.addEventListener('click', () => location.assign('/'));
 el.btnLogout.addEventListener('click', async () => {
   if (!confirm('Keluar dari halaman admin?')) return;
   await state.auth.signOut();
   location.reload();
 });
 
-el.deniedChat.addEventListener('click', () => window.open('/', '_blank', 'noopener'));
+el.deniedChat.addEventListener('click', () => location.assign('/'));
 el.deniedLogout.addEventListener('click', async () => {
   await state.auth.signOut();
   location.reload();

@@ -165,7 +165,7 @@ Jika variabel diisi satu per satu:
 | `SUPABASE_SERVICE_ROLE_KEY` | Secret key Supabase (bukan publishable key) |
 | `ADMIN_EMAILS` | Email akun Google yang berhak membuka `/admin.html`; beberapa alamat dipisahkan koma. `ADMIN_UIDS` dapat digunakan untuk menunjuk admin berdasarkan uid. |
 
-Dengan `STORAGE_DRIVER=supabase`, data berikut disimpan pada bucket yang sama sehingga tetap ada saat service tidur atau di-deploy ulang: blob lampiran terenkripsi, `registry/usernames.json` (daftar username), `registry/moderation.json` (laporan dan blokir), `registry/accounts.json` (indeks kontak), dan folder `avatars/` (foto profil). Pada driver `local` di host dengan disk ephemeral, seluruh data ini hilang setiap restart.
+Dengan `STORAGE_DRIVER=supabase`, data berikut disimpan pada bucket yang sama sehingga tetap ada saat service tidur atau di-deploy ulang: blob lampiran terenkripsi, `registry/usernames.json` (daftar username), `registry/moderation.json` (laporan dan blokir), `registry/accounts.json` (indeks kontak), `registry/profiles.json` (profil dan kunci publik), dan folder `avatars/` (foto profil). Pada driver `local` di host dengan disk ephemeral, seluruh data ini hilang setiap restart.
 
 `render.yaml` tidak menetapkan `PORT`; Render menyuntikkannya sendiri dan `src/config.js` membacanya.
 

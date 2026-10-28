@@ -92,6 +92,19 @@ const push = await createPushService(config);
 
 /** uid -> { profile, publicKey, socketId, socket } */
 const directory = new Map();
+
+// Kunci publik yang pernah dipublikasikan ikut dipulihkan saat boot. Tanpa ini,
+// orang yang sedang offline menghilang dari direktori setelah restart dan
+// pesan baru tidak bisa dienkripsi untuknya.
+for (const record of profiles.all()) {
+  if (!record.publicKey?.x) continue;
+  directory.set(record.uid, {
+    profile: { displayName: usernames.get(record.uid) || '', photoURL: null },
+    publicKey: record.publicKey,
+    socketId: null,
+    socket: null,
+  });
+}
 /** uid -> [envelope] queued while offline */
 const inbox = new Map();
 /**
@@ -1655,6 +1668,7 @@ io.on('connection', (socket) => {
   // jejak. Yang menunggu cuma pengiriman 'ready'.
   const profileReady = profiles
     .ensure(uid)
+    .then(() => profiles.setPublicKey(uid, publicKey))
     .catch((err) => console.warn(`⚠️  Profil ${uid}: ${err.message}`));
 
   // One live session per account. Opening the app elsewhere takes over, so a
@@ -1716,6 +1730,9 @@ io.on('connection', (socket) => {
     if (!key?.x) return;
     const entry = directory.get(uid);
     if (entry) entry.publicKey = key;
+    profiles
+      .setPublicKey(uid, key)
+      .catch((err) => console.warn(`⚠️  Kunci publik ${uid}: ${err.message}`));
     broadcastDirectory();
   });
 

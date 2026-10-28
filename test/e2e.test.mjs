@@ -41,7 +41,7 @@ const {
   decryptFile,
 } = await import('../public/js/crypto.js');
 const { makeDevToken } = await import('../src/auth.js');
-const { server, directory, inbox, calls, statuses, moderation, accounts, push } = await import('../src/server.js');
+const { server, directory, inbox, calls, statuses, moderation, accounts, profiles, push } = await import('../src/server.js');
 const { resolveLocalPath } = await import('../src/storage.js');
 
 const BASE_URL = `http://127.0.0.1:${process.env.PORT}`;
@@ -339,6 +339,18 @@ test('messages queue while offline and arrive on reconnect', async () => {
 
   alice.close();
   carolAgain.close();
+});
+
+test('kunci publik bertahan supaya penerima offline tetap bisa dihubungi', async () => {
+  const dave = await new Client('dave-key').init();
+  await sleep(50);
+  assert.equal(profiles.get(dave.uid)?.publicKey?.x, dave.identity.publicKey.x);
+
+  dave.close();
+  await sleep(120);
+  // Entry offline tetap menyimpan kuncinya; brokernya cuma menandai socket mati.
+  assert.equal(directory.get(dave.uid)?.publicKey?.x, dave.identity.publicKey.x);
+  assert.equal(directory.get(dave.uid)?.socketId, null);
 });
 
 test('a connection without a valid token is rejected', async () => {

@@ -42,6 +42,16 @@ export function cleanBirthYear(value) {
   return year;
 }
 
+/** Kunci publik ECDH P-256; cukup x/y karena kurvanya sudah ditentukan. */
+export function cleanPublicKey(value) {
+  if (!value || typeof value !== 'object') return null;
+  const x = typeof value.x === 'string' ? value.x : '';
+  const y = typeof value.y === 'string' ? value.y : '';
+  const coordinate = /^[A-Za-z0-9_-]{40,64}$/;
+  if (!coordinate.test(x) || !coordinate.test(y)) return null;
+  return { kty: 'EC', crv: 'P-256', x, y };
+}
+
 const isUid = (uid) => typeof uid === 'string' && uid.length > 0 && uid.length <= 128;
 
 /** ID yang diketik orang: 6–12 angka. Spasi/titik dibuang sebelum dicek. */
@@ -125,6 +135,9 @@ export async function createProfileRegistry({ store = null } = {}) {
     verified: false,
     role: null,
     chats: [],
+    // Disimpan supaya orang yang sedang offline tetap bisa dikirimi pesan
+    // terenkripsi tanpa menunggu dia membuka aplikasinya lebih dulu.
+    publicKey: null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   });
@@ -167,6 +180,7 @@ export async function createProfileRegistry({ store = null } = {}) {
               -MAX_CHATS
             )
           : [],
+        publicKey: cleanPublicKey(entry?.publicKey),
         createdAt: Number(entry?.createdAt) || Date.now(),
         updatedAt: Number(entry?.updatedAt) || Date.now(),
       };
@@ -234,6 +248,22 @@ export async function createProfileRegistry({ store = null } = {}) {
     view,
     byUserId,
     ensure,
+
+    /**
+     * Simpan kunci publik terbaru. Kunci privat tidak pernah menyentuh server;
+     * yang bertahan cuma bagian publiknya, supaya pengirim tidak perlu
+     * menunggu penerima online untuk mengenkripsi pesan.
+     */
+    async setPublicKey(uid, value) {
+      const record = await ensure(uid);
+      const key = cleanPublicKey(value);
+      if (!record || !key) return null;
+      if (record.publicKey?.x === key.x && record.publicKey?.y === key.y) return record.publicKey;
+      record.publicKey = key;
+      record.updatedAt = Date.now();
+      await persist();
+      return record.publicKey;
+    },
 
     /** Ubah pengaturan yang hanya boleh disentuh pemiliknya. */
     async updateSettings(uid, patch = {}) {

@@ -1455,11 +1455,30 @@ async function sendToRoom(
   // pesan masuk akan jadi tombol tanpa arti.
   if (peerBlocked(room)) return showToast('Buka blokir dulu untuk mengirim pesan ke kontak ini.');
 
-  let sharedKeys;
+  let sharedKeys = null;
+  let keyError = null;
   try {
     sharedKeys = await keysForRoom(room);
   } catch (err) {
-    pushSystemNote(room, `⚠️ ${err.message}. Minta dia buka aplikasinya dulu.`);
+    keyError = err;
+  }
+  // Direktori di perangkat bisa ketinggalan (mis. kunci baru dipublikasikan
+  // setelah jendela ini dibuka). Ambil sekali lagi sebelum menyerah, supaya
+  // mengirim ke orang yang offline nggak gagal cuma karena data lama.
+  if (!sharedKeys && socket?.connected) {
+    const answer = await emitAck('sync', {}, 5000);
+    if (answer?.directory) {
+      state.directory = answer.directory;
+      try {
+        sharedKeys = await keysForRoom(room);
+        keyError = null;
+      } catch (err) {
+        keyError = err;
+      }
+    }
+  }
+  if (!sharedKeys) {
+    pushSystemNote(room, `⚠️ ${keyError?.message || 'Kunci publik belum tersedia'}. Minta dia buka aplikasinya dulu.`);
     if (state.activeRoomId === room.id) renderMessages();
     saveRooms();
     return;
@@ -1844,6 +1863,8 @@ function openRoomFromQuery() {
 }
 
 function pushSystemNote(room, text) {
+  const last = room.messages[room.messages.length - 1];
+  if (last?.system && last.text === text) return;
   room.messages.push({ id: `sys:${Date.now()}:${Math.random()}`, system: true, at: Date.now(), text });
 }
 
@@ -5245,7 +5266,7 @@ function openContactRoom(uid, name) {
   selectRoom(id);
 
   // Kunci publik orang yang sedang offline belum tentu ada di perangkat ini,
-  // jadi direktori disegarkan: kalau dia online, chat-nya langsung bisa jalan.
+  // jadi direktori disegarkan: kunci yang sudah tersimpan di server langsung terpakai.
   socket?.emit('sync', {}, (answer) => {
     if (!answer?.directory) return;
     state.directory = answer.directory;
@@ -8256,7 +8277,7 @@ el.panelSettings.querySelector('[data-notify-toggle]').addEventListener('click',
 });
 // `+` membuka halaman tambah kontak, bukan daftar orang yang sedang online.
 el.btnNewChat.addEventListener('click', openContactPage);
-el.btnAdmin.addEventListener('click', () => window.open('/admin.html', '_blank', 'noopener'));
+el.btnAdmin.addEventListener('click', () => location.assign('/admin.html'));
 el.contactForm.addEventListener('submit', (event) => {
   event.preventDefault();
   lookupContact();
